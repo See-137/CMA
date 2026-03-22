@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "cma-cost-monitor"
+version = "0.1.0"
+description = "Python SDK for Cost Monitoring Agent - track LLM costs in multi-agent systems"
+requires-python = ">=3.9"
+dependencies = ["httpx>=0.25.0"]
+
+[project.optional-dependencies]
+openai = ["openai>=1.0.0"]
+anthropic = ["anthropic>=0.7.0"]
