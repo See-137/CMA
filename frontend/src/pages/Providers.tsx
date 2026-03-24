@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
-import { Plus, ChevronDown, ChevronUp, Pencil, Check, X } from 'lucide-react';
+import { Plus, ChevronDown, ChevronUp, Pencil, Check, X, Trash2 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import { api } from '../api/client';
 import Badge from '../components/Badge';
 import Modal from '../components/Modal';
+import ConfirmDialog from '../components/ConfirmDialog';
 import LoadingSpinner from '../components/LoadingSpinner';
 import EmptyState from '../components/EmptyState';
 import type { Provider, Model } from '../types';
@@ -27,6 +28,8 @@ const Providers: React.FC = () => {
   const { data: providers, loading, error, refetch } = useApi<Provider[]>('/api/v1/providers');
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [confirmProviderId, setConfirmProviderId] = useState<number | null>(null);
+  const [deletingProvider, setDeletingProvider] = useState(false);
   const [editingModel, setEditingModel] = useState<{
     id: number;
     inputPrice: string;
@@ -35,7 +38,6 @@ const Providers: React.FC = () => {
   const [formData, setFormData] = useState({
     name: '',
     provider_type: 'openai',
-    api_key: '',
   });
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -47,7 +49,7 @@ const Providers: React.FC = () => {
         models: [],
       });
       setModalOpen(false);
-      setFormData({ name: '', provider_type: 'openai', api_key: '' });
+      setFormData({ name: '', provider_type: 'openai' });
       refetch();
     } catch (err) {
       console.error('Failed to create provider:', err);
@@ -66,7 +68,21 @@ const Providers: React.FC = () => {
     setEditingModel(null);
   };
 
-  const saveEditing = async (providerId: number) => {
+  const handleDeleteProvider = async () => {
+    if (confirmProviderId === null) return;
+    setDeletingProvider(true);
+    try {
+      await api.delete(`/api/v1/providers/${confirmProviderId}`);
+      refetch();
+    } catch (err) {
+      console.error('Failed to delete provider:', err);
+    } finally {
+      setDeletingProvider(false);
+      setConfirmProviderId(null);
+    }
+  };
+
+  const saveEditing = async () => {
     if (!editingModel) return;
     try {
       await api.put(`/api/v1/models/${editingModel.id}`, {
@@ -75,8 +91,9 @@ const Providers: React.FC = () => {
       });
       setEditingModel(null);
       refetch();
-    } catch {
-      // Error handling silently — user sees stale data
+    } catch (err) {
+      console.error('Failed to save model pricing:', err);
+      // Keep editing form open so user can retry
     }
   };
 
@@ -132,6 +149,13 @@ const Providers: React.FC = () => {
                       <span className="text-xs text-slate-500">
                         {provider.models.length} model{provider.models.length !== 1 ? 's' : ''}
                       </span>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setConfirmProviderId(provider.id); }}
+                        className="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                        title="Delete provider"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
                       {isExpanded ? (
                         <ChevronUp className="h-4 w-4 text-slate-400" />
                       ) : (
@@ -218,7 +242,7 @@ const Providers: React.FC = () => {
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        saveEditing(provider.id);
+                                        saveEditing();
                                       }}
                                       className="p-1 rounded text-emerald-600 hover:bg-emerald-50"
                                     >
@@ -296,16 +320,6 @@ const Providers: React.FC = () => {
               <option value="custom">Custom</option>
             </select>
           </div>
-          <div>
-            <label className="label">API Key</label>
-            <input
-              type="password"
-              className="input"
-              placeholder="sk-..."
-              value={formData.api_key}
-              onChange={(e) => setFormData({ ...formData, api_key: e.target.value })}
-            />
-          </div>
           <div className="flex justify-end gap-3 pt-2">
             <button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">
               Cancel
@@ -316,6 +330,16 @@ const Providers: React.FC = () => {
           </div>
         </form>
       </Modal>
+
+      <ConfirmDialog
+        isOpen={confirmProviderId !== null}
+        onClose={() => setConfirmProviderId(null)}
+        onConfirm={handleDeleteProvider}
+        title="Delete provider"
+        description="This will deactivate the provider and all its models. Existing cost events will be preserved."
+        confirmLabel="Delete provider"
+        isLoading={deletingProvider}
+      />
     </div>
   );
 };

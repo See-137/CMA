@@ -149,3 +149,15 @@ def delete_model(model_id: int, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(model)
     return ModelPricingOut.model_validate(model)
+
+
+@router.delete("/providers/{provider_id}", response_model=ProviderOut)
+def delete_provider(provider_id: int, db: Session = Depends(get_db)):
+    provider = db.query(Provider).filter(Provider.id == provider_id).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    provider.is_active = False
+    db.commit()
+    db.refresh(provider)
+    return ProviderOut.model_validate(provider)

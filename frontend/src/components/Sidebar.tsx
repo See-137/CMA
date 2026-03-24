@@ -9,11 +9,17 @@ import {
   Plug,
   Activity,
   DollarSign,
+  MessageSquare,
   Settings as SettingsIcon,
+  LogOut,
+  Sun,
+  Moon,
 } from 'lucide-react';
+import { useTheme } from '../contexts/ThemeContext';
 
 const mainNav = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
+  { to: '/chat', icon: MessageSquare, label: 'Ask Scrooge' },
   { to: '/agents', icon: Bot, label: 'Agents' },
   { to: '/providers', icon: Server, label: 'Providers' },
   { to: '/budgets', icon: Wallet, label: 'Budgets' },
@@ -63,6 +69,13 @@ const NavItem: React.FC<{ to: string; icon: React.FC<{ className?: string }>; la
 );
 
 const Sidebar: React.FC = () => {
+  const { theme, toggleTheme } = useTheme();
+
+  const handleLogout = () => {
+    localStorage.removeItem('api_key');
+    window.location.href = '/setup';
+  };
+
   return (
     <aside className="flex flex-col w-64 min-h-screen bg-slate-950 text-white shrink-0 border-r border-slate-800/50">
       {/* Logo */}
@@ -101,8 +114,27 @@ const Sidebar: React.FC = () => {
       </nav>
 
       {/* Footer */}
-      <div className="px-5 py-4 border-t border-slate-800/50">
-        <div className="flex items-center gap-2">
+      <div className="px-3 py-3 border-t border-slate-800/50 space-y-1">
+        {/* Theme toggle */}
+        <button
+          onClick={toggleTheme}
+          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 transition-all duration-150"
+        >
+          {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          <span>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
+        </button>
+
+        {/* Sign out */}
+        <button
+          onClick={handleLogout}
+          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-slate-400 hover:bg-rose-500/10 hover:text-rose-400 transition-all duration-150"
+        >
+          <LogOut className="h-4 w-4" />
+          <span>Sign out</span>
+        </button>
+
+        {/* Version */}
+        <div className="flex items-center gap-2 px-3 pt-1">
           <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse-subtle" />
           <p className="text-[11px] text-slate-500 font-medium">v0.1.0 &middot; Running</p>
         </div>

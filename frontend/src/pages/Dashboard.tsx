@@ -11,7 +11,8 @@ import {
   ResponsiveContainer,
   Legend,
 } from 'recharts';
-import { DollarSign, Zap, Bot, Hash } from 'lucide-react';
+import { DollarSign, Zap, Bot, Hash, MessageSquare } from 'lucide-react';
+import ChatDrawer from '../components/ChatDrawer';
 import { api } from '../api/client';
 import StatsCard from '../components/StatsCard';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -42,6 +43,7 @@ const formatCurrency = (value: number) =>
 const formatNumber = (value: number) => new Intl.NumberFormat('en-US').format(value);
 
 const Dashboard: React.FC = () => {
+  const [chatOpen, setChatOpen] = useState(false);
   const [period, setPeriod] = useState<Period>('week');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -102,7 +104,17 @@ const Dashboard: React.FC = () => {
   const budgets = budgetStatus?.data ?? [];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 relative">
+      {/* Floating Chat Button */}
+      <button
+        onClick={() => setChatOpen(true)}
+        className="fixed bottom-6 right-6 z-30 flex items-center justify-center h-14 w-14 rounded-full bg-gradient-to-br from-teal-500 to-teal-600 text-white shadow-glow-teal hover:shadow-lg hover:scale-105 transition-all"
+        title="Ask CMA"
+      >
+        <MessageSquare className="h-6 w-6" />
+      </button>
+      <ChatDrawer open={chatOpen} onClose={() => setChatOpen(false)} />
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>

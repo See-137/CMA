@@ -20,9 +20,14 @@ services:
       - "8000:8000"
     volumes:
       - ./backend/app:/app/app:ro
+      - chroma-data:/app/data/chroma
     environment:
       - CMA_DATABASE_URL=postgresql://cma:cma_dev_password@postgres:5432/cma
       - CMA_CORS_ORIGINS=["http://localhost:5173","http://localhost:3000"]
+      - CMA_CHROMA_PERSIST_DIR=/app/data/chroma
+      - CMA_LLM_PROVIDER=ollama
+      - CMA_LLM_MODEL=llama3
+      - CMA_OLLAMA_BASE_URL=http://host.docker.internal:11434
     depends_on:
       postgres:
         condition: service_healthy
@@ -44,3 +49,4 @@ services:
 
 volumes:
   pg-data:
+  chroma-data:

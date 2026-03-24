@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { Plus, CheckCircle } from 'lucide-react';
+import { Plus, CheckCircle, Trash2 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import { api } from '../api/client';
 import DataTable, { Column } from '../components/DataTable';
 import Badge from '../components/Badge';
 import Modal from '../components/Modal';
+import ConfirmDialog from '../components/ConfirmDialog';
 import LoadingSpinner from '../components/LoadingSpinner';
 import EmptyState from '../components/EmptyState';
 import type { Alert, AlertChannel } from '../types';
@@ -64,6 +65,9 @@ const Alerts: React.FC = () => {
     refetch: refetchChannels,
   } = useApi<AlertChannel[]>('/api/v1/alerts/channels');
   const [modalOpen, setModalOpen] = useState(false);
+  const [confirmChannelId, setConfirmChannelId] = useState<number | null>(null);
+  const [deletingChannel, setDeletingChannel] = useState(false);
+  const [configError, setConfigError] = useState('');
   const [formData, setFormData] = useState({
     name: '',
     channel_type: 'email',
@@ -74,13 +78,34 @@ const Alerts: React.FC = () => {
     try {
       await api.put(`/api/v1/alerts/${alertId}/resolve`);
       refetchAlerts();
-    } catch {
-      // Silent fail — user will retry
+    } catch (err) {
+      console.error('Failed to resolve alert:', err);
+    }
+  };
+
+  const handleDeleteChannel = async () => {
+    if (confirmChannelId === null) return;
+    setDeletingChannel(true);
+    try {
+      await api.delete(`/api/v1/alerts/channels/${confirmChannelId}`);
+      refetchChannels();
+    } catch (err) {
+      console.error('Failed to delete channel:', err);
+    } finally {
+      setDeletingChannel(false);
+      setConfirmChannelId(null);
     }
   };
 
   const handleCreateChannel = async (e: React.FormEvent) => {
     e.preventDefault();
+    try {
+      JSON.parse(formData.config);
+    } catch {
+      setConfigError('Invalid JSON — please check your configuration syntax.');
+      return;
+    }
+    setConfigError('');
     try {
       await api.post('/api/v1/alerts/channels', {
         name: formData.name,
@@ -227,6 +252,13 @@ const Alerts: React.FC = () => {
                         />
                       </div>
                     </div>
+                    <button
+                      onClick={() => setConfirmChannelId(channel.id)}
+                      className="p-1.5 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                      title="Delete channel"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
                   </div>
                   <div className="mt-3 pt-3 border-t border-slate-100">
                     <p className="text-xs text-slate-500 font-mono truncate">
@@ -288,8 +320,9 @@ const Alerts: React.FC = () => {
                     : '{"url": "https://..."}'
               }
               value={formData.config}
-              onChange={(e) => setFormData({ ...formData, config: e.target.value })}
+              onChange={(e) => { setConfigError(''); setFormData({ ...formData, config: e.target.value }); }}
             />
+            {configError && <p className="mt-1 text-xs text-rose-600">{configError}</p>}
           </div>
           <div className="flex justify-end gap-3 pt-2">
             <button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">
@@ -301,6 +334,16 @@ const Alerts: React.FC = () => {
           </div>
         </form>
       </Modal>
+
+      <ConfirmDialog
+        isOpen={confirmChannelId !== null}
+        onClose={() => setConfirmChannelId(null)}
+        onConfirm={handleDeleteChannel}
+        title="Delete channel"
+        description="This will deactivate the alert channel. No future alerts will be sent to it."
+        confirmLabel="Delete channel"
+        isLoading={deletingChannel}
+      />
     </div>
   );
 };

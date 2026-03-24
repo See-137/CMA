@@ -1,11 +1,12 @@
 import React, { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Search } from 'lucide-react';
+import { Plus, Search, Trash2 } from 'lucide-react';
 import { api } from '../api/client';
 import { useApi } from '../hooks/useApi';
 import DataTable, { Column } from '../components/DataTable';
 import Badge from '../components/Badge';
 import Modal from '../components/Modal';
+import ConfirmDialog from '../components/ConfirmDialog';
 import LoadingSpinner from '../components/LoadingSpinner';
 import type { Agent } from '../types';
 
@@ -32,6 +33,8 @@ const Agents: React.FC = () => {
   const { data: agents, loading, error, refetch } = useApi<Agent[]>('/api/v1/agents');
   const [search, setSearch] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
+  const [confirmId, setConfirmId] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
     description: '',
@@ -92,7 +95,34 @@ const Agents: React.FC = () => {
         />
       ),
     },
+    {
+      header: '',
+      accessor: 'id',
+      render: (row) => (
+        <button
+          onClick={(e) => { e.stopPropagation(); setConfirmId(row.id); }}
+          className="p-1.5 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+          title="Delete agent"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      ),
+    },
   ];
+
+  const handleDelete = async () => {
+    if (confirmId === null) return;
+    setDeleting(true);
+    try {
+      await api.delete(`/api/v1/agents/${confirmId}`);
+      refetch();
+    } catch (err) {
+      console.error('Failed to delete agent:', err);
+    } finally {
+      setDeleting(false);
+      setConfirmId(null);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -218,6 +248,16 @@ const Agents: React.FC = () => {
           </div>
         </form>
       </Modal>
+
+      <ConfirmDialog
+        isOpen={confirmId !== null}
+        onClose={() => setConfirmId(null)}
+        onConfirm={handleDelete}
+        title="Delete agent"
+        description="This will deactivate the agent. Existing cost events will be preserved."
+        confirmLabel="Delete agent"
+        isLoading={deleting}
+      />
     </div>
   );
 };

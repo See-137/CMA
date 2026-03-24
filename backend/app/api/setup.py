@@ -51,6 +51,28 @@ def run_setup(body: SetupRequest, db: Session = Depends(get_db)):
     )
 
 
+@router.post("/reconnect", response_model=SetupResponse)
+def reconnect(body: SetupRequest, db: Session = Depends(get_db)):
+    """Return existing API key after verifying admin credentials."""
+    config = db.query(SetupConfig).first()
+    if not config or not config.is_setup_complete:
+        raise HTTPException(status_code=400, detail="Setup not completed yet")
+
+    if body.admin_email != config.admin_email:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if not bcrypt.checkpw(
+        body.admin_password.encode(), config.admin_password_hash.encode()
+    ):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    return SetupResponse(
+        message="Reconnected successfully",
+        api_key=config.api_key,
+        is_complete=True,
+    )
+
+
 @router.get("/status", response_model=SetupStatusResponse)
 def get_setup_status(db: Session = Depends(get_db)):
     config = db.query(SetupConfig).first()

@@ -99,6 +99,19 @@ def ingest_events(
 
     db.commit()
 
+    # Collect IDs of successfully processed events for embedding
+    event_ids = (
+        [
+            e.id
+            for e in db.query(CostEvent)
+            .order_by(CostEvent.id.desc())
+            .limit(processed)
+            .all()
+        ]
+        if processed > 0
+        else []
+    )
+
     # Check budgets in background
     def _bg_check():
         from app.database import SessionLocal
@@ -110,6 +123,23 @@ def ingest_events(
             bg_db.close()
 
     background_tasks.add_task(_bg_check)
+
+    # Embed new events in background
+    if event_ids:
+
+        def _bg_embed(ids: list[int]):
+            from app.database import SessionLocal
+            from app.services.vector_store import embed_and_upsert_events
+
+            bg_db = SessionLocal()
+            try:
+                embed_and_upsert_events(bg_db, ids)
+            except Exception:
+                logger.warning("Background embedding failed", exc_info=True)
+            finally:
+                bg_db.close()
+
+        background_tasks.add_task(_bg_embed, event_ids)
 
     return EventsIngestionResponse(
         received=len(events),

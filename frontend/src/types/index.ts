@@ -181,3 +181,49 @@ export interface BudgetStatus {
 export interface BudgetStatusResponse {
   data: BudgetStatus[];
 }
+
+// -- Chat / RAG ---------------------------------------------------------------
+
+export interface Citation {
+  source_type: string;
+  source_id?: string;
+  snippet: string;
+}
+
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  citations?: Citation[];
+  timestamp?: string;
+}
+
+export interface ChatResponse {
+  answer: string;
+  citations: Citation[];
+  model_used: string;
+  usage: Record<string, number>;
+}
+
+export interface ChatStatus {
+  vector_store: string;
+  events_indexed: number;
+  rollups_indexed: number;
+  llm_provider: string;
+  llm_model: string;
+  llm_available: boolean;
+  embedding_model: string;
+}
+
+// -- Semantic search ----------------------------------------------------------
+
+export interface SemanticSearchResult {
+  event: Event;
+  similarity_score: number;
+  highlight: string;
+}
+
+export interface SemanticSearchResponse {
+  results: SemanticSearchResult[];
+  query_embedding_time_ms: number;
+  search_time_ms: number;
+}

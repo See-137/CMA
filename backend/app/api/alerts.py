@@ -46,3 +46,15 @@ def create_channel(body: AlertChannelCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(channel)
     return AlertChannelOut.model_validate(channel)
+
+
+@router.delete("/channels/{channel_id}", response_model=AlertChannelOut)
+def delete_channel(channel_id: int, db: Session = Depends(get_db)):
+    channel = db.query(AlertChannel).filter(AlertChannel.id == channel_id).first()
+    if not channel:
+        raise HTTPException(status_code=404, detail="Alert channel not found")
+
+    channel.is_active = False
+    db.commit()
+    db.refresh(channel)
+    return AlertChannelOut.model_validate(channel)

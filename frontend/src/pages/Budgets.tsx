@@ -5,6 +5,7 @@ import { api } from '../api/client';
 import DataTable, { Column } from '../components/DataTable';
 import Badge from '../components/Badge';
 import Modal from '../components/Modal';
+import ConfirmDialog from '../components/ConfirmDialog';
 import LoadingSpinner from '../components/LoadingSpinner';
 import type { Budget } from '../types';
 
@@ -15,6 +16,8 @@ const Budgets: React.FC = () => {
   const { data: budgets, loading, error, refetch } = useApi<Budget[]>('/api/v1/budgets');
   const [modalOpen, setModalOpen] = useState(false);
   const [editBudget, setEditBudget] = useState<Budget | null>(null);
+  const [confirmId, setConfirmId] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
     scope: 'global',
@@ -61,7 +64,10 @@ const Budgets: React.FC = () => {
       scope_ref: formData.scope_ref || undefined,
       period: formData.period,
       limit_amount: parseFloat(formData.limit_amount),
-      alert_thresholds: formData.alert_thresholds.split(',').map((s) => parseInt(s.trim(), 10)),
+      alert_thresholds: formData.alert_thresholds
+        .split(',')
+        .map((s) => parseInt(s.trim(), 10))
+        .filter((n) => !isNaN(n)),
       control_action: formData.control_action,
     };
     try {
@@ -77,13 +83,17 @@ const Budgets: React.FC = () => {
     }
   };
 
-  const handleDelete = async (budgetId: number) => {
-    if (!confirm('Are you sure you want to delete this budget?')) return;
+  const handleDelete = async () => {
+    if (confirmId === null) return;
+    setDeleting(true);
     try {
-      await api.delete(`/api/v1/budgets/${budgetId}`);
+      await api.delete(`/api/v1/budgets/${confirmId}`);
       refetch();
     } catch (err) {
       console.error('Failed to delete budget:', err);
+    } finally {
+      setDeleting(false);
+      setConfirmId(null);
     }
   };
 
@@ -176,7 +186,7 @@ const Budgets: React.FC = () => {
           <button
             onClick={(e) => {
               e.stopPropagation();
-              handleDelete(row.id);
+              setConfirmId(row.id);
             }}
             className="p-1.5 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
           >
@@ -321,6 +331,16 @@ const Budgets: React.FC = () => {
           </div>
         </form>
       </Modal>
+
+      <ConfirmDialog
+        isOpen={confirmId !== null}
+        onClose={() => setConfirmId(null)}
+        onConfirm={handleDelete}
+        title="Delete budget"
+        description="This will permanently delete the budget. Alerts triggered by this budget will also stop."
+        confirmLabel="Delete budget"
+        isLoading={deleting}
+      />
     </div>
   );
 };

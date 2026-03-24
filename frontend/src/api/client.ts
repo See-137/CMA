@@ -25,6 +25,12 @@ function getAuthHeaders(): Record<string, string> {
 
 async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
+    // Setup was reset (account deleted) — clear local key and redirect to wizard
+    if (response.status === 503) {
+      localStorage.removeItem('api_key');
+      window.location.href = '/setup';
+      throw new ApiError('Setup required', 503, null);
+    }
     const text = await response.text();
     let body: unknown;
     try {
@@ -84,5 +90,74 @@ export const api = {
     return handleResponse<T>(response);
   },
 };
+
+export async function streamChat(
+  message: string,
+  history: Array<{ role: string; content: string }>,
+  onCitations: (citations: Array<{ source_type: string; source_id?: string; snippet: string }>) => void,
+  onChunk: (text: string) => void,
+  onDone: () => void,
+  onError: (error: string) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(`${BASE_URL}/api/v1/chat/stream`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ message, history, stream: true }),
+    signal,
+  });
+
+  if (!response.ok) {
+    onError(`Chat error: ${response.status} ${response.statusText}`);
+    return;
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    onError('No response stream');
+    return;
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const payload = line.slice(6).trim();
+        if (!payload) continue;
+
+        try {
+          const event = JSON.parse(payload);
+          if (event.type === 'citations') {
+            onCitations(event.data);
+          } else if (event.type === 'content') {
+            onChunk(event.data);
+          } else if (event.type === 'done') {
+            onDone();
+            return;
+          } else if (event.type === 'error') {
+            onError(event.data);
+            return;
+          }
+        } catch {
+          // skip malformed JSON
+        }
+      }
+    }
+    onDone();
+  } catch (err) {
+    if (signal?.aborted) return;
+    onError(err instanceof Error ? err.message : 'Stream error');
+  }
+}
 
 export { ApiError };

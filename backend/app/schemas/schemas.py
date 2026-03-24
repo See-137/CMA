@@ -343,3 +343,56 @@ class BudgetStatusItem(BaseModel):
 
 class BudgetStatusResponse(BaseModel):
     data: list[BudgetStatusItem]
+
+
+# -- Chat / RAG ---------------------------------------------------------------
+
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    history: list[ChatMessage] = []
+    stream: bool = False
+
+
+class CitationOut(BaseModel):
+    source_type: str
+    source_id: str | None = None
+    snippet: str = ""
+
+
+class ChatResponse(BaseModel):
+    answer: str
+    citations: list[CitationOut] = []
+    model_used: str = ""
+    usage: dict = {}
+
+
+# -- Semantic search -----------------------------------------------------------
+
+
+class SemanticSearchRequest(BaseModel):
+    query: str
+    top_k: int = 20
+    agent_name: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    status: str | None = None
+    from_date: datetime | None = None
+    to_date: datetime | None = None
+
+
+class SemanticSearchResult(BaseModel):
+    event: EventOut
+    similarity_score: float
+    highlight: str = ""
+
+
+class SemanticSearchResponse(BaseModel):
+    results: list[SemanticSearchResult]
+    query_embedding_time_ms: float = 0
+    search_time_ms: float = 0

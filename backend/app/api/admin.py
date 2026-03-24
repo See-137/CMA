@@ -72,9 +72,24 @@ def reset_database(db: Session = Depends(get_db)):
     db.execute(text("DELETE FROM agents"))
     db.commit()
 
+    # Clear vector store so RAG doesn't answer from stale embeddings
+    try:
+        from app.services.vector_store import clear_vector_store
+
+        clear_vector_store()
+    except Exception:
+        logger.warning("Failed to clear vector store during reset", exc_info=True)
+
     return {
         "message": "All monitoring data cleared. Setup config and providers preserved.",
-        "cleared": ["events", "agents", "budgets", "alerts", "alert_channels"],
+        "cleared": [
+            "events",
+            "agents",
+            "budgets",
+            "alerts",
+            "alert_channels",
+            "vector_store",
+        ],
     }
 
 
@@ -91,6 +106,14 @@ def full_reset(db: Session = Depends(get_db)):
     db.execute(text("DELETE FROM providers"))
     db.execute(text("DELETE FROM setup_config"))
     db.commit()
+
+    # Clear vector store so RAG doesn't answer from stale embeddings
+    try:
+        from app.services.vector_store import clear_vector_store
+
+        clear_vector_store()
+    except Exception:
+        logger.warning("Failed to clear vector store during full reset", exc_info=True)
 
     return {
         "message": "Full reset complete. Please restart the application to re-run setup."

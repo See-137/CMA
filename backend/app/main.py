@@ -5,7 +5,16 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import agents, alerts, auth, budgets, dashboard, events, providers, setup
+from app.api import (
+    agents,
+    alerts,
+    auth,
+    budgets,
+    dashboard,
+    events,
+    providers,
+    setup,
+)
 from app.api.admin import router as admin_router
 from app.api.deps import require_api_key
 from app.config import settings
@@ -31,6 +40,18 @@ async def _daily_maintenance() -> None:
                 backfill_rollups(db)
                 compute_daily_rollups(db)  # yesterday by default
                 prune_old_events(db)
+
+                # Embed any events/rollups not yet in ChromaDB
+                try:
+                    from app.services.vector_store import (
+                        backfill_event_embeddings,
+                        embed_rollups_for_date,
+                    )
+
+                    backfill_event_embeddings(db, batch_size=500)
+                    embed_rollups_for_date(db)
+                except Exception:
+                    logger.warning("Vector backfill failed", exc_info=True)
             finally:
                 db.close()
         except Exception:
@@ -97,6 +118,13 @@ app.include_router(budgets.router, prefix=PREFIX, dependencies=auth_deps)
 app.include_router(alerts.router, prefix=PREFIX, dependencies=auth_deps)
 app.include_router(dashboard.router, prefix=PREFIX, dependencies=auth_deps)
 app.include_router(admin_router, prefix=PREFIX, dependencies=auth_deps)
+
+# RAG chat + semantic search
+from app.api.chat import router as chat_router  # noqa: E402
+from app.api.search import router as search_router  # noqa: E402
+
+app.include_router(chat_router, prefix=PREFIX, dependencies=auth_deps)
+app.include_router(search_router, prefix=PREFIX, dependencies=auth_deps)
 
 
 @app.get("/health")

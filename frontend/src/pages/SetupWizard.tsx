@@ -1,8 +1,8 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { DollarSign, ChevronRight, ChevronLeft, Check, Copy, Eye, EyeOff } from 'lucide-react';
+import { DollarSign, ChevronRight, ChevronLeft, Check, Copy, Eye, EyeOff, LogIn } from 'lucide-react';
 import { api } from '../api/client';
-import type { SetupResponse } from '../types';
+import type { SetupResponse, SetupStatus } from '../types';
 
 const TIMEZONES = [
   'UTC',
@@ -28,6 +28,7 @@ const SetupWizard: React.FC = () => {
   const [step, setStep] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isReconnect, setIsReconnect] = useState(false);
 
   // Success screen state
   const [completedApiKey, setCompletedApiKey] = useState<string | null>(null);
@@ -37,6 +38,36 @@ const SetupWizard: React.FC = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [deploymentName, setDeploymentName] = useState('My Deployment');
+
+  // Check if this is a reconnect (setup done, but no local API key)
+  useEffect(() => {
+    api.get<SetupStatus>('/api/v1/setup/status').then((status) => {
+      if (status.is_complete && !localStorage.getItem('api_key')) {
+        setIsReconnect(true);
+      }
+    }).catch(() => {});
+  }, []);
+
+  const handleReconnect = async () => {
+    if (!email || password.length < 6) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const result = await api.post<SetupResponse>('/api/v1/setup/reconnect', {
+        admin_email: email,
+        admin_password: password,
+        deployment_name: '',
+        timezone: 'UTC',
+        currency: 'USD',
+      });
+      localStorage.setItem('api_key', result.api_key);
+      navigate('/', { replace: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Invalid credentials');
+    } finally {
+      setSubmitting(false);
+    }
+  };
   const [timezone, setTimezone] = useState('UTC');
   const [currency, setCurrency] = useState('USD');
   const [selectedProviders, setSelectedProviders] = useState<Set<string>>(new Set(['openai']));
@@ -305,6 +336,66 @@ const SetupWizard: React.FC = () => {
             >
               Go to Dashboard
               <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Reconnect Screen ────────────────────────────────────────────────────────
+
+  if (isReconnect) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+        <div className="w-full max-w-sm">
+          <div className="flex items-center justify-center gap-3 mb-8">
+            <div className="flex items-center justify-center h-11 w-11 rounded-xl bg-teal-600">
+              <DollarSign className="h-6 w-6 text-white" />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold text-slate-900">Welcome Back</h1>
+              <p className="text-sm text-slate-500">Sign in to CMA</p>
+            </div>
+          </div>
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-card p-6 space-y-4">
+            <p className="text-sm text-slate-600">
+              Your instance is set up. Sign in with your admin credentials to continue.
+            </p>
+            {error && (
+              <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-600 text-sm">
+                {error}
+              </div>
+            )}
+            <div>
+              <label className="label">Email</label>
+              <input
+                type="email"
+                className="input"
+                placeholder="admin@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleReconnect()}
+              />
+            </div>
+            <div>
+              <label className="label">Password</label>
+              <input
+                type="password"
+                className="input"
+                placeholder="Your admin password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleReconnect()}
+              />
+            </div>
+            <button
+              onClick={handleReconnect}
+              disabled={!email || password.length < 6 || submitting}
+              className="btn-primary w-full flex items-center justify-center gap-2"
+            >
+              <LogIn className="h-4 w-4" />
+              {submitting ? 'Signing in...' : 'Sign In'}
             </button>
           </div>
         </div>
