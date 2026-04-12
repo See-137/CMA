@@ -1,5 +1,3 @@
-
-
 def test_create_budget(authed_client):
     resp = authed_client.post(
         "/api/v1/budgets",
