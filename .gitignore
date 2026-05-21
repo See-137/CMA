@@ -51,6 +51,3 @@ coverage.xml
 
 # Claude Code
 .claude/
-
-# Package lock (Docker installs fresh)
-frontend/package-lock.json
