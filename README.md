@@ -85,6 +85,7 @@ Then open <http://localhost:5173> and complete the setup wizard.
 # Backend (http://localhost:8000, docs at /docs)
 cd backend
 pip install -r requirements.txt
+alembic upgrade head          # apply the schema (Alembic is the source of truth)
 uvicorn app.main:app --reload
 
 # Frontend (http://localhost:5173, proxies /api -> :8000)
