@@ -162,31 +162,6 @@ def _rollup_metadata(row) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def upsert_event(event_id: int, text: str, metadata: dict) -> None:
-    get_events_collection().upsert(
-        ids=[str(event_id)],
-        documents=[text],
-        embeddings=[embed_text(text)],
-        metadatas=[metadata],
-    )
-
-
-def upsert_rollup(rollup_id: int, text: str, metadata: dict) -> None:
-    get_rollups_collection().upsert(
-        ids=[str(rollup_id)],
-        documents=[text],
-        embeddings=[embed_text(text)],
-        metadatas=[metadata],
-    )
-
-
-def delete_event(event_id: int) -> None:
-    try:
-        get_events_collection().delete(ids=[str(event_id)])
-    except Exception:
-        logger.debug("Failed to delete event %d from vector store", event_id)
-
-
 def delete_events(event_ids: list[int]) -> None:
     """Best-effort batch removal of event embeddings (called on retention prune)."""
     if not event_ids:
