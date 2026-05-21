@@ -16,6 +16,7 @@ import {
   Link,
 } from 'lucide-react';
 import Badge from '../components/Badge';
+import { useLocalStorage } from '../hooks/useLocalStorage';
 
 type Integration = {
   id: string;
@@ -71,7 +72,7 @@ const Integrations: React.FC = () => {
   );
 
   const endpoint = window.location.origin;
-  const apiKey = localStorage.getItem('api_key') ?? '';
+  const apiKey = useLocalStorage('api_key') ?? '';
 
   // Masked key: first 6 chars + dots + last 4. Shown on-screen only.
   // The real key is always sent to the clipboard.
