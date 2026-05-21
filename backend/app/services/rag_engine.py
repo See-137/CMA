@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.models import Agent, CostEvent, ModelPricing, Provider
 from app.services.vector_store import embed_text, search_events, search_rollups
+from app.timeutils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -68,38 +69,38 @@ _FAIL_PATTERNS = re.compile(
 
 _RELATIVE_TIME = {
     "today": lambda: (
-        datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0),
-        datetime.utcnow(),
+        utcnow().replace(hour=0, minute=0, second=0, microsecond=0),
+        utcnow(),
     ),
     "yesterday": lambda: (
-        (datetime.utcnow() - timedelta(days=1)).replace(
+        (utcnow() - timedelta(days=1)).replace(
             hour=0, minute=0, second=0, microsecond=0
         ),
-        datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0),
+        utcnow().replace(hour=0, minute=0, second=0, microsecond=0),
     ),
     "this week": lambda: (
-        (datetime.utcnow() - timedelta(days=datetime.utcnow().weekday())).replace(
+        (utcnow() - timedelta(days=utcnow().weekday())).replace(
             hour=0, minute=0, second=0, microsecond=0
         ),
-        datetime.utcnow(),
+        utcnow(),
     ),
     "last week": lambda: (
-        (datetime.utcnow() - timedelta(days=datetime.utcnow().weekday() + 7)).replace(
+        (utcnow() - timedelta(days=utcnow().weekday() + 7)).replace(
             hour=0, minute=0, second=0, microsecond=0
         ),
-        (datetime.utcnow() - timedelta(days=datetime.utcnow().weekday())).replace(
+        (utcnow() - timedelta(days=utcnow().weekday())).replace(
             hour=0, minute=0, second=0, microsecond=0
         ),
     ),
     "this month": lambda: (
-        datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0),
-        datetime.utcnow(),
+        utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0),
+        utcnow(),
     ),
     "last month": lambda: (
-        (datetime.utcnow().replace(day=1) - timedelta(days=1)).replace(
+        (utcnow().replace(day=1) - timedelta(days=1)).replace(
             day=1, hour=0, minute=0, second=0, microsecond=0
         ),
-        datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0),
+        utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0),
     ),
 }
 
@@ -143,12 +144,12 @@ def detect_query_intent(query: str, db: Session) -> QueryIntent:
                 "week": timedelta(weeks=n),
                 "month": timedelta(days=n * 30),
             }
-            intent.time_range = (datetime.utcnow() - delta_map[unit], datetime.utcnow())
+            intent.time_range = (utcnow() - delta_map[unit], utcnow())
 
     if intent.time_range is None:
         for day_name, weekday in _DAYS.items():
             if day_name in q_lower:
-                now = datetime.utcnow()
+                now = utcnow()
                 days_back = (now.weekday() - weekday) % 7
                 if days_back == 0:
                     days_back = 7  # "Tuesday" means last Tuesday if today is Tuesday

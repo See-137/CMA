@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
 from app.models.models import CostEvent, DailyCostRollup, SetupConfig
+from app.timeutils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ def prune_old_events(db: Session) -> int:
         return 0
 
     retention_days = config.data_retention_days or 90
-    cutoff = datetime.utcnow() - timedelta(days=retention_days)
+    cutoff = utcnow() - timedelta(days=retention_days)
     cutoff_date = cutoff.date()
 
     # Safety: only delete events for dates that have rollups

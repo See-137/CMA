@@ -6,6 +6,7 @@ from datetime import date, datetime
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.timeutils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -344,7 +345,7 @@ def embed_rollups_for_date(db: Session, target_date: date | None = None) -> int:
     from app.models.models import DailyCostRollup
 
     if target_date is None:
-        target_date = datetime.utcnow().date() - timedelta(days=1)
+        target_date = utcnow().date() - timedelta(days=1)
 
     rollups = (
         db.query(DailyCostRollup).filter(DailyCostRollup.date == target_date).all()

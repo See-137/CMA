@@ -7,6 +7,7 @@ from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from app.models.models import CostEvent, DailyCostRollup
+from app.timeutils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ def compute_daily_rollups(db: Session, target_date: date | None = None) -> int:
     Returns number of rows upserted.
     """
     if target_date is None:
-        target_date = (datetime.utcnow() - timedelta(days=1)).date()
+        target_date = (utcnow() - timedelta(days=1)).date()
 
     start = datetime.combine(target_date, datetime.min.time())
     end = start + timedelta(days=1)
@@ -95,7 +96,7 @@ def backfill_rollups(db: Session) -> int:
 
     total = 0
     current = earliest.date()
-    yesterday = (datetime.utcnow() - timedelta(days=1)).date()
+    yesterday = (utcnow() - timedelta(days=1)).date()
 
     while current <= yesterday:
         has_rollup = (

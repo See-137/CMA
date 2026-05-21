@@ -1,5 +1,3 @@
-from datetime import datetime
-
 from sqlalchemy import (
     Boolean,
     Column,
@@ -7,19 +5,20 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
-    Index,
 )
 from sqlalchemy.orm import relationship
 
 from app.database import Base
+from app.timeutils import utcnow
 
 
 def _utcnow():
-    return datetime.utcnow()
+    return utcnow()
 
 
 class SetupConfig(Base):
