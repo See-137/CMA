@@ -15,6 +15,11 @@ export default function ChatDrawer({ open, onClose }: ChatDrawerProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const drawerRef = useRef<HTMLDivElement>(null);
 
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
@@ -27,14 +32,14 @@ export default function ChatDrawer({ open, onClose }: ChatDrawerProps) {
     const focus = () => inputRef.current?.focus();
     node.addEventListener('transitionend', focus, { once: true });
     const fallback = window.setTimeout(focus, 400);
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onCloseRef.current();
     document.addEventListener('keydown', onKey);
     return () => {
       node.removeEventListener('transitionend', focus);
       window.clearTimeout(fallback);
       document.removeEventListener('keydown', onKey);
     };
-  }, [open, onClose]);
+  }, [open]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();

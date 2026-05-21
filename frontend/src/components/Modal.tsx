@@ -17,6 +17,14 @@ export default function Modal({ isOpen, onClose, title, children }: ModalProps) 
   const previouslyFocused = useRef<HTMLElement | null>(null);
   const titleId = useId();
 
+  // Always call the latest onClose without making it an effect dependency —
+  // otherwise a new inline onClose each render tears down and rebuilds the
+  // focus trap (re-saving focus to an element inside the modal).
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
+
   useEffect(() => {
     if (!isOpen) return;
 
@@ -30,7 +38,7 @@ export default function Modal({ isOpen, onClose, title, children }: ModalProps) 
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (e.key !== 'Tab' || !panel) return;
@@ -59,7 +67,7 @@ export default function Modal({ isOpen, onClose, title, children }: ModalProps) 
       document.body.style.overflow = '';
       previouslyFocused.current?.focus?.();
     };
-  }, [isOpen, onClose]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 

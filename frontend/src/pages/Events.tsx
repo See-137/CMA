@@ -82,14 +82,15 @@ const Events: React.FC = () => {
     }
   }, [page, debouncedAgentName, debouncedProvider, debouncedModel, filters.status, filters.from_date, filters.to_date]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const fetchSemanticResults = useCallback(async () => {
-    if (!debouncedSemQuery.trim()) return;
+  const runSemantic = useCallback(async (queryText: string) => {
+    const q = queryText.trim();
+    if (!q) return;
     const myId = semanticReqId.next();
     setLoading(true);
     setError(null);
     try {
       const result = await api.post<SemanticSearchResponse>('/api/v1/search/semantic', {
-        query:      debouncedSemQuery,
+        query:      q,
         top_k:      20,
         agent_name: debouncedAgentName || undefined,
         status:     filters.status     || undefined,
@@ -104,7 +105,7 @@ const Events: React.FC = () => {
     } finally {
       if (myId === semanticReqId.current()) setLoading(false);
     }
-  }, [debouncedSemQuery, debouncedAgentName, filters.status, filters.from_date, filters.to_date]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [debouncedAgentName, filters.status, filters.from_date, filters.to_date]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Structured mode: re-fetch whenever debounced deps change
   useEffect(() => {
@@ -116,9 +117,9 @@ const Events: React.FC = () => {
   // Semantic mode: auto-search when debounced query or filters change
   useEffect(() => {
     if (searchMode === 'semantic' && debouncedSemQuery.trim()) {
-      fetchSemanticResults();
+      runSemantic(debouncedSemQuery);
     }
-  }, [fetchSemanticResults, searchMode, debouncedSemQuery]);
+  }, [runSemantic, searchMode, debouncedSemQuery]);
 
   const totalPages = data ? Math.ceil(data.total / data.per_page) : 0;
 
@@ -238,7 +239,7 @@ const Events: React.FC = () => {
 
   const handleSemanticSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    fetchSemanticResults();
+    runSemantic(semanticQuery);
   };
 
   return (
@@ -436,7 +437,7 @@ const Events: React.FC = () => {
         <div className="card-ledger mx-auto max-w-md p-8 text-center">
           <p className="font-display text-lg text-oxblood-600 dark:text-oxblood-300">{error}</p>
           <button
-            onClick={searchMode === 'semantic' ? fetchSemanticResults : fetchEvents}
+            onClick={searchMode === 'semantic' ? () => runSemantic(semanticQuery) : fetchEvents}
             className="btn-primary mt-4"
           >
             Try again

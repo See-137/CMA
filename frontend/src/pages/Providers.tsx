@@ -95,10 +95,16 @@ const Providers: React.FC = () => {
   const saveEditing = async () => {
     if (!editingModel) return;
     setPricingError(null);
+    const inputPrice = parseFloat(editingModel.inputPrice);
+    const outputPrice = parseFloat(editingModel.outputPrice);
+    if (Number.isNaN(inputPrice) || Number.isNaN(outputPrice)) {
+      setPricingError('Both prices must be numbers.');
+      return;
+    }
     try {
       await api.put(`/api/v1/models/${editingModel.id}`, {
-        input_price_per_million: parseFloat(editingModel.inputPrice),
-        output_price_per_million: parseFloat(editingModel.outputPrice),
+        input_price_per_million: inputPrice,
+        output_price_per_million: outputPrice,
       });
       setEditingModel(null);
       refetch();
