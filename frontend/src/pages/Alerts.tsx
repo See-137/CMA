@@ -227,19 +227,29 @@ const Alerts: React.FC = () => {
       {/* Tab Bar */}
       <div className="border-b border-[color:var(--color-border)]">
         <nav className="flex gap-6">
-          {(['history', 'channels'] as const).map((t) => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`pb-3 text-sm font-medium border-b-2 transition-colors capitalize ${
-                tab === t
-                  ? 'border-brand-600 text-brand-700 dark:border-brand-400 dark:text-brand-300'
-                  : 'border-transparent text-muted hover:text-secondary'
-              }`}
-            >
-              {t === 'history' ? 'Alert History' : 'Channels'}
-            </button>
-          ))}
+          {(['history', 'channels'] as const).map((t) => {
+            const tabError = t === 'history' ? alertsError : channelsError;
+            return (
+              <button
+                key={t}
+                onClick={() => setTab(t)}
+                className={`pb-3 text-sm font-medium border-b-2 transition-colors capitalize ${
+                  tab === t
+                    ? 'border-brand-600 text-brand-700 dark:border-brand-400 dark:text-brand-300'
+                    : 'border-transparent text-muted hover:text-secondary'
+                }`}
+              >
+                {t === 'history' ? 'Alert History' : 'Channels'}
+                {/* Surface a failure on the inactive tab so it isn't hidden until switched to. */}
+                {tabError && tab !== t && (
+                  <span
+                    className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-oxblood-500 align-middle"
+                    title="Failed to load — switch to this tab to retry"
+                  />
+                )}
+              </button>
+            );
+          })}
         </nav>
       </div>
 

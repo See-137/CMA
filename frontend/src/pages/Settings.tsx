@@ -155,7 +155,16 @@ const Settings: React.FC = () => {
       const data = await api.get<SystemStatus>('/api/v1/admin/status');
       setStatus(data);
     } catch {
-      setStatus(null);
+      // The backend may be momentarily busy (e.g. just after a reset) — retry
+      // once before declaring it unreachable, so a brief hiccup doesn't flash
+      // a scary "Failed" right after a successful action.
+      await new Promise((r) => setTimeout(r, 800));
+      try {
+        const data = await api.get<SystemStatus>('/api/v1/admin/status');
+        setStatus(data);
+      } catch {
+        setStatus(null);
+      }
     } finally {
       setStatusLoading(false);
     }
