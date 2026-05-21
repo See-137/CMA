@@ -256,6 +256,14 @@ def _run_comparison_query(intent: QueryIntent, db: Session) -> list[dict]:
 
     rows = query.group_by(CostEvent.model_name, CostEvent.provider_name).all()
 
+    # Prefetch active pricing once for the whole comparison instead of per row.
+    alt_pricing = (
+        db.query(ModelPricing)
+        .join(Provider)
+        .filter(ModelPricing.is_active.is_(True), Provider.is_active.is_(True))
+        .all()
+    )
+
     for row in rows:
         entry = {
             "type": "comparison_current",
@@ -268,19 +276,15 @@ def _run_comparison_query(intent: QueryIntent, db: Session) -> list[dict]:
         }
 
         # What-if: calculate cost with alternative models
-        alt_pricing = (
-            db.query(ModelPricing)
-            .join(Provider)
-            .filter(ModelPricing.is_active.is_(True), Provider.is_active.is_(True))
-            .all()
-        )
+        tokens_in = int(row.tokens_in or 0)
+        tokens_out = int(row.tokens_out or 0)
         alternatives = []
         for mp in alt_pricing:
             if mp.model_name == row.model_name:
                 continue
             alt_cost = (
-                int(row.tokens_in) / 1_000_000 * mp.input_price_per_million
-                + int(row.tokens_out) / 1_000_000 * mp.output_price_per_million
+                tokens_in / 1_000_000 * mp.input_price_per_million
+                + tokens_out / 1_000_000 * mp.output_price_per_million
             )
             savings = float(row.total_cost) - alt_cost
             alternatives.append(

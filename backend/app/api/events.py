@@ -2,25 +2,31 @@ import json
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.config import settings
 from app.models.models import Agent, CostEvent
 from app.schemas.schemas import (
     EventIn,
     EventOut,
+    EventsEnvelope,
     EventsIngestionResponse,
     PaginatedEvents,
 )
-from app.services.budget_checker import check_budget_enforcement, check_budgets
+from app.services.budget_checker import (
+    check_budgets,
+    event_rejection_reason,
+    load_enforcement_state,
+)
 from app.services.cost_engine import calculate_cost
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/events", tags=["events"])
 
 
-def _process_event(event: EventIn, db: Session) -> CostEvent:
+def _process_event(event: EventIn, db: Session, cost: float) -> CostEvent:
     """Create a CostEvent from incoming data, auto-creating agent if needed."""
     # Auto-discover: create agent if it doesn't exist
     agent = db.query(Agent).filter(Agent.name == event.agent_name).first()
@@ -32,13 +38,6 @@ def _process_event(event: EventIn, db: Session) -> CostEvent:
         )
         db.add(agent)
         db.flush()
-
-    # Calculate cost if not provided
-    cost = event.cost
-    if cost is None:
-        cost = calculate_cost(
-            event.provider, event.model, event.tokens_input, event.tokens_output, db
-        )
 
     metadata_str = None
     if event.metadata is not None:
@@ -68,49 +67,67 @@ def _process_event(event: EventIn, db: Session) -> CostEvent:
 
 @router.post("", response_model=EventsIngestionResponse)
 def ingest_events(
-    body: EventIn | list[EventIn],
+    body: EventsEnvelope | list[EventIn] | EventIn,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    events = body if isinstance(body, list) else [body]
+    if isinstance(body, EventsEnvelope):
+        events = body.events
+    elif isinstance(body, list):
+        events = body
+    else:
+        events = [body]
+
+    if len(events) > settings.MAX_EVENTS_PER_REQUEST:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Batch too large: {len(events)} events "
+            f"(max {settings.MAX_EVENTS_PER_REQUEST})",
+        )
+
     processed = 0
     rejected = 0
     rejection_reasons: list[str] = []
+    created: list[CostEvent] = []
+
+    # Prefetch enforcement budgets + baseline spend once for the whole batch.
+    enforcement = load_enforcement_state(db)
 
     for event in events:
-        # Check budget enforcement BEFORE processing
-        accepted, reason = check_budget_enforcement(
-            agent_name=event.agent_name,
-            workflow=event.workflow,
-            swarm=event.swarm,
-            db=db,
+        cost = event.cost
+        if cost is None:
+            cost = calculate_cost(
+                event.provider,
+                event.model,
+                event.tokens_input,
+                event.tokens_output,
+                db,
+            )
+
+        reason = event_rejection_reason(
+            enforcement, event.agent_name, event.workflow, event.swarm, cost
         )
-        if not accepted:
+        if reason:
             rejected += 1
-            if reason and reason not in rejection_reasons:
+            if reason not in rejection_reasons:
                 rejection_reasons.append(reason)
             continue
 
+        # Isolate each event in a savepoint so one failure can't poison the batch.
         try:
-            _process_event(event, db)
+            with db.begin_nested():
+                cost_event = _process_event(event, db, cost)
+                db.flush()  # materialise the INSERT so cost_event.id is populated
+            created.append(cost_event)
             processed += 1
         except Exception:
             logger.exception("Failed to process event")
 
+    # IDs are assigned by the savepoint flush above — collect them now (before
+    # commit expires the instances) rather than racing a post-commit
+    # "ORDER BY id DESC LIMIT n" query.
+    event_ids = [e.id for e in created]
     db.commit()
-
-    # Collect IDs of successfully processed events for embedding
-    event_ids = (
-        [
-            e.id
-            for e in db.query(CostEvent)
-            .order_by(CostEvent.id.desc())
-            .limit(processed)
-            .all()
-        ]
-        if processed > 0
-        else []
-    )
 
     # Check budgets in background
     def _bg_check():

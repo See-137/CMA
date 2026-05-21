@@ -4,7 +4,7 @@ services:
     environment:
       POSTGRES_DB: cma
       POSTGRES_USER: cma
-      POSTGRES_PASSWORD: cma_dev_password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cma_dev_password}
     volumes:
       - pg-data:/var/lib/postgresql/data
     healthcheck:
@@ -22,7 +22,7 @@ services:
       - ./backend/app:/app/app:ro
       - chroma-data:/app/data/chroma
     environment:
-      - CMA_DATABASE_URL=postgresql://cma:cma_dev_password@postgres:5432/cma
+      - CMA_DATABASE_URL=postgresql://cma:${POSTGRES_PASSWORD:-cma_dev_password}@postgres:5432/cma
       - CMA_CORS_ORIGINS=["http://localhost:5173","http://localhost:3000"]
       - CMA_CHROMA_PERSIST_DIR=/app/data/chroma
       - CMA_LLM_PROVIDER=ollama

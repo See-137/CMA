@@ -38,18 +38,35 @@ def prune_old_events(db: Session) -> int:
     dates = [r.date for r in rolled_up_dates]
 
     deleted = 0
+    pruned_ids: list[int] = []
     for d in dates:
         start = datetime.combine(d, datetime.min.time())
         end = start + timedelta(days=1)
-        count = (
+        ids = [
+            row.id
+            for row in db.query(CostEvent.id).filter(
+                CostEvent.timestamp >= start, CostEvent.timestamp < end
+            )
+        ]
+        if not ids:
+            continue
+        pruned_ids.extend(ids)
+        deleted += (
             db.query(CostEvent)
             .filter(CostEvent.timestamp >= start, CostEvent.timestamp < end)
             .delete(synchronize_session=False)
         )
-        deleted += count
 
     if deleted:
         db.commit()
+        # Drop the corresponding embeddings so the vector cache doesn't keep
+        # citing events that no longer exist in the source-of-truth DB.
+        try:
+            from app.services.vector_store import delete_events
+
+            delete_events(pruned_ids)
+        except Exception:
+            logger.warning("Failed to prune event embeddings", exc_info=True)
         logger.info("Retention: pruned %d events older than %s", deleted, cutoff_date)
 
     return deleted

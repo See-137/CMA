@@ -1,23 +1,18 @@
-import hashlib
+import hmac
 
 import bcrypt
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db
+from app.api.deps import _verify_password, get_db
+from app.config import settings
 from app.models.models import SetupConfig
 from app.schemas.schemas import LoginRequest, LoginResponse
+from app.services.rate_limit import rate_limit
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-
-def _verify_password(plain: str, hashed: str) -> bool:
-    """Check password against hash. Supports both bcrypt and legacy SHA-256."""
-    # Try bcrypt first
-    if hashed.startswith("$2b$") or hashed.startswith("$2a$"):
-        return bcrypt.checkpw(plain.encode(), hashed.encode())
-    # Legacy SHA-256 fallback
-    return hashlib.sha256(plain.encode()).hexdigest() == hashed
+_login_limit = rate_limit("login", lambda: settings.RATE_LIMIT_LOGIN_PER_MINUTE)
 
 
 def _needs_rehash(hashed: str) -> bool:
@@ -25,15 +20,17 @@ def _needs_rehash(hashed: str) -> bool:
     return not (hashed.startswith("$2b$") or hashed.startswith("$2a$"))
 
 
-@router.post("/login", response_model=LoginResponse)
+@router.post(
+    "/login", response_model=LoginResponse, dependencies=[Depends(_login_limit)]
+)
 def login(body: LoginRequest, db: Session = Depends(get_db)):
     config = db.query(SetupConfig).first()
     if not config or not config.is_setup_complete:
         raise HTTPException(status_code=400, detail="Setup not completed")
 
-    if config.admin_email != body.email or not _verify_password(
-        body.password, config.admin_password_hash
-    ):
+    email_ok = hmac.compare_digest(config.admin_email, body.email)
+    password_ok = _verify_password(body.password, config.admin_password_hash)
+    if not (email_ok and password_ok):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     # Transparently upgrade legacy SHA-256 hashes to bcrypt on successful login

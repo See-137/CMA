@@ -186,6 +186,20 @@ def delete_event(event_id: int) -> None:
         logger.debug("Failed to delete event %d from vector store", event_id)
 
 
+def delete_events(event_ids: list[int]) -> None:
+    """Best-effort batch removal of event embeddings (called on retention prune)."""
+    if not event_ids:
+        return
+    try:
+        get_events_collection().delete(ids=[str(i) for i in event_ids])
+    except Exception:
+        logger.warning(
+            "Failed to delete %d event embeddings from vector store",
+            len(event_ids),
+            exc_info=True,
+        )
+
+
 def clear_vector_store() -> None:
     """Delete all documents from both ChromaDB collections (called on DB reset)."""
     client = get_chroma_client()

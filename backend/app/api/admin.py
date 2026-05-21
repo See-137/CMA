@@ -6,22 +6,26 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db
+from app.api.deps import get_db, require_admin
+from app.config import settings
 from app.models.models import CostEvent, Agent, Budget, Alert, SetupConfig
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 logger = logging.getLogger(__name__)
 
+# Admin password (not the shared API key) is required for destructive/sensitive
+# operations — a leaked ingest token must not be able to wipe or exfiltrate data.
+admin_only = [Depends(require_admin)]
+
 
 @router.get("/status")
 def system_status(db: Session = Depends(get_db)):
     """System health and stats."""
-    db_path = os.path.join("data", "cma.db")
-    db_size_mb = (
-        round(os.path.getsize(db_path) / (1024 * 1024), 2)
-        if os.path.exists(db_path)
-        else 0
-    )
+    db_size_mb = 0
+    if settings.DATABASE_URL.startswith("sqlite"):
+        db_path = os.path.join("data", "cma.db")
+        if os.path.exists(db_path):
+            db_size_mb = round(os.path.getsize(db_path) / (1024 * 1024), 2)
 
     config = db.query(SetupConfig).first()
 
@@ -46,7 +50,7 @@ def system_status(db: Session = Depends(get_db)):
     }
 
 
-@router.get("/logs")
+@router.get("/logs", dependencies=admin_only)
 def recent_logs():
     """Return recent application log lines."""
     log_file = os.path.join("data", "cma.log")
@@ -60,7 +64,7 @@ def recent_logs():
     return {"lines": [line.rstrip() for line in lines[-100:]]}
 
 
-@router.post("/reset")
+@router.post("/reset", dependencies=admin_only)
 def reset_database(db: Session = Depends(get_db)):
     """Clear all data but keep setup config. Returns fresh state."""
     # Delete in order to respect foreign keys
@@ -93,7 +97,7 @@ def reset_database(db: Session = Depends(get_db)):
     }
 
 
-@router.post("/reset-full")
+@router.post("/reset-full", dependencies=admin_only)
 def full_reset(db: Session = Depends(get_db)):
     """Nuclear reset - clears everything including setup. User must re-run wizard."""
     db.execute(text("DELETE FROM alerts"))
@@ -120,7 +124,7 @@ def full_reset(db: Session = Depends(get_db)):
     }
 
 
-@router.get("/export")
+@router.get("/export", dependencies=admin_only)
 def export_summary(db: Session = Depends(get_db)):
     """Export a summary of all data as JSON for backup."""
     events = db.query(CostEvent).order_by(CostEvent.timestamp.desc()).limit(1000).all()
