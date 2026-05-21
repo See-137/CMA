@@ -5,7 +5,7 @@
 - **Frontend**: React 18 / TypeScript / Vite / Tailwind CSS / Recharts
 - **RAG**: ChromaDB (embedded) + sentence-transformers (all-MiniLM-L6-v2) + configurable LLM (OpenAI or Ollama)
 - **SDK**: Python client (`sdks/python/cost_monitor/`) with auto-instrumentation for OpenAI, Anthropic, LangChain
-- **Auth**: Bearer token in `Authorization` header, plaintext API key comparison (not hashed despite bcrypt import)
+- **Auth**: Bearer token in `Authorization` header, constant-time comparison (`hmac.compare_digest`). Destructive/sensitive admin endpoints require a separate `X-Admin-Password` (admin scope ≠ ingest key). API key stored plaintext (recoverable for the reconnect flow); admin password is bcrypt-hashed.
 
 ## Running locally
 ```powershell
@@ -22,17 +22,19 @@ cma-dev.bat sk-proj-YOUR-KEY
 - Frontend: http://localhost:5173 (vite dev)
 - API docs: http://localhost:8000/docs
 - Health: http://localhost:8000/health
+- Schema is managed by **Alembic** — run `cd backend; alembic upgrade head` before first start (the Docker entrypoint does this automatically)
 
 ## Running tests
 ```powershell
 cd backend; pytest
 ```
-- ~22 tests across 5 modules, in-memory SQLite, fixtures in `conftest.py`
+- ~37 tests across 6 modules, isolated SQLite (schema built from models in `conftest.py`)
 - `test_events.py` — ingestion, auto-discovery, cost calc
 - `test_auth.py` — setup + login
 - `test_budgets.py` — enforcement + threshold alerts
 - `test_dashboard.py` — metrics + rollups
 - `test_setup.py` — initial setup flow
+- `test_regressions.py` — envelope contract, embedder IDs, batch enforcement, admin gating, SSRF, rate limiting
 - No frontend tests yet (no vitest/jest configured)
 - Always run before committing
 
@@ -45,6 +47,7 @@ cd backend; pytest
 
 ## Architecture decisions
 - **ChromaDB is a cache, not source of truth** — SQL DB is authoritative, vector store rebuilt via backfill
+- **Alembic owns the schema** — migrations are authoritative (`alembic upgrade head`); the app no longer runs `create_all`
 - **Intent detection via regex, not LLM** — ~1ms vs ~500ms, LLM only for final answer generation
 - **httpx for LLM calls, no SDK** — already a dependency, avoids version lock-in
 - **Background embedding** — event ingestion stays fast, embedding happens async (BackgroundTasks)
@@ -96,7 +99,7 @@ Indexes on: `CostEvent.timestamp`, `CostEvent.agent_name`
 | `backend/app/api/chat.py` | RAG chat endpoints (non-streaming + SSE) |
 | `backend/app/api/admin.py` | Reset endpoints — clears both SQL AND ChromaDB |
 | `backend/app/api/deps.py` | Auth middleware — API key validation, DB session injection |
-| `backend/app/main.py` | Lifespan: create tables, seed providers, daily maintenance loop |
+| `backend/app/main.py` | Lifespan: seed providers + gated daily maintenance loop (schema via Alembic, not `create_all`) |
 | `frontend/src/pages/Chat.tsx` | Full-page Scrooge chat interface |
 | `frontend/src/hooks/useChat.ts` | SSE streaming chat hook with citations |
 | `frontend/src/api/client.ts` | REST + SSE client, auto-clears key on 503 (setup reset) |
@@ -105,15 +108,15 @@ Indexes on: `CostEvent.timestamp`, `CostEvent.agent_name`
 ## API structure
 - Base: `/api/v1`
 - Auth: `Authorization: Bearer <api_key>` on all routes except `/setup`, `/auth/login`
-- Event ingestion: `POST /api/v1/events` (single or batch array)
+- Event ingestion: `POST /api/v1/events` (single, bare array, or `{"events": [...]}` envelope; batch capped by `CMA_MAX_EVENTS_PER_REQUEST`)
 - Chat: `POST /api/v1/chat/stream` (SSE), `POST /api/v1/chat` (non-streaming)
 - Semantic search: `POST /api/v1/search/semantic`
-- Admin: `POST /api/v1/admin/reset` (monitoring only), `POST /api/v1/admin/reset-full` (everything)
+- Admin: `POST /api/v1/admin/reset` (monitoring only), `POST /api/v1/admin/reset-full` (everything) — destructive/sensitive admin routes (reset, reset-full, export, logs) require an `X-Admin-Password` header
 - Full Swagger at `/docs`
 
 ## Background tasks
 - **On event ingestion**: embed to ChromaDB + check budgets (via FastAPI BackgroundTasks)
-- **Daily maintenance** (runs every 24h after 10s startup delay in `main.py` lifespan):
+- **Daily maintenance** (every 24h after 10s startup delay; gated by `CMA_ENABLE_MAINTENANCE`, default on — disable on all but one worker/replica):
   - `compute_daily_rollups()` — aggregate yesterday's events
   - `backfill_event_embeddings()` — catch any un-embedded events
   - `prune_old_events()` — retention cleanup
@@ -141,6 +144,7 @@ docker compose up -d
 - API key stored as plaintext in SetupConfig despite bcrypt being imported — password uses hash, key does not
 - On Windows, npm/npx are .cmd shims — `Start-Process` needs `cmd.exe /c npm`, not `npm` directly
 - Vite proxy (`/api` -> localhost:8000) only works in dev; prod nginx handles routing
+- `frontend/package-lock.json` is **committed** (keep it so) — CI/local/Docker install identical deps. A floating lockfile previously broke `frontend-build` twice (stricter TS; `simple-icons` dropping the trademarked OpenAI logo, now inlined). Tests create the `data/` dir + use an isolated DB since Alembic, not `create_all`, owns the schema.
 
 ## Scrooge (RAG assistant)
 - Personality defined in `SYSTEM_PROMPT` in `rag_engine.py`
@@ -151,7 +155,7 @@ docker compose up -d
 
 ## Known limitations
 - No frontend tests (vitest/jest not configured)
-- No rate limiting on event ingestion or chat endpoints
+- Event ingestion has a batch-size cap but no per-request-rate limit (login + chat are rate-limited in-process, per-IP)
 - No WebSocket — Dashboard uses polling, Chat uses SSE
 - Trace ID stored but no trace tree visualization
 - Alert channels limited to webhook, Slack, in-app (no email/Discord)
