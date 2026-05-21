@@ -31,6 +31,18 @@ async function handleResponse<T>(response: Response): Promise<T> {
       window.location.href = '/setup';
       throw new ApiError('Setup required', 503, null);
     }
+    // Stale/expired key — we believed we were authenticated but the server
+    // rejects us. Self-heal: drop the bad key and bounce to the login screen.
+    // Guarded so we don't hijack the login form's own 401 (wrong credentials).
+    if (
+      response.status === 401 &&
+      localStorage.getItem('api_key') &&
+      window.location.pathname !== '/setup'
+    ) {
+      localStorage.removeItem('api_key');
+      window.location.href = '/setup';
+      throw new ApiError('Session expired', 401, null);
+    }
     const text = await response.text();
     let body: unknown;
     try {
