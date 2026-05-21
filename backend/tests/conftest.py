@@ -1,13 +1,23 @@
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+import os
 
-from app.database import Base, get_db
-from app.main import app
-from app.seed import seed_providers
-from app.services.rate_limit import reset as reset_rate_limit
+# Isolate the app engine to a throwaway DB and disable the background loop BEFORE
+# importing the app — schema is now Alembic-managed, so app startup no longer
+# creates tables; the app lifespan still seeds providers against this engine.
+# (setdefault keeps an explicit CMA_DATABASE_URL override working.)
+os.environ.setdefault("CMA_DATABASE_URL", "sqlite:///./data/test_suite.db")
+os.environ.setdefault("CMA_ENABLE_MAINTENANCE", "false")
+os.makedirs("data", exist_ok=True)  # data/ is gitignored — absent on fresh CI checkouts
+
+import pytest  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.orm import sessionmaker  # noqa: E402
+from sqlalchemy.pool import StaticPool  # noqa: E402
+
+from app.database import Base, engine, get_db  # noqa: E402
+from app.main import app  # noqa: E402
+from app.seed import seed_providers  # noqa: E402
+from app.services.rate_limit import reset as reset_rate_limit  # noqa: E402
 
 # In-memory SQLite for tests
 TEST_ENGINE = create_engine(
@@ -29,7 +39,10 @@ def override_get_db():
 @pytest.fixture(autouse=True)
 def setup_db():
     """Create fresh tables for each test and seed provider pricing."""
+    # Test request DB (in-memory, via the get_db override) ...
     Base.metadata.create_all(bind=TEST_ENGINE)
+    # ... and the app's own engine, which the lifespan seeds on startup.
+    Base.metadata.create_all(bind=engine)
     reset_rate_limit()  # in-process limiter is global; isolate per test
     db = TestSession()
     try:
@@ -38,6 +51,7 @@ def setup_db():
         db.close()
     yield
     Base.metadata.drop_all(bind=TEST_ENGINE)
+    Base.metadata.drop_all(bind=engine)
 
 
 @pytest.fixture

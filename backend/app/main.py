@@ -18,7 +18,7 @@ from app.api import (
 from app.api.admin import router as admin_router
 from app.api.deps import require_api_key
 from app.config import settings
-from app.database import Base, SessionLocal, engine
+from app.database import SessionLocal
 from app.seed import seed_providers
 
 logging.basicConfig(level=logging.INFO)
@@ -68,9 +68,8 @@ async def lifespan(app: FastAPI):
     logger.info("Starting CMA backend...")
     if settings.DATABASE_URL.startswith("sqlite"):
         os.makedirs("data", exist_ok=True)
-    Base.metadata.create_all(bind=engine)
-    logger.info("Database tables created/verified")
-
+    # Schema is managed by Alembic — run `alembic upgrade head` (the Docker
+    # entrypoint does this automatically; for local dev run it before starting).
     db = SessionLocal()
     try:
         seed_providers(db)
