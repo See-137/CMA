@@ -6,6 +6,7 @@ import os
 # (setdefault keeps an explicit CMA_DATABASE_URL override working.)
 os.environ.setdefault("CMA_DATABASE_URL", "sqlite:///./data/test_suite.db")
 os.environ.setdefault("CMA_ENABLE_MAINTENANCE", "false")
+os.makedirs("data", exist_ok=True)  # data/ is gitignored — absent on fresh CI checkouts
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
