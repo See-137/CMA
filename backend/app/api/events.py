@@ -21,6 +21,7 @@ from app.services.budget_checker import (
     load_enforcement_state,
 )
 from app.services.cost_engine import calculate_cost
+from app.timeutils import utcnow
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/events", tags=["events"])
@@ -43,7 +44,7 @@ def _process_event(event: EventIn, db: Session, cost: float) -> CostEvent:
     if event.metadata is not None:
         metadata_str = json.dumps(event.metadata)
 
-    timestamp = event.timestamp if event.timestamp else datetime.utcnow()
+    timestamp = event.timestamp if event.timestamp else utcnow()
 
     cost_event = CostEvent(
         trace_id=event.trace_id,

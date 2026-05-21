@@ -1,5 +1,4 @@
 import json
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -8,6 +7,7 @@ from app.api.deps import get_db
 from app.models.models import Alert, AlertChannel
 from app.schemas.schemas import AlertChannelCreate, AlertChannelOut, AlertOut
 from app.services.alert_service import UnsafeWebhookURL, validate_external_url
+from app.timeutils import utcnow
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
 
@@ -25,7 +25,7 @@ def resolve_alert(alert_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Alert not found")
 
     alert.is_resolved = True
-    alert.resolved_at = datetime.utcnow()
+    alert.resolved_at = utcnow()
     db.commit()
     db.refresh(alert)
     return AlertOut.model_validate(alert)

@@ -19,6 +19,7 @@ from app.schemas.schemas import (
     TopAgentsResponse,
 )
 from app.services.budget_checker import _current_spend
+from app.timeutils import utcnow
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -39,7 +40,7 @@ def _format_timestamp(granularity: str):
 
 def _period_bounds(period: str) -> tuple[datetime, datetime]:
     """Return (start, end) for a named period."""
-    now = datetime.utcnow()
+    now = utcnow()
     if period == "today":
         start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     elif period == "week":
@@ -60,7 +61,7 @@ def _period_bounds(period: str) -> tuple[datetime, datetime]:
 
 def _prev_period_bounds(period: str) -> tuple[datetime, datetime]:
     """Return bounds for the previous equivalent period (for change %)."""
-    now = datetime.utcnow()
+    now = utcnow()
     if period == "today":
         end = now.replace(hour=0, minute=0, second=0, microsecond=0)
         start = end - timedelta(days=1)

@@ -1,6 +1,5 @@
-import os
 import logging
-from datetime import datetime
+import os
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, text
@@ -8,7 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_admin
 from app.config import settings
-from app.models.models import CostEvent, Agent, Budget, Alert, SetupConfig
+from app.models.models import Agent, Alert, Budget, CostEvent, SetupConfig
+from app.timeutils import utcnow
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 logger = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ def system_status(db: Session = Depends(get_db)):
         "status": "running",
         "version": "0.1.0",
         "deployment_name": config.deployment_name if config else "CMA",
-        "uptime_check": datetime.utcnow().isoformat(),
+        "uptime_check": utcnow().isoformat(),
         "database": {
             "size_mb": db_size_mb,
             "total_events": db.query(func.count(CostEvent.id)).scalar() or 0,
@@ -131,7 +131,7 @@ def export_summary(db: Session = Depends(get_db)):
     agents = db.query(Agent).all()
 
     return {
-        "exported_at": datetime.utcnow().isoformat(),
+        "exported_at": utcnow().isoformat(),
         "agents": [
             {
                 "name": a.name,

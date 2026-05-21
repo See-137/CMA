@@ -6,13 +6,14 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.models import Alert, Budget, CostEvent
+from app.timeutils import utcnow
 
 logger = logging.getLogger(__name__)
 
 
 def _period_start(period: str) -> datetime:
     """Return the start-of-period datetime for the given budget period."""
-    now = datetime.utcnow()
+    now = utcnow()
     if period == "daily":
         return now.replace(hour=0, minute=0, second=0, microsecond=0)
     elif period == "weekly":

@@ -2,7 +2,6 @@ import ipaddress
 import json
 import logging
 import socket
-from datetime import datetime
 from urllib.parse import urlparse
 
 import httpx
@@ -10,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.models import Alert, AlertChannel
+from app.timeutils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ def _send_webhook(alert: Alert, config: dict) -> None:
         "type": alert.alert_type,
         "severity": alert.severity,
         "message": alert.message,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": utcnow().isoformat(),
     }
     with httpx.Client(timeout=10, follow_redirects=False) as client:
         resp = client.post(url, json=payload)
