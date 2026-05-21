@@ -9,18 +9,19 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import EmptyState from '../components/EmptyState';
 import type { Provider, Model } from '../types';
 
+/** Format a per-million price to 2 dp */
 const formatPrice = (v: number) => `$${v.toFixed(2)}`;
 
-const providerTypeVariant = (type: string) => {
+const providerTypeVariant = (type: string): 'info' | 'warning' | 'success' | 'default' => {
   switch (type.toLowerCase()) {
     case 'openai':
-      return 'info' as const;
+      return 'info';
     case 'anthropic':
-      return 'warning' as const;
+      return 'warning';
     case 'google':
-      return 'success' as const;
+      return 'success';
     default:
-      return 'default' as const;
+      return 'default';
   }
 };
 
@@ -30,6 +31,9 @@ const Providers: React.FC = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [confirmProviderId, setConfirmProviderId] = useState<number | null>(null);
   const [deletingProvider, setDeletingProvider] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [pricingError, setPricingError] = useState<string | null>(null);
   const [editingModel, setEditingModel] = useState<{
     id: number;
     inputPrice: string;
@@ -42,6 +46,7 @@ const Providers: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setCreateError(null);
     try {
       await api.post('/api/v1/providers', {
         name: formData.name,
@@ -52,11 +57,12 @@ const Providers: React.FC = () => {
       setFormData({ name: '', provider_type: 'openai' });
       refetch();
     } catch (err) {
-      console.error('Failed to create provider:', err);
+      setCreateError(err instanceof Error ? err.message : 'Failed to add provider. Try again.');
     }
   };
 
   const startEditing = (model: Model) => {
+    setPricingError(null);
     setEditingModel({
       id: model.id,
       inputPrice: model.input_price_per_million.toString(),
@@ -66,75 +72,110 @@ const Providers: React.FC = () => {
 
   const cancelEditing = () => {
     setEditingModel(null);
+    setPricingError(null);
   };
 
   const handleDeleteProvider = async () => {
     if (confirmProviderId === null) return;
     setDeletingProvider(true);
+    setDeleteError(null);
     try {
       await api.delete(`/api/v1/providers/${confirmProviderId}`);
       refetch();
+      setConfirmProviderId(null);
     } catch (err) {
-      console.error('Failed to delete provider:', err);
+      setDeleteError(
+        err instanceof Error ? err.message : 'Failed to remove provider. Try again.'
+      );
     } finally {
       setDeletingProvider(false);
-      setConfirmProviderId(null);
     }
   };
 
   const saveEditing = async () => {
     if (!editingModel) return;
+    setPricingError(null);
+    const inputPrice = parseFloat(editingModel.inputPrice);
+    const outputPrice = parseFloat(editingModel.outputPrice);
+    if (Number.isNaN(inputPrice) || Number.isNaN(outputPrice)) {
+      setPricingError('Both prices must be numbers.');
+      return;
+    }
     try {
       await api.put(`/api/v1/models/${editingModel.id}`, {
-        input_price_per_million: parseFloat(editingModel.inputPrice),
-        output_price_per_million: parseFloat(editingModel.outputPrice),
+        input_price_per_million: inputPrice,
+        output_price_per_million: outputPrice,
       });
       setEditingModel(null);
       refetch();
     } catch (err) {
-      console.error('Failed to save model pricing:', err);
-      // Keep editing form open so user can retry
+      // Keep editing form open so the clerk can retry
+      setPricingError(
+        err instanceof Error ? err.message : 'Failed to save pricing. Try again.'
+      );
     }
   };
 
-  if (loading) return <LoadingSpinner text="Loading providers..." />;
+  if (loading) return <LoadingSpinner text="Consulting the price book…" size="lg" />;
   if (error)
     return (
-      <div className="text-center py-12">
-        <p className="text-rose-600">{error}</p>
+      <div className="card-ledger mx-auto max-w-md p-8 text-center">
+        <p className="font-display text-lg text-oxblood-600 dark:text-oxblood-300">{error}</p>
         <button onClick={refetch} className="btn-primary mt-4">
-          Retry
+          Try Again
         </button>
       </div>
     );
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      {/* Header */}
+      <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Providers</h1>
-          <p className="text-sm text-slate-500 mt-1">Manage LLM providers and model pricing</p>
+          <p className="eyebrow">Counting House · Suppliers</p>
+          <h1 className="font-display text-3xl font-semibold tracking-tight text-primary">
+            Providers
+          </h1>
+          <p className="mt-1 text-sm text-muted">
+            The houses that supply the intelligence — and their tariff sheets.
+          </p>
         </div>
-        <button onClick={() => setModalOpen(true)} className="btn-primary gap-2">
+        <button
+          onClick={() => {
+            setCreateError(null);
+            setModalOpen(true);
+          }}
+          className="btn-primary gap-2"
+        >
           <Plus className="h-4 w-4" />
           Add Provider
         </button>
-      </div>
+      </header>
+
+      {/* Delete error notice */}
+      {deleteError && (
+        <div className="rounded-lg border border-[color:var(--color-danger)] bg-oxblood-500/8 px-4 py-3 text-sm text-oxblood-600 dark:text-oxblood-300">
+          {deleteError}
+        </div>
+      )}
 
       {providers && providers.length > 0 ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
           {providers.map((provider) => {
             const isExpanded = expandedId === provider.id;
             return (
-              <div key={provider.id} className="card overflow-hidden">
+              <div key={provider.id} className="card-ledger overflow-hidden">
+                {/* Card header — click to expand */}
                 <div
-                  className="p-5 cursor-pointer"
+                  className="cursor-pointer p-5"
                   onClick={() => setExpandedId(isExpanded ? null : provider.id)}
                 >
                   <div className="flex items-start justify-between">
                     <div>
-                      <h3 className="text-base font-semibold text-slate-900">{provider.name}</h3>
-                      <div className="flex items-center gap-2 mt-2">
+                      <h3 className="font-display text-base font-semibold text-primary">
+                        {provider.name}
+                      </h3>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
                         <Badge
                           text={provider.provider_type}
                           variant={providerTypeVariant(provider.provider_type)}
@@ -146,51 +187,66 @@ const Providers: React.FC = () => {
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="text-xs text-slate-500">
+                      <span className="text-xs text-muted">
                         {provider.models.length} model{provider.models.length !== 1 ? 's' : ''}
                       </span>
                       <button
-                        onClick={(e) => { e.stopPropagation(); setConfirmProviderId(provider.id); }}
-                        className="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
-                        title="Delete provider"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDeleteError(null);
+                          setConfirmProviderId(provider.id);
+                        }}
+                        className="rounded p-1 text-muted transition-colors hover:bg-oxblood-500/10 hover:text-oxblood-600 dark:hover:text-oxblood-300"
+                        title="Remove provider"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
                       {isExpanded ? (
-                        <ChevronUp className="h-4 w-4 text-slate-400" />
+                        <ChevronUp className="h-4 w-4 text-muted" />
                       ) : (
-                        <ChevronDown className="h-4 w-4 text-slate-400" />
+                        <ChevronDown className="h-4 w-4 text-muted" />
                       )}
                     </div>
                   </div>
                 </div>
 
+                {/* Pricing table — shown when expanded */}
                 {isExpanded && (
-                  <div className="border-t border-slate-200">
+                  <div className="border-t border-[color:var(--color-border)]">
+                    {/* Per-provider pricing error */}
+                    {pricingError && editingModel !== null &&
+                      provider.models.some((m) => m.id === editingModel.id) && (
+                        <div className="mx-4 mt-3 rounded-lg border border-[color:var(--color-danger)] bg-oxblood-500/8 px-3 py-2 text-xs text-oxblood-600 dark:text-oxblood-300">
+                          {pricingError}
+                        </div>
+                      )}
                     {provider.models.length > 0 ? (
                       <table className="w-full text-sm">
                         <thead>
-                          <tr className="bg-slate-50">
-                            <th className="px-4 py-2 text-left text-xs font-semibold text-slate-600">
+                          <tr className="bg-surface-2">
+                            <th className="px-4 py-2 text-left text-[11px] font-semibold uppercase tracking-wider text-muted">
                               Model
                             </th>
-                            <th className="px-4 py-2 text-left text-xs font-semibold text-slate-600">
+                            <th className="px-4 py-2 text-left text-[11px] font-semibold uppercase tracking-wider text-muted">
                               Input $/M
                             </th>
-                            <th className="px-4 py-2 text-left text-xs font-semibold text-slate-600">
+                            <th className="px-4 py-2 text-left text-[11px] font-semibold uppercase tracking-wider text-muted">
                               Output $/M
                             </th>
-                            <th className="px-4 py-2 text-right text-xs font-semibold text-slate-600">
+                            <th className="px-4 py-2 text-right text-[11px] font-semibold uppercase tracking-wider text-muted">
                               Actions
                             </th>
                           </tr>
                         </thead>
-                        <tbody className="divide-y divide-slate-100">
+                        <tbody className="divide-y divide-[color:var(--color-border)]">
                           {provider.models.map((model) => (
-                            <tr key={model.id} className="hover:bg-slate-50">
+                            <tr
+                              key={model.id}
+                              className="transition-colors hover:bg-surface-2"
+                            >
                               <td className="px-4 py-2.5">
                                 <div className="flex items-center gap-2">
-                                  <span className="font-medium text-slate-700">
+                                  <span className="font-medium text-primary">
                                     {model.model_name}
                                   </span>
                                   {!model.is_active && (
@@ -214,7 +270,9 @@ const Providers: React.FC = () => {
                                     onClick={(e) => e.stopPropagation()}
                                   />
                                 ) : (
-                                  formatPrice(model.input_price_per_million)
+                                  <span className="numeral text-secondary">
+                                    {formatPrice(model.input_price_per_million)}
+                                  </span>
                                 )}
                               </td>
                               <td className="px-4 py-2.5">
@@ -233,7 +291,9 @@ const Providers: React.FC = () => {
                                     onClick={(e) => e.stopPropagation()}
                                   />
                                 ) : (
-                                  formatPrice(model.output_price_per_million)
+                                  <span className="numeral text-secondary">
+                                    {formatPrice(model.output_price_per_million)}
+                                  </span>
                                 )}
                               </td>
                               <td className="px-4 py-2.5 text-right">
@@ -244,7 +304,8 @@ const Providers: React.FC = () => {
                                         e.stopPropagation();
                                         saveEditing();
                                       }}
-                                      className="p-1 rounded text-emerald-600 hover:bg-emerald-50"
+                                      className="rounded p-1 text-brand-600 transition-colors hover:bg-brand-500/10 dark:text-brand-300"
+                                      title="Save pricing"
                                     >
                                       <Check className="h-3.5 w-3.5" />
                                     </button>
@@ -253,7 +314,8 @@ const Providers: React.FC = () => {
                                         e.stopPropagation();
                                         cancelEditing();
                                       }}
-                                      className="p-1 rounded text-slate-400 hover:bg-slate-100"
+                                      className="rounded p-1 text-muted transition-colors hover:bg-surface-2"
+                                      title="Cancel"
                                     >
                                       <X className="h-3.5 w-3.5" />
                                     </button>
@@ -264,7 +326,8 @@ const Providers: React.FC = () => {
                                       e.stopPropagation();
                                       startEditing(model);
                                     }}
-                                    className="p-1 rounded text-slate-400 hover:text-teal-600 hover:bg-teal-50"
+                                    className="rounded p-1 text-muted transition-colors hover:bg-gold-400/10 hover:text-gold-700 dark:hover:text-gold-300"
+                                    title="Edit pricing"
                                   >
                                     <Pencil className="h-3.5 w-3.5" />
                                   </button>
@@ -275,7 +338,9 @@ const Providers: React.FC = () => {
                         </tbody>
                       </table>
                     ) : (
-                      <p className="text-sm text-slate-500 p-4 text-center">No models configured</p>
+                      <p className="p-4 text-center text-sm text-muted">
+                        No tariff sheet — models are added automatically on first use.
+                      </p>
                     )}
                   </div>
                 )}
@@ -286,15 +351,21 @@ const Providers: React.FC = () => {
       ) : (
         <div className="card">
           <EmptyState
-            title="No providers"
-            description="Add your first LLM provider to start tracking costs."
+            title="No suppliers on the books"
+            description="Add your first LLM provider to begin tracking costs."
             action={{ label: 'Add Provider', onClick: () => setModalOpen(true) }}
           />
         </div>
       )}
 
-      <Modal isOpen={modalOpen} onClose={() => setModalOpen(false)} title="Add Provider">
+      {/* Add Provider Modal */}
+      <Modal isOpen={modalOpen} onClose={() => setModalOpen(false)} title="Register a Provider">
         <form onSubmit={handleSubmit} className="space-y-4">
+          {createError && (
+            <div className="rounded-lg border border-[color:var(--color-danger)] bg-oxblood-500/8 px-4 py-3 text-sm text-oxblood-600 dark:text-oxblood-300">
+              {createError}
+            </div>
+          )}
           <div>
             <label className="label">Provider Name</label>
             <input
@@ -325,7 +396,7 @@ const Providers: React.FC = () => {
               Cancel
             </button>
             <button type="submit" className="btn-primary">
-              Add Provider
+              Register Provider
             </button>
           </div>
         </form>
@@ -333,11 +404,14 @@ const Providers: React.FC = () => {
 
       <ConfirmDialog
         isOpen={confirmProviderId !== null}
-        onClose={() => setConfirmProviderId(null)}
+        onClose={() => {
+          setConfirmProviderId(null);
+          setDeleteError(null);
+        }}
         onConfirm={handleDeleteProvider}
-        title="Delete provider"
-        description="This will deactivate the provider and all its models. Existing cost events will be preserved."
-        confirmLabel="Delete provider"
+        title="Remove provider"
+        description="This will deactivate the provider and all its models. Every farthing spent is preserved in the ledger."
+        confirmLabel="Remove"
         isLoading={deletingProvider}
       />
     </div>

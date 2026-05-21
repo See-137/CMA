@@ -35,16 +35,49 @@ type Category = {
   items: Integration[];
 };
 
+// ── Copy button ────────────────────────────────────────────────────────────────
+// Receives the REAL text to copy; the caller controls what is displayed.
+
+const CopyBtn: React.FC<{
+  text: string;
+  id: string;
+  copiedId: string | null;
+  onCopy: (text: string, id: string) => void;
+}> = ({ text, id, copiedId, onCopy }) => (
+  <button
+    onClick={(e) => {
+      e.stopPropagation();
+      onCopy(text, id);
+    }}
+    className={`inline-flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
+      copiedId === id
+        ? 'bg-brand-600 text-white'
+        : 'bg-ink-800 text-ink-300 hover:bg-ink-700 hover:text-white dark:bg-ink-900 dark:text-ink-400'
+    }`}
+  >
+    {copiedId === id ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+    {copiedId === id ? 'Copied!' : 'Copy'}
+  </button>
+);
+
+// ── Page ───────────────────────────────────────────────────────────────────────
+
 const Integrations: React.FC = () => {
   const [showApiKey, setShowApiKey] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [expandedCard, setExpandedCard] = useState<string | null>('auto');
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
-    new Set(['getting-started', 'llm-providers', 'observability', 'api'])
+    new Set(['getting-started', 'llm-providers', 'observability', 'api']),
   );
 
   const endpoint = window.location.origin;
-  const apiKey = localStorage.getItem('api_key') || '';
+  const apiKey = localStorage.getItem('api_key') ?? '';
+
+  // Masked key: first 6 chars + dots + last 4. Shown on-screen only.
+  // The real key is always sent to the clipboard.
+  const maskedKey = apiKey
+    ? `${apiKey.slice(0, 6)}${'•'.repeat(Math.max(0, apiKey.length - 10))}${apiKey.slice(-4)}`
+    : 'No API key found';
 
   const copyToClipboard = useCallback((text: string, id: string) => {
     navigator.clipboard.writeText(text).then(() => {
@@ -66,10 +99,8 @@ const Integrations: React.FC = () => {
     setExpandedCard((prev) => (prev === cardId ? null : cardId));
   };
 
-  const maskedKey = apiKey
-    ? apiKey.slice(0, 8) + '\u2022'.repeat(Math.max(0, apiKey.length - 12)) + apiKey.slice(-4)
-    : 'No API key found';
-
+  // inject: replaces placeholders with the real values for copy/execution.
+  // The display layer (maskedKey) is separate from the copy layer.
   const inject = (code: string): string =>
     code.replace(/YOUR_ENDPOINT/g, endpoint).replace(/YOUR_API_KEY/g, apiKey);
 
@@ -121,7 +152,8 @@ auto_instrument(
         {
           id: 'openai',
           title: 'OpenAI',
-          description: 'Track GPT-4o, GPT-4, GPT-3.5 completions with full control over metadata and workflows.',
+          description:
+            'Track GPT-4o, GPT-4, GPT-3.5 completions with full control over metadata and workflows.',
           icon: Code,
           badge: { text: 'Python', variant: 'info' },
           language: 'python',
@@ -152,7 +184,8 @@ tracker.log_event(
         {
           id: 'anthropic',
           title: 'Anthropic',
-          description: 'Track Claude 3.5 Sonnet, Opus, and Haiku usage with input/output token counts.',
+          description:
+            'Track Claude 3.5 Sonnet, Opus, and Haiku usage with input/output token counts.',
           icon: Code,
           badge: { text: 'Python', variant: 'info' },
           language: 'python',
@@ -224,7 +257,8 @@ with tracker.trace_request(agent="llama-agent", workflow="query-engine") as ctx:
         {
           id: 'langfuse',
           title: 'Langfuse',
-          description: 'Send LLM traces and cost data to Langfuse for deeper analytics and prompt debugging.',
+          description:
+            'Send LLM traces and cost data to Langfuse for deeper analytics and prompt debugging.',
           icon: Search,
           badge: { text: 'Export', variant: 'default' },
           language: 'python',
@@ -248,7 +282,8 @@ llm = ChatOpenAI(model="gpt-4o", callbacks=[langfuse_handler, cma_handler])`,
         {
           id: 'datadog',
           title: 'Datadog',
-          description: 'Export CMA cost metrics to Datadog via DogStatsD for dashboards and alerting.',
+          description:
+            'Export CMA cost metrics to Datadog via DogStatsD for dashboards and alerting.',
           icon: BarChart3,
           badge: { text: 'Export', variant: 'default' },
           language: 'python',
@@ -278,7 +313,8 @@ push_to_datadog("YOUR_ENDPOINT", "YOUR_API_KEY")`,
         {
           id: 'elastic',
           title: 'Elasticsearch',
-          description: 'Stream CMA events to Elasticsearch for full-text search, Kibana dashboards, and long-term analytics.',
+          description:
+            'Stream CMA events to Elasticsearch for full-text search, Kibana dashboards, and long-term analytics.',
           icon: Search,
           badge: { text: 'Export', variant: 'default' },
           language: 'python',
@@ -320,7 +356,8 @@ sync_to_elastic("YOUR_ENDPOINT", "YOUR_API_KEY")`,
         {
           id: 'prometheus',
           title: 'Prometheus',
-          description: 'Expose CMA metrics as a Prometheus scrape endpoint for Grafana dashboards.',
+          description:
+            'Expose CMA metrics as a Prometheus scrape endpoint for Grafana dashboards.',
           icon: BarChart3,
           badge: { text: 'Export', variant: 'default' },
           language: 'python',
@@ -416,46 +453,55 @@ curl YOUR_ENDPOINT/api/v1/dashboard/budget-status \\
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-slate-900">Integrations</h1>
-        <p className="text-sm text-slate-500 mt-1">
-          Connect your AI agents and export data to external platforms
+      <header>
+        <p className="eyebrow">Counting House</p>
+        <h1 className="font-display text-3xl font-semibold tracking-tight text-primary">
+          Integrations
+        </h1>
+        <p className="mt-1 text-sm text-muted">
+          Connect your agents and export data to the platforms of your choosing.
         </p>
-      </div>
+      </header>
 
       {/* Connection Info */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
-        <div className="flex items-center gap-2 mb-4">
-          <Plug className="h-5 w-5 text-teal-600" />
-          <h2 className="text-base font-semibold text-slate-900">Connection Info</h2>
+      <div className="card-ledger p-6">
+        <div className="mb-4 flex items-center gap-2">
+          <Plug className="h-5 w-5 text-gold" />
+          <h2 className="font-display text-base font-semibold text-primary">Connection Info</h2>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          {/* Endpoint */}
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1.5 uppercase tracking-wider">
-              API Endpoint
-            </label>
+            <label className="label">API Endpoint</label>
             <div className="flex items-center gap-2">
-              <div className="flex-1 bg-slate-900 text-green-400 font-mono text-sm px-3 py-2.5 rounded-lg truncate">
+              <div className="flex-1 truncate rounded-lg bg-ink-950 px-3 py-2.5 font-mono text-sm text-brand-300">
                 {endpoint}
               </div>
               <CopyBtn text={endpoint} id="endpoint" copiedId={copiedId} onCopy={copyToClipboard} />
             </div>
           </div>
+
+          {/* API Key — masked on screen, full value to clipboard */}
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1.5 uppercase tracking-wider">
+            <label className="label">
               API Key
+              <span className="ml-2 normal-case font-normal text-muted">
+                (masked — copy copies the full key)
+              </span>
             </label>
             <div className="flex items-center gap-2">
-              <div className="flex-1 bg-slate-900 text-green-400 font-mono text-sm px-3 py-2.5 rounded-lg truncate">
-                {showApiKey ? apiKey || 'No API key found' : maskedKey}
+              <div className="flex-1 truncate rounded-lg bg-ink-950 px-3 py-2.5 font-mono text-sm text-brand-300">
+                {showApiKey ? (apiKey || 'No API key found') : maskedKey}
               </div>
               <button
                 onClick={() => setShowApiKey((v) => !v)}
-                className="inline-flex items-center justify-center h-9 w-9 rounded-lg bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-700 transition-colors"
-                title={showApiKey ? 'Hide' : 'Show'}
+                className="btn-secondary h-9 w-9 p-0"
+                title={showApiKey ? 'Hide key' : 'Reveal key'}
+                aria-label={showApiKey ? 'Hide key' : 'Reveal key'}
               >
                 {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
+              {/* Copy always sends the real key */}
               <CopyBtn text={apiKey} id="apikey" copiedId={copiedId} onCopy={copyToClipboard} />
             </div>
           </div>
@@ -467,72 +513,81 @@ curl YOUR_ENDPOINT/api/v1/dashboard/budget-status \\
         {categories.map((cat) => {
           const isOpen = expandedCategories.has(cat.id);
           return (
-            <div key={cat.id} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-              {/* Category Header */}
+            <div key={cat.id} className="card overflow-hidden">
+              {/* Category header */}
               <button
                 onClick={() => toggleCategory(cat.id)}
-                className="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-slate-50 transition-colors"
+                className="flex w-full items-center justify-between px-6 py-4 text-left transition-colors hover:bg-surface-2"
               >
                 <div className="flex items-center gap-3">
-                  <div className="flex items-center justify-center h-10 w-10 rounded-xl bg-teal-50 text-teal-600">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-500/12 text-brand-700 dark:text-brand-300">
                     <cat.icon className="h-5 w-5" />
                   </div>
                   <div>
-                    <h2 className="text-sm font-semibold text-slate-900">{cat.title}</h2>
-                    <p className="text-xs text-slate-500">{cat.description}</p>
+                    <h2 className="text-sm font-semibold text-primary">{cat.title}</h2>
+                    <p className="text-xs text-muted">{cat.description}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-slate-400 font-medium">
+                  <span className="numeral text-xs text-muted">
                     {cat.items.length} integration{cat.items.length !== 1 ? 's' : ''}
                   </span>
                   <ChevronDown
-                    className={`h-4 w-4 text-slate-400 transition-transform duration-200 ${
+                    className={`h-4 w-4 text-muted transition-transform duration-200 ${
                       isOpen ? 'rotate-180' : ''
                     }`}
                   />
                 </div>
               </button>
 
-              {/* Category Items */}
+              {/* Category items */}
               {isOpen && (
-                <div className="border-t border-slate-100">
+                <div className="border-t border-token">
                   {cat.items.map((item, idx) => {
                     const isExpanded = expandedCard === item.id;
                     const resolvedCode = inject(item.code);
                     return (
                       <div
                         key={item.id}
-                        className={idx < cat.items.length - 1 ? 'border-b border-slate-100' : ''}
+                        className={
+                          idx < cat.items.length - 1
+                            ? 'border-b border-[color:var(--color-border)]'
+                            : ''
+                        }
                       >
-                        {/* Item Header */}
+                        {/* Item header */}
                         <button
                           onClick={() => toggleCard(item.id)}
-                          className="w-full flex items-center justify-between px-6 py-3.5 text-left hover:bg-slate-50/50 transition-colors"
+                          className="flex w-full items-center justify-between px-6 py-3.5 text-left transition-colors hover:bg-surface-2/60"
                         >
                           <div className="flex items-center gap-3">
-                            <item.icon className="h-4 w-4 text-slate-400" />
+                            <item.icon className="h-4 w-4 text-muted" />
                             <div>
                               <div className="flex items-center gap-2">
-                                <span className="text-sm font-medium text-slate-800">{item.title}</span>
+                                <span className="text-sm font-medium text-primary">
+                                  {item.title}
+                                </span>
                                 <Badge text={item.badge.text} variant={item.badge.variant} />
                               </div>
-                              <p className="text-xs text-slate-500 mt-0.5">{item.description}</p>
+                              <p className="mt-0.5 text-xs text-muted">{item.description}</p>
                             </div>
                           </div>
                           <ChevronDown
-                            className={`h-4 w-4 text-slate-300 transition-transform duration-200 shrink-0 ml-4 ${
+                            className={`ml-4 h-4 w-4 shrink-0 text-muted transition-transform duration-200 ${
                               isExpanded ? 'rotate-180' : ''
                             }`}
                           />
                         </button>
 
-                        {/* Code Block */}
+                        {/* Code block */}
                         {isExpanded && (
                           <div className="mx-6 mb-4">
-                            <div className="relative bg-slate-900 rounded-lg overflow-hidden">
-                              <div className="flex items-center justify-between px-4 py-2 bg-slate-800/50 border-b border-slate-700/50">
-                                <span className="text-xs font-mono text-slate-400">{item.language}</span>
+                            <div className="overflow-hidden rounded-lg bg-ink-950">
+                              <div className="flex items-center justify-between border-b border-ink-800/60 bg-ink-900/60 px-4 py-2">
+                                <span className="font-mono text-xs text-muted">
+                                  {item.language}
+                                </span>
+                                {/* Copy sends the real resolved code */}
                                 <CopyBtn
                                   text={resolvedCode}
                                   id={item.id}
@@ -540,8 +595,8 @@ curl YOUR_ENDPOINT/api/v1/dashboard/budget-status \\
                                   onCopy={copyToClipboard}
                                 />
                               </div>
-                              <pre className="p-4 overflow-x-auto">
-                                <code className="text-green-400 font-mono text-xs leading-relaxed whitespace-pre">
+                              <pre className="overflow-x-auto p-4">
+                                <code className="font-mono text-xs leading-relaxed text-brand-300 whitespace-pre">
                                   {resolvedCode}
                                 </code>
                               </pre>
@@ -560,27 +615,5 @@ curl YOUR_ENDPOINT/api/v1/dashboard/budget-status \\
     </div>
   );
 };
-
-const CopyBtn: React.FC<{
-  text: string;
-  id: string;
-  copiedId: string | null;
-  onCopy: (text: string, id: string) => void;
-}> = ({ text, id, copiedId, onCopy }) => (
-  <button
-    onClick={(e) => {
-      e.stopPropagation();
-      onCopy(text, id);
-    }}
-    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors shrink-0 ${
-      copiedId === id
-        ? 'bg-emerald-600 text-white'
-        : 'bg-slate-700 text-slate-300 hover:bg-slate-600 hover:text-white'
-    }`}
-  >
-    {copiedId === id ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-    {copiedId === id ? 'Copied!' : 'Copy'}
-  </button>
-);
 
 export default Integrations;

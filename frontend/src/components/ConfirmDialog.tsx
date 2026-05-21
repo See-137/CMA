@@ -26,6 +26,11 @@ export default function ConfirmDialog({
   const cancelRef = useRef<HTMLButtonElement>(null);
   const titleId = useId();
 
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
+
   useEffect(() => {
     if (isOpen) cancelRef.current?.focus();
   }, [isOpen]);
@@ -33,22 +38,25 @@ export default function ConfirmDialog({
   useEffect(() => {
     if (!isOpen) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') onCloseRef.current();
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [isOpen, onClose]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div
+        className="absolute inset-0 bg-ink-950/60 backdrop-blur-[2px]"
+        onClick={onClose}
+      />
       <div
         role="alertdialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="card relative w-full max-w-sm p-6 animate-scale-in"
+        className="card-ledger relative w-full max-w-sm p-6 animate-scale-in shadow-elevated"
       >
         <div className="flex items-start gap-4">
           {variant === 'danger' && (

@@ -1,6 +1,15 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { DollarSign, ChevronRight, ChevronLeft, Check, Copy, Eye, EyeOff, LogIn } from 'lucide-react';
+import {
+  Coins,
+  ChevronRight,
+  ChevronLeft,
+  Check,
+  Copy,
+  Eye,
+  EyeOff,
+  LogIn,
+} from 'lucide-react';
 import { api } from '../api/client';
 import type { SetupResponse, SetupStatus } from '../types';
 
@@ -21,7 +30,45 @@ const TIMEZONES = [
 
 const CURRENCIES = ['USD', 'EUR', 'GBP', 'JPY', 'CAD', 'AUD', 'CHF'];
 
-const STEPS = ['Admin Account', 'Deployment Config', 'Providers', 'Budget'];
+const STEPS = ['Your Keys', 'The House', 'Providers', 'The Coffer'];
+
+const STEP_SUBTITLES = [
+  'Who holds the master key to this counting house?',
+  'Name your ledger and choose your local conventions.',
+  'Which providers shall we track? Every farthing counts.',
+  'Set a daily spending limit. Waste not, want not.',
+];
+
+// ── Shared layout wrapper ──────────────────────────────────────────────────────
+
+function WizardShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      className="relative min-h-screen flex items-center justify-center p-4"
+      style={{ background: 'var(--color-bg)' }}
+    >
+      {children}
+    </div>
+  );
+}
+
+// ── Brand mark ────────────────────────────────────────────────────────────────
+
+function BrandMark({ subtitle }: { subtitle: string }) {
+  return (
+    <div className="mb-8 text-center">
+      <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-gold-leaf shadow-glow-gold">
+        <Coins className="h-7 w-7 text-ink-950" />
+      </div>
+      <h1 className="font-display text-2xl font-semibold tracking-tight text-primary">
+        Open Your Counting House
+      </h1>
+      <p className="mt-1 text-sm text-muted">{subtitle}</p>
+    </div>
+  );
+}
+
+// ── Page ───────────────────────────────────────────────────────────────────────
 
 const SetupWizard: React.FC = () => {
   const navigate = useNavigate();
@@ -35,18 +82,31 @@ const SetupWizard: React.FC = () => {
   const [showKey, setShowKey] = useState(false);
   const [copied, setCopied] = useState(false);
 
+  // Form fields
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [deploymentName, setDeploymentName] = useState('My Deployment');
+  const [timezone, setTimezone] = useState('UTC');
+  const [currency, setCurrency] = useState('USD');
+  const [selectedProviders, setSelectedProviders] = useState<Set<string>>(new Set(['openai']));
+  const [dailyBudget, setDailyBudget] = useState('50');
 
-  // Check if this is a reconnect (setup done, but no local API key)
+  // Check if setup is already done but local key is missing (reconnect flow)
   useEffect(() => {
-    api.get<SetupStatus>('/api/v1/setup/status').then((status) => {
-      if (status.is_complete && !localStorage.getItem('api_key')) {
-        setIsReconnect(true);
-      }
-    }).catch(() => {});
+    api
+      .get<SetupStatus>('/api/v1/setup/status')
+      .then((status) => {
+        if (status.is_complete && !localStorage.getItem('api_key')) {
+          setIsReconnect(true);
+        }
+      })
+      .catch(() => {});
   }, []);
+
+  // ── Reconnect: only admin_email + admin_password ─────────────────────────
+  // Bug fix: the old code sent deployment_name/timezone/currency as empty stubs.
+  // The reconnect endpoint only needs credentials — sending extras caused the
+  // server to mis-validate or overwrite config fields.
 
   const handleReconnect = async () => {
     if (!email || password.length < 6) return;
@@ -56,9 +116,6 @@ const SetupWizard: React.FC = () => {
       const result = await api.post<SetupResponse>('/api/v1/setup/reconnect', {
         admin_email: email,
         admin_password: password,
-        deployment_name: '',
-        timezone: 'UTC',
-        currency: 'USD',
       });
       localStorage.setItem('api_key', result.api_key);
       navigate('/', { replace: true });
@@ -68,10 +125,6 @@ const SetupWizard: React.FC = () => {
       setSubmitting(false);
     }
   };
-  const [timezone, setTimezone] = useState('UTC');
-  const [currency, setCurrency] = useState('USD');
-  const [selectedProviders, setSelectedProviders] = useState<Set<string>>(new Set(['openai']));
-  const [dailyBudget, setDailyBudget] = useState('50');
 
   const canNext = (): boolean => {
     switch (step) {
@@ -109,7 +162,6 @@ const SetupWizard: React.FC = () => {
       });
       localStorage.setItem('api_key', result.api_key);
 
-      // Create the daily budget from step 4
       if (Number(dailyBudget) > 0) {
         try {
           await api.post('/api/v1/budgets', {
@@ -121,11 +173,10 @@ const SetupWizard: React.FC = () => {
             control_action: 'alert',
           });
         } catch {
-          // Budget creation is non-critical, don't block setup
+          // Non-critical; don't block setup
         }
       }
 
-      // Show success screen instead of redirecting immediately
       setCompletedApiKey(result.api_key);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Setup failed');
@@ -144,7 +195,7 @@ const SetupWizard: React.FC = () => {
               <input
                 type="email"
                 className="input"
-                placeholder="admin@example.com"
+                placeholder="keeper@counting-house.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
               />
@@ -158,10 +209,13 @@ const SetupWizard: React.FC = () => {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
               />
-              <p className="mt-1 text-xs text-slate-500">Must be at least 6 characters</p>
+              <p className="mt-1.5 text-xs text-muted">
+                The master key to your counting house. At least 6 characters.
+              </p>
             </div>
           </div>
         );
+
       case 1:
         return (
           <div className="space-y-4">
@@ -170,7 +224,7 @@ const SetupWizard: React.FC = () => {
               <input
                 type="text"
                 className="input"
-                placeholder="My Deployment"
+                placeholder="My Counting House"
                 value={deploymentName}
                 onChange={(e) => setDeploymentName(e.target.value)}
               />
@@ -205,44 +259,57 @@ const SetupWizard: React.FC = () => {
             </div>
           </div>
         );
+
       case 2:
         return (
-          <div className="space-y-4">
-            <p className="text-sm text-slate-600">
-              Select the providers your agents connect to. CMA will track costs for these.
+          <div className="space-y-3">
+            <p className="text-sm text-secondary">
+              Select the providers your agents connect to. Scrooge will track every token they
+              spend.
             </p>
             {[
               { id: 'openai', label: 'OpenAI', desc: 'GPT-4o, GPT-4, GPT-3.5' },
               { id: 'anthropic', label: 'Anthropic', desc: 'Claude 3.5, Claude 3' },
               { id: 'google', label: 'Google', desc: 'Gemini 1.5 Pro, Flash' },
-            ].map((p) => (
-              <label key={p.id} className="flex items-center gap-3 p-3 rounded-lg border border-slate-200 hover:border-teal-300 hover:bg-teal-50/30 cursor-pointer transition-colors">
-                <input
-                  type="checkbox"
-                  checked={selectedProviders.has(p.id)}
-                  onChange={(e) => {
-                    const next = new Set(selectedProviders);
-                    if (e.target.checked) next.add(p.id);
-                    else next.delete(p.id);
-                    setSelectedProviders(next);
-                  }}
-                  className="h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
-                />
-                <div>
-                  <span className="text-sm font-medium text-slate-900">{p.label}</span>
-                  <span className="text-xs text-slate-500 ml-2">{p.desc}</span>
-                </div>
-              </label>
-            ))}
+            ].map((p) => {
+              const checked = selectedProviders.has(p.id);
+              return (
+                <label
+                  key={p.id}
+                  className={`flex cursor-pointer items-center gap-3 rounded-lg border p-3 transition-colors ${
+                    checked
+                      ? 'border-brand-600/50 bg-brand-500/8 dark:bg-brand-500/12'
+                      : 'border-token hover:border-gold-400/50 hover:bg-surface-2'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={(e) => {
+                      const next = new Set(selectedProviders);
+                      if (e.target.checked) next.add(p.id);
+                      else next.delete(p.id);
+                      setSelectedProviders(next);
+                    }}
+                    className="h-4 w-4 rounded border-token accent-brand-600"
+                  />
+                  <div>
+                    <span className="text-sm font-medium text-primary">{p.label}</span>
+                    <span className="ml-2 text-xs text-muted">{p.desc}</span>
+                  </div>
+                </label>
+              );
+            })}
           </div>
         );
+
       case 3:
         return (
           <div className="space-y-4">
             <div>
               <label className="label">Daily Budget Limit ({currency})</label>
               <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">
+                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 font-mono text-sm text-muted">
                   $
                 </span>
                 <input
@@ -255,221 +322,214 @@ const SetupWizard: React.FC = () => {
                   onChange={(e) => setDailyBudget(e.target.value)}
                 />
               </div>
-              <p className="mt-1 text-xs text-slate-500">
-                Set a daily spending limit for cost protection. You can adjust this later.
+              <p className="mt-1.5 text-xs text-muted">
+                A prudent clerk always sets a ceiling. You can adjust this limit at any time.
               </p>
             </div>
           </div>
         );
+
       default:
         return null;
     }
   };
 
-  // ── Success Screen ──────────────────────────────────────────────────────────
+  // ── Success Screen ─────────────────────────────────────────────────────────
 
   if (completedApiKey) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-        <div className="w-full max-w-lg">
-          <div className="flex items-center justify-center gap-3 mb-8">
-            <div className="flex items-center justify-center h-11 w-11 rounded-xl bg-emerald-600">
-              <Check className="h-6 w-6 text-white" />
-            </div>
-            <div>
-              <h1 className="text-xl font-bold text-slate-900">Setup Complete!</h1>
-              <p className="text-sm text-slate-500">Your CMA instance is ready</p>
-            </div>
-          </div>
+      <WizardShell>
+        <div className="w-full max-w-lg animate-fade-in">
+          <BrandMark subtitle="The ledger is open. Your key awaits." />
 
-          <div className="card p-6 space-y-5">
-            {/* API Key Section */}
-            <div>
-              <h2 className="text-base font-semibold text-slate-900 mb-1">Your API Key</h2>
-              <p className="text-sm text-slate-500 mb-3">
-                Save this key — you'll need it to connect your agents. You can also find it
-                later on the <span className="font-medium text-teal-600">Integrations</span> page
-                or by logging in again.
+          <div className="card-ledger p-6">
+            <div className="mb-5 flex items-center gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-brand-500/15 text-brand-600 dark:text-brand-300">
+                <Check className="h-5 w-5" />
+              </div>
+              <div>
+                <h2 className="font-display text-base font-semibold text-primary">
+                  Your Counting House is Open
+                </h2>
+                <p className="text-xs text-muted">Keep your API key somewhere safe.</p>
+              </div>
+            </div>
+
+            {/* API Key */}
+            <div className="mb-5">
+              <label className="label">Your API Key</label>
+              <p className="mb-3 text-sm text-secondary">
+                You'll need this to connect your agents. It's also available on the{' '}
+                <span className="font-medium text-gold">Integrations</span> page, or by signing
+                in again.
               </p>
-              <div className="bg-slate-900 rounded-lg p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <code className="text-green-400 font-mono text-sm break-all flex-1">
-                    {showKey ? completedApiKey : completedApiKey.slice(0, 8) + '\u2022'.repeat(20) + completedApiKey.slice(-4)}
-                  </code>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <button
-                      onClick={() => setShowKey((v) => !v)}
-                      className="inline-flex items-center justify-center h-8 w-8 rounded-md bg-slate-700 text-slate-300 hover:bg-slate-600 hover:text-white transition-colors"
-                      title={showKey ? 'Hide' : 'Show'}
-                    >
-                      {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                    </button>
-                    <button
-                      onClick={copyKey}
-                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                        copied
-                          ? 'bg-emerald-600 text-white'
-                          : 'bg-slate-700 text-slate-300 hover:bg-slate-600 hover:text-white'
-                      }`}
-                    >
-                      {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                      {copied ? 'Copied!' : 'Copy'}
-                    </button>
-                  </div>
+              <div className="flex items-center gap-2 rounded-lg bg-ink-950 p-3.5">
+                <code className="flex-1 break-all font-mono text-sm text-brand-300">
+                  {showKey
+                    ? completedApiKey
+                    : `${completedApiKey.slice(0, 8)}${'•'.repeat(20)}${completedApiKey.slice(-4)}`}
+                </code>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <button
+                    onClick={() => setShowKey((v) => !v)}
+                    className="flex h-8 w-8 items-center justify-center rounded-md bg-ink-800 text-ink-400 transition-colors hover:bg-ink-700 hover:text-white"
+                    title={showKey ? 'Hide' : 'Show'}
+                  >
+                    {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                  <button
+                    onClick={copyKey}
+                    className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                      copied
+                        ? 'bg-brand-600 text-white'
+                        : 'bg-ink-800 text-ink-400 hover:bg-ink-700 hover:text-white'
+                    }`}
+                  >
+                    {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                    {copied ? 'Copied!' : 'Copy'}
+                  </button>
                 </div>
               </div>
             </div>
 
-            {/* Quick start hint */}
-            <div className="bg-teal-50 rounded-lg p-4">
-              <p className="text-sm font-medium text-teal-900 mb-1">Quick Start</p>
-              <p className="text-xs text-teal-700">
-                Go to <span className="font-semibold">Integrations</span> in the sidebar for
-                copy-paste code snippets to connect your agents in under a minute.
+            {/* Quick start */}
+            <div className="mb-5 rounded-lg bg-gold-400/10 px-4 py-3 ring-1 ring-gold-600/20">
+              <p className="text-sm font-semibold text-gold-700 dark:text-gold-300">
+                Quick Start
+              </p>
+              <p className="mt-0.5 text-xs text-secondary">
+                Head to <span className="font-semibold">Integrations</span> in the sidebar for
+                copy-paste code snippets — connect your first agent in under a minute.
               </p>
             </div>
 
-            {/* Go to Dashboard */}
             <button
               onClick={() => navigate('/')}
-              className="btn-primary w-full justify-center gap-2"
+              className="btn-gold w-full justify-center gap-2"
             >
-              Go to Dashboard
+              Enter the Counting House
               <ChevronRight className="h-4 w-4" />
             </button>
           </div>
         </div>
-      </div>
+      </WizardShell>
     );
   }
 
-  // ── Reconnect Screen ────────────────────────────────────────────────────────
+  // ── Reconnect Screen ───────────────────────────────────────────────────────
 
   if (isReconnect) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-        <div className="w-full max-w-sm">
-          <div className="flex items-center justify-center gap-3 mb-8">
-            <div className="flex items-center justify-center h-11 w-11 rounded-xl bg-teal-600">
-              <DollarSign className="h-6 w-6 text-white" />
-            </div>
-            <div>
-              <h1 className="text-xl font-bold text-slate-900">Welcome Back</h1>
-              <p className="text-sm text-slate-500">Sign in to CMA</p>
-            </div>
-          </div>
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-card p-6 space-y-4">
-            <p className="text-sm text-slate-600">
-              Your instance is set up. Sign in with your admin credentials to continue.
+      <WizardShell>
+        <div className="w-full max-w-sm animate-fade-in">
+          <BrandMark subtitle="Your ledger is set. Present your credentials." />
+
+          <div className="card-ledger p-6">
+            <p className="mb-4 text-sm text-secondary">
+              Your instance is configured. Sign in with your admin credentials to reclaim your
+              session.
             </p>
+
             {error && (
-              <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-600 text-sm">
+              <div className="mb-4 rounded-lg border border-[color:var(--color-danger)]/30 bg-oxblood-500/10 px-4 py-3 text-sm text-oxblood-600 dark:text-oxblood-300">
                 {error}
               </div>
             )}
-            <div>
-              <label className="label">Email</label>
-              <input
-                type="email"
-                className="input"
-                placeholder="admin@example.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleReconnect()}
-              />
+
+            <div className="space-y-4">
+              <div>
+                <label className="label">Email</label>
+                <input
+                  type="email"
+                  className="input"
+                  placeholder="keeper@counting-house.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleReconnect()}
+                />
+              </div>
+              <div>
+                <label className="label">Password</label>
+                <input
+                  type="password"
+                  className="input"
+                  placeholder="Your admin password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleReconnect()}
+                />
+              </div>
+              <button
+                onClick={handleReconnect}
+                disabled={!email || password.length < 6 || submitting}
+                className="btn-primary w-full justify-center gap-2"
+              >
+                <LogIn className="h-4 w-4" />
+                {submitting ? 'Checking the ledger…' : 'Enter the Counting House'}
+              </button>
             </div>
-            <div>
-              <label className="label">Password</label>
-              <input
-                type="password"
-                className="input"
-                placeholder="Your admin password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleReconnect()}
-              />
-            </div>
-            <button
-              onClick={handleReconnect}
-              disabled={!email || password.length < 6 || submitting}
-              className="btn-primary w-full flex items-center justify-center gap-2"
-            >
-              <LogIn className="h-4 w-4" />
-              {submitting ? 'Signing in...' : 'Sign In'}
-            </button>
           </div>
         </div>
-      </div>
+      </WizardShell>
     );
   }
 
-  // ── Wizard Steps ────────────────────────────────────────────────────────────
+  // ── Wizard Steps ───────────────────────────────────────────────────────────
 
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-      <div className="w-full max-w-lg">
-        {/* Logo */}
-        <div className="flex items-center justify-center gap-3 mb-8">
-          <div className="flex items-center justify-center h-11 w-11 rounded-xl bg-teal-600">
-            <DollarSign className="h-6 w-6 text-white" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold text-slate-900">CMA Setup</h1>
-            <p className="text-sm text-slate-500">Cost Monitoring Agent</p>
-          </div>
-        </div>
+    <WizardShell>
+      <div className="w-full max-w-lg animate-fade-in">
+        <BrandMark subtitle={STEP_SUBTITLES[step]} />
 
-        {/* Progress Bar */}
-        <div className="mb-8">
-          <div className="flex items-center justify-between mb-2">
+        {/* Step indicators */}
+        <div className="mb-6">
+          <div className="mb-3 flex items-center justify-between">
             {STEPS.map((label, i) => (
-              <div key={label} className="flex items-center gap-2 text-xs font-medium">
+              <div key={label} className="flex items-center gap-1.5 text-xs font-medium">
                 <div
-                  className={`flex items-center justify-center h-6 w-6 rounded-full text-xs font-bold transition-colors ${
+                  className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold transition-colors ${
                     i < step
-                      ? 'bg-teal-600 text-white'
+                      ? 'bg-brand-600 text-white'
                       : i === step
-                        ? 'bg-teal-600 text-white'
-                        : 'bg-slate-200 text-slate-500'
+                        ? 'bg-gold-400 text-ink-950'
+                        : 'bg-surface-2 text-muted'
                   }`}
                 >
                   {i < step ? <Check className="h-3.5 w-3.5" /> : i + 1}
                 </div>
                 <span
-                  className={`hidden sm:block ${
-                    i <= step ? 'text-slate-900' : 'text-slate-400'
-                  }`}
+                  className={`hidden sm:block ${i <= step ? 'text-primary' : 'text-muted'}`}
                 >
                   {label}
                 </span>
               </div>
             ))}
           </div>
-          <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden">
+          {/* Progress track */}
+          <div className="h-1.5 overflow-hidden rounded-full bg-surface-2">
             <div
-              className="h-full bg-teal-600 rounded-full transition-all duration-300"
+              className="h-full rounded-full bg-gold-400 transition-all duration-300"
               style={{ width: `${((step + 1) / STEPS.length) * 100}%` }}
             />
           </div>
         </div>
 
         {/* Card */}
-        <div className="card p-6">
-          <h2 className="text-lg font-semibold text-slate-900 mb-1">{STEPS[step]}</h2>
-          <p className="text-sm text-slate-500 mb-6">
-            {step === 0 && 'Create your admin account to get started.'}
-            {step === 1 && 'Configure your deployment settings.'}
-            {step === 2 && 'Select which LLM providers your agents use. This helps CMA show relevant pricing.'}
-            {step === 3 && 'Set a daily budget to protect against runaway costs.'}
-          </p>
+        <div className="card-ledger p-6">
+          <h2 className="mb-0.5 font-display text-lg font-semibold text-primary">
+            {STEPS[step]}
+          </h2>
+          <p className="mb-5 text-sm text-muted">{STEP_SUBTITLES[step]}</p>
 
           {renderStep()}
 
           {error && (
-            <div className="mt-4 p-3 rounded-lg bg-rose-50 text-rose-700 text-sm">{error}</div>
+            <div className="mt-4 rounded-lg border border-[color:var(--color-danger)]/30 bg-oxblood-500/10 px-3 py-2.5 text-sm text-oxblood-600 dark:text-oxblood-300">
+              {error}
+            </div>
           )}
 
-          <div className="flex items-center justify-between mt-6 pt-4 border-t border-slate-200">
+          <div className="mt-6 flex items-center justify-between border-t border-token pt-4">
             <button
               onClick={() => setStep((s) => s - 1)}
               disabled={step === 0}
@@ -492,20 +552,20 @@ const SetupWizard: React.FC = () => {
               <button
                 onClick={handleComplete}
                 disabled={!canNext() || submitting}
-                className="btn-primary gap-1.5"
+                className="btn-gold gap-1.5"
               >
                 {submitting ? (
-                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-ink-950/30 border-t-ink-950" />
                 ) : (
                   <Check className="h-4 w-4" />
                 )}
-                Complete Setup
+                {submitting ? 'Opening the ledger…' : 'Complete Setup'}
               </button>
             )}
           </div>
         </div>
       </div>
-    </div>
+    </WizardShell>
   );
 };
 

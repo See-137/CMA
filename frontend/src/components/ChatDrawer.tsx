@@ -1,91 +1,44 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { X, Send, ChevronDown, ChevronRight, Database, Sparkles } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
+import { X, Send, Coins } from 'lucide-react';
 import { useChat } from '../hooks/useChat';
-import type { ChatMessage, Citation } from '../types';
+import { MessageBubble } from './ChatMessage';
 
 interface ChatDrawerProps {
   open: boolean;
   onClose: () => void;
 }
 
-const CitationsList: React.FC<{ citations: Citation[] }> = ({ citations }) => {
-  const [expanded, setExpanded] = useState(false);
-
-  if (!citations.length) return null;
-
-  return (
-    <div className="mt-2">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-1 text-xs text-slate-400 hover:text-slate-600 transition-colors"
-      >
-        {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-        <Database className="h-3 w-3" />
-        {citations.length} source{citations.length !== 1 ? 's' : ''}
-      </button>
-      {expanded && (
-        <div className="mt-1.5 space-y-1 pl-4 border-l-2 border-slate-200">
-          {citations.map((c, i) => (
-            <div key={i} className="text-xs text-slate-500">
-              <span className="inline-block px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-medium mr-1">
-                {c.source_type}
-              </span>
-              <span className="text-slate-400">{c.snippet}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-};
-
-const MessageBubble: React.FC<{ msg: ChatMessage; isStreaming?: boolean }> = ({
-  msg,
-  isStreaming,
-}) => {
-  if (msg.role === 'user') {
-    return (
-      <div className="flex justify-end">
-        <div className="max-w-[80%] px-4 py-2.5 rounded-2xl rounded-br-md bg-teal-600 text-white text-sm">
-          {msg.content}
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex justify-start">
-      <div className="max-w-[85%]">
-        <div className="px-4 py-2.5 rounded-2xl rounded-bl-md bg-slate-100 text-slate-800 text-sm whitespace-pre-wrap">
-          {msg.content}
-          {isStreaming && !msg.content && (
-            <span className="inline-flex gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '0ms' }} />
-              <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '150ms' }} />
-              <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '300ms' }} />
-            </span>
-          )}
-        </div>
-        {msg.citations && <CitationsList citations={msg.citations} />}
-      </div>
-    </div>
-  );
-};
-
-const ChatDrawer: React.FC<ChatDrawerProps> = ({ open, onClose }) => {
+export default function ChatDrawer({ open, onClose }: ChatDrawerProps) {
   const { messages, sendMessage, isStreaming, error, clearHistory } = useChat();
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const drawerRef = useRef<HTMLDivElement>(null);
+
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Focus the input once the open transition finishes (no hardcoded delay race).
   useEffect(() => {
-    if (open) {
-      setTimeout(() => inputRef.current?.focus(), 300);
-    }
+    if (!open) return;
+    const node = drawerRef.current;
+    if (!node) return;
+    const focus = () => inputRef.current?.focus();
+    node.addEventListener('transitionend', focus, { once: true });
+    const fallback = window.setTimeout(focus, 400);
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onCloseRef.current();
+    document.addEventListener('keydown', onKey);
+    return () => {
+      node.removeEventListener('transitionend', focus);
+      window.clearTimeout(fallback);
+      document.removeEventListener('keydown', onKey);
+    };
   }, [open]);
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -97,53 +50,55 @@ const ChatDrawer: React.FC<ChatDrawerProps> = ({ open, onClose }) => {
 
   return (
     <>
-      {/* Backdrop */}
-      {open && (
-        <div className="fixed inset-0 bg-black/20 z-40" onClick={onClose} />
-      )}
+      {open && <div className="fixed inset-0 z-40 bg-ink-950/40" onClick={onClose} />}
 
-      {/* Drawer */}
       <div
-        className={`fixed top-0 right-0 h-full w-96 bg-white shadow-elevated z-50 flex flex-col transition-transform duration-300 ease-in-out ${
+        ref={drawerRef}
+        role="dialog"
+        aria-label="Ask Scrooge"
+        className={`fixed right-0 top-0 z-50 flex h-full w-96 flex-col bg-surface shadow-elevated transition-transform duration-300 ease-in-out ${
           open ? 'translate-x-0' : 'translate-x-full'
         }`}
       >
+        <div className="absolute inset-y-0 left-0 w-px bg-gradient-to-b from-transparent via-gold-400/40 to-transparent" />
+
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+        <div className="flex items-center justify-between border-b border-token px-4 py-3">
           <div className="flex items-center gap-2">
-            <div className="flex items-center justify-center h-8 w-8 rounded-lg bg-teal-50">
-              <Sparkles className="h-4 w-4 text-teal-600" />
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gold-leaf">
+              <Coins className="h-4 w-4 text-emerald-950" />
             </div>
             <div>
-              <h2 className="text-sm font-semibold text-slate-900">Scrooge</h2>
-              <p className="text-[10px] text-slate-400">CMA's cost intelligence</p>
+              <h2 className="font-display text-sm font-semibold text-primary">Scrooge</h2>
+              <p className="text-[10px] text-muted">Keeper of the books</p>
             </div>
           </div>
           <div className="flex items-center gap-1">
             {messages.length > 0 && (
               <button
                 onClick={clearHistory}
-                className="text-xs text-slate-400 hover:text-slate-600 px-2 py-1 rounded hover:bg-slate-50"
+                className="rounded px-2 py-1 text-xs text-muted hover:bg-surface-2 hover:text-secondary"
               >
                 Clear
               </button>
             )}
             <button
               onClick={onClose}
-              className="p-1.5 rounded-lg hover:bg-slate-100 transition-colors"
+              aria-label="Close"
+              className="rounded-lg p-1.5 text-muted transition-colors hover:bg-surface-2 hover:text-primary"
             >
-              <X className="h-4 w-4 text-slate-400" />
+              <X className="h-4 w-4" />
             </button>
           </div>
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+        <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
           {messages.length === 0 && (
-            <div className="text-center py-8">
-              <Sparkles className="h-8 w-8 text-slate-300 mx-auto mb-3" />
-              <p className="text-sm text-slate-500 mb-1">Ask about your LLM costs</p>
-              <p className="text-xs text-slate-400">
+            <div className="py-8 text-center">
+              <Coins className="mx-auto mb-3 h-8 w-8 text-gold-400" />
+              <p className="mb-1 text-sm text-secondary">Ask about your ledger</p>
+              <p className="text-xs text-muted">
                 Try "Which agent costs the most?" or "Show me failed requests"
               </p>
             </div>
@@ -156,7 +111,7 @@ const ChatDrawer: React.FC<ChatDrawerProps> = ({ open, onClose }) => {
             />
           ))}
           {error && (
-            <div className="px-3 py-2 rounded-lg bg-rose-50 text-rose-600 text-xs">
+            <div className="rounded-lg bg-oxblood-500/10 px-3 py-2 text-xs text-oxblood-600 dark:text-oxblood-300">
               {error}
             </div>
           )}
@@ -164,7 +119,7 @@ const ChatDrawer: React.FC<ChatDrawerProps> = ({ open, onClose }) => {
         </div>
 
         {/* Input */}
-        <form onSubmit={handleSubmit} className="px-4 py-3 border-t border-slate-200">
+        <form onSubmit={handleSubmit} className="border-t border-token px-4 py-3">
           <div className="flex items-center gap-2">
             <input
               ref={inputRef}
@@ -173,12 +128,12 @@ const ChatDrawer: React.FC<ChatDrawerProps> = ({ open, onClose }) => {
               onChange={(e) => setInput(e.target.value)}
               placeholder="Ask about your costs..."
               disabled={isStreaming}
-              className="flex-1 input text-sm py-2"
+              className="input flex-1 py-2 text-sm"
             />
             <button
               type="submit"
               disabled={!input.trim() || isStreaming}
-              className="flex items-center justify-center h-9 w-9 rounded-lg bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-600 text-white transition-colors hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Send className="h-4 w-4" />
             </button>
@@ -187,6 +142,4 @@ const ChatDrawer: React.FC<ChatDrawerProps> = ({ open, onClose }) => {
       </div>
     </>
   );
-};
-
-export default ChatDrawer;
+}

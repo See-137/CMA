@@ -2,28 +2,48 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ════════════════════════════════════════════════════════════════════
+   CMA · "Scrooge" — a Victorian counting-house ledger.
+   Forest-green felt · antique gold leaf · parchment · oxblood ink.
+   ════════════════════════════════════════════════════════════════════ */
+
 @layer base {
-  /* ── Semantic colour tokens ─────────────────────────────── */
   :root {
-    --color-bg:           #f8fafc;   /* slate-50 */
-    --color-surface:      #ffffff;
-    --color-surface-2:    #f1f5f9;   /* slate-100 */
-    --color-border:       #e2e8f0;   /* slate-200 */
-    --color-border-subtle:#cbd5e1;   /* slate-300 */
-    --color-text-primary: #0f172a;   /* slate-900 */
-    --color-text-secondary:#475569;  /* slate-600 */
-    --color-text-muted:   #94a3b8;   /* slate-400 */
+    /* Light — aged parchment ledger on a clerk's desk */
+    --color-bg:            #ece3cf;
+    --color-bg-2:          #e3d8bf;
+    --color-surface:       #fbf7ee;
+    --color-surface-2:     #f1e9d6;
+    --color-border:        #d7c8a6;
+    --color-border-subtle: #c3b38d;
+    --color-text-primary:  #18201a;
+    --color-text-secondary:#4c4a3b;
+    --color-text-muted:    #8a8067;
+    --color-brand:         #245c40;
+    --color-brand-soft:    rgba(36, 92, 64, 0.10);
+    --color-gold:          #9a6c22;
+    --color-gold-soft:     rgba(184, 134, 44, 0.14);
+    --color-danger:        #8f2f2f;
+    --grain-opacity:       0.035;
   }
 
   .dark {
-    --color-bg:           #0f172a;   /* slate-900 */
-    --color-surface:      #1e293b;   /* slate-800 */
-    --color-surface-2:    #334155;   /* slate-700 */
-    --color-border:       #334155;   /* slate-700 */
-    --color-border-subtle:#475569;   /* slate-600 */
-    --color-text-primary: #f1f5f9;   /* slate-100 */
-    --color-text-secondary:#94a3b8;  /* slate-400 */
-    --color-text-muted:   #64748b;   /* slate-500 */
+    /* Dark — green felt vault by candlelight */
+    --color-bg:            #09120d;
+    --color-bg-2:          #0c1a13;
+    --color-surface:       #112019;
+    --color-surface-2:     #172c21;
+    --color-border:        #284036;
+    --color-border-subtle: #395143;
+    --color-text-primary:  #f1ead7;
+    --color-text-secondary:#a7b6ab;
+    --color-text-muted:    #6c7c71;
+    --color-brand:         #4f996a;
+    --color-brand-soft:    rgba(79, 153, 106, 0.14);
+    --color-gold:          #e0bd55;
+    --color-gold-soft:     rgba(224, 189, 85, 0.16);
+    --color-danger:        #d8847a;
+    --grain-opacity:       0.06;
   }
 
   html {
@@ -35,44 +55,106 @@
   body {
     background-color: var(--color-bg);
     color: var(--color-text-primary);
+    font-feature-settings: "kern", "liga", "calt";
   }
 
-  /* Refined scrollbar */
-  ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+  /* Atmosphere: a faint guilloché engraving + paper grain over the page. */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background-image:
+      radial-gradient(900px circle at 12% -8%, var(--color-gold-soft), transparent 55%),
+      radial-gradient(1100px circle at 110% 0%, var(--color-brand-soft), transparent 50%),
+      repeating-linear-gradient(115deg, rgba(120, 100, 40, 0.05) 0 1px, transparent 1px 9px);
   }
-
-  ::-webkit-scrollbar-track {
-    @apply bg-transparent;
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    opacity: var(--grain-opacity);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   }
+  #root { position: relative; z-index: 1; }
 
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb {
-    @apply bg-slate-300/60 dark:bg-slate-600/60 rounded-full;
+    background: color-mix(in srgb, var(--color-gold) 35%, transparent);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in srgb, var(--color-gold) 60%, transparent);
+    background-clip: padding-box;
   }
 
-  ::-webkit-scrollbar-thumb:hover {
-    @apply bg-slate-400/80 dark:bg-slate-500/80;
+  ::selection {
+    background: var(--color-gold-soft);
+    color: var(--color-text-primary);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-gold);
+    outline-offset: 2px;
   }
 }
 
 @layer components {
-  .btn-primary {
-    @apply inline-flex items-center justify-center px-4 py-2.5 text-sm font-semibold text-white
-           bg-gradient-to-b from-teal-500 to-teal-600
-           rounded-lg shadow-subtle
-           hover:from-teal-400 hover:to-teal-600 hover:shadow-card hover:-translate-y-px
-           active:translate-y-0 active:shadow-subtle
-           focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:ring-offset-2
-           transition-all duration-150
-           disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:shadow-subtle;
+  /* ── Surfaces ─────────────────────────────────────────────── */
+  .card {
+    @apply rounded-lg transition-shadow duration-200;
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-border);
+    box-shadow: var(--tw-shadow, 0 1px 2px 0 rgb(12 20 16 / 0.06));
+  }
+  .card-hover { @apply card hover:shadow-card-hover; }
+
+  /* A ledger card with an engraved gold rule across the top. */
+  .card-ledger {
+    @apply card relative overflow-hidden;
+  }
+  .card-ledger::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--color-gold), transparent);
+    opacity: 0.7;
   }
 
+  /* ── Buttons ──────────────────────────────────────────────── */
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold
+           rounded-lg transition-all duration-150
+           hover:-translate-y-px active:translate-y-0
+           disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0;
+    color: #fbf7ee;
+    background: linear-gradient(180deg, var(--color-brand), color-mix(in srgb, var(--color-brand) 75%, #000));
+    box-shadow: var(--tw-shadow, 0 1px 2px rgb(12 20 16 / 0.2)), inset 0 1px 0 rgb(255 255 255 / 0.12);
+  }
+  .btn-primary:hover { box-shadow: 0 8px 20px -8px rgb(12 20 16 / 0.5), inset 0 1px 0 rgb(255 255 255 / 0.16); }
+
+  /* The money button — gold leaf. Use for the single primary action. */
+  .btn-gold {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-bold
+           rounded-lg transition-all duration-150
+           hover:-translate-y-px active:translate-y-0
+           disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0;
+    color: #2a1c0a;
+    background: linear-gradient(180deg, #e6c87a, #d0a23a 55%, #9a6c22);
+    box-shadow: 0 1px 2px rgb(12 20 16 / 0.25), inset 0 1px 0 rgb(255 255 255 / 0.4);
+  }
+  .btn-gold:hover { box-shadow: 0 10px 24px -8px rgb(208 162 58 / 0.5), inset 0 1px 0 rgb(255 255 255 / 0.5); }
+
   .btn-secondary {
-    @apply inline-flex items-center justify-center px-4 py-2.5 text-sm font-medium
-           rounded-lg shadow-subtle
-           focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:ring-offset-2
-           transition-all duration-150
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium
+           rounded-lg transition-all duration-150
            disabled:opacity-50 disabled:cursor-not-allowed;
     color: var(--color-text-secondary);
     background-color: var(--color-surface);
@@ -81,50 +163,68 @@
   .btn-secondary:hover {
     background-color: var(--color-surface-2);
     border-color: var(--color-border-subtle);
+    color: var(--color-text-primary);
   }
 
   .btn-danger {
-    @apply inline-flex items-center justify-center px-4 py-2.5 text-sm font-semibold text-white
-           bg-gradient-to-b from-rose-500 to-rose-600
-           rounded-lg shadow-subtle
-           hover:from-rose-400 hover:to-rose-600 hover:shadow-card hover:-translate-y-px
-           active:translate-y-0 active:shadow-subtle
-           focus:outline-none focus:ring-2 focus:ring-rose-500/40 focus:ring-offset-2
-           transition-all duration-150
-           disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold
+           rounded-lg transition-all duration-150 hover:-translate-y-px active:translate-y-0
+           disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0;
+    color: #fbf7ee;
+    background: linear-gradient(180deg, #b04545, var(--color-danger));
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.12);
   }
 
+  /* ── Forms ────────────────────────────────────────────────── */
   .input {
-    @apply w-full px-3.5 py-2.5 text-sm rounded-lg
-           focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500
-           transition-all duration-150;
+    @apply w-full px-3.5 py-2.5 text-sm rounded-lg transition-all duration-150;
     background-color: var(--color-surface);
     border: 1px solid var(--color-border);
     color: var(--color-text-primary);
   }
   .input::placeholder { color: var(--color-text-muted); }
   .input:hover { border-color: var(--color-border-subtle); }
+  .input:focus {
+    outline: none;
+    border-color: var(--color-gold);
+    box-shadow: 0 0 0 3px var(--color-gold-soft);
+  }
 
   .label {
-    @apply block text-sm font-medium mb-1.5;
-    color: var(--color-text-secondary);
+    @apply block text-xs font-semibold mb-1.5 uppercase tracking-wider;
+    color: var(--color-text-muted);
   }
 
-  .card {
-    @apply rounded-xl shadow-card transition-shadow duration-200;
-    background-color: var(--color-surface);
-    border: 1px solid var(--color-border);
+  /* ── Typography helpers ───────────────────────────────────── */
+  .font-display { font-family: 'Fraunces', ui-serif, Georgia, serif; }
+  .numeral {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+  .eyebrow {
+    @apply text-[11px] font-semibold uppercase tracking-[0.18em];
+    color: var(--color-text-muted);
+  }
+  .hairline {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--color-border-subtle), transparent);
   }
 
-  .card-hover {
-    @apply card hover:shadow-card-hover;
-  }
+  /* ── Text token utilities (theme-aware) ───────────────────── */
+  .text-primary   { color: var(--color-text-primary); }
+  .text-secondary { color: var(--color-text-secondary); }
+  .text-muted     { color: var(--color-text-muted); }
+  .text-gold      { color: var(--color-gold); }
+  .bg-surface     { background-color: var(--color-surface); }
+  .bg-surface-2   { background-color: var(--color-surface-2); }
+  .border-token   { border-color: var(--color-border); }
 
   /* Staggered fade-in for lists */
-  .stagger-1 { animation-delay: 0.05s; }
-  .stagger-2 { animation-delay: 0.1s; }
-  .stagger-3 { animation-delay: 0.15s; }
-  .stagger-4 { animation-delay: 0.2s; }
-  .stagger-5 { animation-delay: 0.25s; }
-  .stagger-6 { animation-delay: 0.3s; }
+  .stagger-1 { animation-delay: 0.04s; }
+  .stagger-2 { animation-delay: 0.08s; }
+  .stagger-3 { animation-delay: 0.12s; }
+  .stagger-4 { animation-delay: 0.16s; }
+  .stagger-5 { animation-delay: 0.20s; }
+  .stagger-6 { animation-delay: 0.24s; }
 }

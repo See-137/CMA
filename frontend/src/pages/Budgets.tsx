@@ -1,16 +1,14 @@
 import React, { useState } from 'react';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
-import { api } from '../api/client';
+import { api, ApiError } from '../api/client';
 import DataTable, { Column } from '../components/DataTable';
 import Badge from '../components/Badge';
 import Modal from '../components/Modal';
 import ConfirmDialog from '../components/ConfirmDialog';
 import LoadingSpinner from '../components/LoadingSpinner';
+import { formatCurrency } from '../utils/format';
 import type { Budget } from '../types';
-
-const formatCurrency = (v: number) =>
-  new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(v);
 
 const Budgets: React.FC = () => {
   const { data: budgets, loading, error, refetch } = useApi<Budget[]>('/api/v1/budgets');
@@ -18,6 +16,8 @@ const Budgets: React.FC = () => {
   const [editBudget, setEditBudget] = useState<Budget | null>(null);
   const [confirmId, setConfirmId] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     name: '',
     scope: 'global',
@@ -30,6 +30,7 @@ const Budgets: React.FC = () => {
 
   const openCreate = () => {
     setEditBudget(null);
+    setSaveError(null);
     setFormData({
       name: '',
       scope: 'global',
@@ -44,6 +45,7 @@ const Budgets: React.FC = () => {
 
   const openEdit = (budget: Budget) => {
     setEditBudget(budget);
+    setSaveError(null);
     setFormData({
       name: budget.name,
       scope: budget.scope,
@@ -58,6 +60,7 @@ const Budgets: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setSaveError(null);
     const payload = {
       name: formData.name,
       scope: formData.scope,
@@ -79,21 +82,34 @@ const Budgets: React.FC = () => {
       setModalOpen(false);
       refetch();
     } catch (err) {
-      console.error('Failed to save budget:', err);
+      const msg =
+        err instanceof ApiError
+          ? (err.body as { detail?: string })?.detail ?? err.message
+          : err instanceof Error
+            ? err.message
+            : 'Failed to save budget';
+      setSaveError(msg);
     }
   };
 
   const handleDelete = async () => {
     if (confirmId === null) return;
     setDeleting(true);
+    setDeleteError(null);
     try {
       await api.delete(`/api/v1/budgets/${confirmId}`);
       refetch();
+      setConfirmId(null);
     } catch (err) {
-      console.error('Failed to delete budget:', err);
+      const msg =
+        err instanceof ApiError
+          ? (err.body as { detail?: string })?.detail ?? err.message
+          : err instanceof Error
+            ? err.message
+            : 'Failed to delete budget';
+      setDeleteError(msg);
     } finally {
       setDeleting(false);
-      setConfirmId(null);
     }
   };
 
@@ -101,7 +117,9 @@ const Budgets: React.FC = () => {
     {
       header: 'Name',
       accessor: 'name',
-      render: (row) => <span className="font-medium text-slate-900">{row.name}</span>,
+      render: (row) => (
+        <span className="font-medium text-primary font-display">{row.name}</span>
+      ),
     },
     {
       header: 'Scope',
@@ -112,37 +130,50 @@ const Budgets: React.FC = () => {
       header: 'Period',
       accessor: 'period',
       render: (row) => (
-        <span className="capitalize text-slate-600">{row.period}</span>
+        <span className="capitalize text-secondary">{row.period}</span>
       ),
     },
     {
       header: 'Limit',
       accessor: 'limit_amount',
-      render: (row) => formatCurrency(row.limit_amount),
+      render: (row) => (
+        <span className="numeral text-primary">{formatCurrency(row.limit_amount)}</span>
+      ),
     },
     {
       header: 'Current Spend',
       accessor: 'current_spend',
-      render: (row) => formatCurrency(row.current_spend),
+      render: (row) => (
+        <span className="numeral text-secondary">{formatCurrency(row.current_spend)}</span>
+      ),
     },
     {
       header: 'Used',
       accessor: 'percentage',
       render: (row) => {
         const pct = Math.min(row.percentage, 100);
+        const tone = pct > 90 ? 'oxblood' : pct > 50 ? 'gold' : 'brand';
         const barColor =
-          pct > 90 ? 'bg-rose-500' : pct > 50 ? 'bg-amber-500' : 'bg-emerald-500';
+          tone === 'oxblood'
+            ? 'bg-oxblood-500'
+            : tone === 'gold'
+              ? 'bg-gold-400'
+              : 'bg-brand-500';
         const textColor =
-          pct > 90 ? 'text-rose-600' : pct > 50 ? 'text-amber-600' : 'text-emerald-600';
+          tone === 'oxblood'
+            ? 'text-oxblood-600 dark:text-oxblood-300'
+            : tone === 'gold'
+              ? 'text-gold-700 dark:text-gold-300'
+              : 'text-brand-600 dark:text-brand-300';
         return (
           <div className="flex items-center gap-3 min-w-[140px]">
-            <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
+            <div className="flex-1 h-2 bg-surface-2 rounded-full overflow-hidden">
               <div
                 className={`h-full ${barColor} rounded-full transition-all`}
                 style={{ width: `${pct}%` }}
               />
             </div>
-            <span className={`text-xs font-medium ${textColor} w-12 text-right`}>
+            <span className={`numeral text-xs font-semibold ${textColor} w-12 text-right`}>
               {pct.toFixed(1)}%
             </span>
           </div>
@@ -179,16 +210,19 @@ const Budgets: React.FC = () => {
               e.stopPropagation();
               openEdit(row);
             }}
-            className="p-1.5 rounded text-slate-400 hover:text-teal-600 hover:bg-teal-50 transition-colors"
+            className="p-1.5 rounded text-muted hover:text-brand-600 hover:bg-brand-500/10 transition-colors"
+            title="Edit budget"
           >
             <Pencil className="h-3.5 w-3.5" />
           </button>
           <button
             onClick={(e) => {
               e.stopPropagation();
+              setDeleteError(null);
               setConfirmId(row.id);
             }}
-            className="p-1.5 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+            className="p-1.5 rounded text-muted hover:text-oxblood-600 hover:bg-oxblood-500/10 transition-colors"
+            title="Delete budget"
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>
@@ -197,43 +231,54 @@ const Budgets: React.FC = () => {
     },
   ];
 
-  if (loading) return <LoadingSpinner text="Loading budgets..." />;
+  if (loading) return <LoadingSpinner text="Counting the coffers..." />;
   if (error)
     return (
-      <div className="text-center py-12">
-        <p className="text-rose-600">{error}</p>
+      <div className="card-ledger mx-auto max-w-md p-8 text-center">
+        <p className="font-display text-lg text-oxblood-600 dark:text-oxblood-300">{error}</p>
         <button onClick={refetch} className="btn-primary mt-4">
-          Retry
+          Try again
         </button>
       </div>
     );
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Budgets</h1>
-          <p className="text-sm text-slate-500 mt-1">Set spending limits and cost controls</p>
+          <p className="eyebrow">Cost Controls</p>
+          <h1 className="font-display text-3xl font-semibold tracking-tight text-primary">
+            Budgets
+          </h1>
+          <p className="mt-1 text-sm text-muted">
+            Every pound has its limit. Set them here before the agents spend you out of house and home.
+          </p>
         </div>
-        <button onClick={openCreate} className="btn-primary gap-2">
+        <button onClick={openCreate} className="btn-gold gap-2">
           <Plus className="h-4 w-4" />
-          Create Budget
+          New Budget
         </button>
-      </div>
+      </header>
 
       <DataTable<Budget>
         columns={columns}
         data={budgets ?? []}
-        emptyTitle="No budgets"
-        emptyDescription="Create your first budget to start tracking spending limits."
+        getRowKey={(row) => row.id}
+        emptyTitle="No budgets yet"
+        emptyDescription="A penny ungoverned is a penny lost. Create your first spending limit."
       />
 
       <Modal
         isOpen={modalOpen}
-        onClose={() => setModalOpen(false)}
-        title={editBudget ? 'Edit Budget' : 'Create Budget'}
+        onClose={() => { setModalOpen(false); setSaveError(null); }}
+        title={editBudget ? 'Amend Budget' : 'Open New Budget'}
       >
         <form onSubmit={handleSubmit} className="space-y-4">
+          {saveError && (
+            <div className="rounded-lg border border-oxblood-600/30 bg-oxblood-500/10 px-4 py-3">
+              <p className="text-sm text-oxblood-600 dark:text-oxblood-300">{saveError}</p>
+            </div>
+          )}
           <div>
             <label className="label">Budget Name</label>
             <input
@@ -289,7 +334,7 @@ const Budgets: React.FC = () => {
             <label className="label">Limit Amount ($)</label>
             <input
               type="number"
-              className="input"
+              className="input numeral"
               required
               min="0.01"
               step="0.01"
@@ -307,7 +352,7 @@ const Budgets: React.FC = () => {
               value={formData.alert_thresholds}
               onChange={(e) => setFormData({ ...formData, alert_thresholds: e.target.value })}
             />
-            <p className="mt-1 text-xs text-slate-500">Comma-separated percentages</p>
+            <p className="mt-1 text-xs text-muted">Comma-separated percentages — e.g. 50,80,95</p>
           </div>
           <div>
             <label className="label">Control Action</label>
@@ -322,7 +367,11 @@ const Budgets: React.FC = () => {
             </select>
           </div>
           <div className="flex justify-end gap-3 pt-2">
-            <button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">
+            <button
+              type="button"
+              onClick={() => { setModalOpen(false); setSaveError(null); }}
+              className="btn-secondary"
+            >
               Cancel
             </button>
             <button type="submit" className="btn-primary">
@@ -334,13 +383,20 @@ const Budgets: React.FC = () => {
 
       <ConfirmDialog
         isOpen={confirmId !== null}
-        onClose={() => setConfirmId(null)}
+        onClose={() => { setConfirmId(null); setDeleteError(null); }}
         onConfirm={handleDelete}
-        title="Delete budget"
-        description="This will permanently delete the budget. Alerts triggered by this budget will also stop."
+        title="Strike this budget from the ledger?"
+        description="This will permanently delete the budget. Alerts triggered by this budget will cease forthwith."
         confirmLabel="Delete budget"
         isLoading={deleting}
       />
+
+      {/* Delete error surfaces outside the dialog since the dialog may close */}
+      {deleteError && (
+        <div className="rounded-lg border border-oxblood-600/30 bg-oxblood-500/10 px-4 py-3">
+          <p className="text-sm text-oxblood-600 dark:text-oxblood-300">{deleteError}</p>
+        </div>
+      )}
     </div>
   );
 };

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   AreaChart,
   Area,
@@ -11,11 +11,14 @@ import {
   ResponsiveContainer,
   Legend,
 } from 'recharts';
-import { DollarSign, Zap, Bot, Hash, MessageSquare } from 'lucide-react';
+import { Coins, Zap, Bot, Hash, MessageSquare } from 'lucide-react';
 import ChatDrawer from '../components/ChatDrawer';
 import { api } from '../api/client';
 import StatsCard from '../components/StatsCard';
 import LoadingSpinner from '../components/LoadingSpinner';
+import { useTheme } from '../contexts/ThemeContext';
+import { getChartTheme, tooltipStyle } from '../utils/chartTheme';
+import { formatCurrency, formatNumber } from '../utils/format';
 import type {
   DashboardOverview,
   TimeseriesResponse,
@@ -37,12 +40,12 @@ const granularityMap: Record<Period, string> = {
   month: 'day',
 };
 
-const formatCurrency = (value: number) =>
-  new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
+const POLL_MS = 30_000;
 
-const formatNumber = (value: number) => new Intl.NumberFormat('en-US').format(value);
+export default function Dashboard() {
+  const { theme } = useTheme();
+  const chart = getChartTheme(theme === 'dark');
 
-const Dashboard: React.FC = () => {
   const [chatOpen, setChatOpen] = useState(false);
   const [period, setPeriod] = useState<Period>('week');
   const [loading, setLoading] = useState(true);
@@ -51,9 +54,10 @@ const Dashboard: React.FC = () => {
   const [timeseries, setTimeseries] = useState<TimeseriesResponse | null>(null);
   const [topAgents, setTopAgents] = useState<TopAgentsResponse | null>(null);
   const [budgetStatus, setBudgetStatus] = useState<BudgetStatusResponse | null>(null);
+  const firstLoad = useRef(true);
 
   const fetchData = useCallback(async () => {
-    setLoading(true);
+    if (firstLoad.current) setLoading(true);
     setError(null);
     try {
       const [ov, ts, ta, bs] = await Promise.all([
@@ -70,23 +74,26 @@ const Dashboard: React.FC = () => {
       setTopAgents(ta);
       setBudgetStatus(bs);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load dashboard');
+      setError(err instanceof Error ? err.message : 'Failed to load the ledger');
     } finally {
       setLoading(false);
+      firstLoad.current = false;
     }
   }, [period]);
 
   useEffect(() => {
     fetchData();
+    const id = setInterval(fetchData, POLL_MS);
+    return () => clearInterval(id);
   }, [fetchData]);
 
-  if (loading) return <LoadingSpinner text="Loading dashboard..." />;
+  if (loading) return <LoadingSpinner text="Tallying the books..." size="lg" />;
   if (error)
     return (
-      <div className="text-center py-12">
-        <p className="text-rose-600">{error}</p>
+      <div className="card-ledger mx-auto max-w-md p-8 text-center">
+        <p className="font-display text-lg text-oxblood-600 dark:text-oxblood-300">{error}</p>
         <button onClick={fetchData} className="btn-primary mt-4">
-          Retry
+          Try the count again
         </button>
       </div>
     );
@@ -100,105 +107,108 @@ const Dashboard: React.FC = () => {
   }));
 
   const agentData = (topAgents?.data ?? []).slice(0, 8);
-
   const budgets = budgetStatus?.data ?? [];
 
   return (
-    <div className="space-y-6 relative">
-      {/* Floating Chat Button */}
+    <div className="relative space-y-6">
       <button
         onClick={() => setChatOpen(true)}
-        className="fixed bottom-6 right-6 z-30 flex items-center justify-center h-14 w-14 rounded-full bg-gradient-to-br from-teal-500 to-teal-600 text-white shadow-glow-teal hover:shadow-lg hover:scale-105 transition-all"
-        title="Ask CMA"
+        className="fixed bottom-6 right-6 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-gold-leaf text-emerald-950 shadow-glow-gold transition-all hover:scale-105"
+        title="Ask Scrooge"
+        aria-label="Ask Scrooge"
       >
         <MessageSquare className="h-6 w-6" />
       </button>
       <ChatDrawer open={chatOpen} onClose={() => setChatOpen(false)} />
 
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Dashboard</h1>
-          <p className="text-sm text-slate-500 mt-1">Monitor your LLM costs and usage</p>
+          <p className="eyebrow">Counting House · {periodLabels[period]}</p>
+          <h1 className="font-display text-3xl font-semibold tracking-tight text-primary">
+            The Ledger
+          </h1>
+          <p className="mt-1 text-sm text-muted">
+            Every farthing your agents spend, accounted for.
+          </p>
         </div>
-        <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-1">
+        <div className="flex items-center gap-1 rounded-lg border border-token bg-surface p-1">
           {(Object.keys(periodLabels) as Period[]).map((p) => (
             <button
               key={p}
               onClick={() => setPeriod(p)}
-              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+              className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
                 period === p
-                  ? 'bg-teal-600 text-white'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+                  ? 'bg-brand-600 text-white shadow-subtle'
+                  : 'text-secondary hover:bg-surface-2 hover:text-primary'
               }`}
             >
               {periodLabels[p]}
             </button>
           ))}
         </div>
-      </div>
+      </header>
 
-      {/* Stats Cards */}
+      {/* Stats */}
       {overview && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <StatsCard
             title="Total Cost"
             value={formatCurrency(overview.total_cost)}
             change={overview.cost_change_pct}
-            icon={DollarSign}
-            iconColor="text-teal-600"
-            iconBg="bg-teal-50"
+            icon={Coins}
+            delay={0}
+            invertChange
           />
           <StatsCard
             title="Total Requests"
             value={formatNumber(overview.total_requests)}
             change={overview.request_change_pct}
             icon={Zap}
-            iconColor="text-amber-600"
-            iconBg="bg-amber-50"
+            delay={60}
           />
           <StatsCard
             title="Active Agents"
             value={formatNumber(overview.active_agents)}
             icon={Bot}
-            iconColor="text-emerald-600"
-            iconBg="bg-emerald-50"
+            delay={120}
           />
           <StatsCard
             title="Total Tokens"
             value={formatNumber(overview.total_tokens)}
             icon={Hash}
-            iconColor="text-rose-600"
-            iconBg="bg-rose-50"
+            delay={180}
           />
         </div>
       )}
 
-      {/* Cost & Requests Timeseries */}
-      <div className="card p-6">
-        <h2 className="text-base font-semibold text-slate-900 mb-4">Cost & Requests Over Time</h2>
+      {/* Timeseries */}
+      <section className="card-ledger p-6">
+        <h2 className="mb-4 font-display text-lg font-semibold text-primary">
+          Expenditure &amp; Activity
+        </h2>
         <ResponsiveContainer width="100%" height={320}>
           <AreaChart data={tsData}>
             <defs>
               <linearGradient id="colorCost" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#14B8A6" stopOpacity={0.15} />
-                <stop offset="95%" stopColor="#14B8A6" stopOpacity={0} />
+                <stop offset="5%" stopColor={chart.gold} stopOpacity={0.22} />
+                <stop offset="95%" stopColor={chart.gold} stopOpacity={0} />
               </linearGradient>
               <linearGradient id="colorRequests" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#10b981" stopOpacity={0.15} />
-                <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                <stop offset="5%" stopColor={chart.forest} stopOpacity={0.18} />
+                <stop offset="95%" stopColor={chart.forest} stopOpacity={0} />
               </linearGradient>
             </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+            <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
             <XAxis
               dataKey="label"
-              tick={{ fontSize: 12, fill: '#64748b' }}
-              axisLine={{ stroke: '#e2e8f0' }}
+              tick={{ fontSize: 12, fill: chart.axis }}
+              axisLine={{ stroke: chart.grid }}
               tickLine={false}
             />
             <YAxis
               yAxisId="cost"
-              tick={{ fontSize: 12, fill: '#64748b' }}
+              tick={{ fontSize: 12, fill: chart.axis }}
               axisLine={false}
               tickLine={false}
               tickFormatter={(v) => `$${v}`}
@@ -206,57 +216,53 @@ const Dashboard: React.FC = () => {
             <YAxis
               yAxisId="requests"
               orientation="right"
-              tick={{ fontSize: 12, fill: '#64748b' }}
+              tick={{ fontSize: 12, fill: chart.axis }}
               axisLine={false}
               tickLine={false}
             />
             <Tooltip
-              contentStyle={{
-                backgroundColor: '#fff',
-                border: '1px solid #e2e8f0',
-                borderRadius: '8px',
-                fontSize: '13px',
-              }}
+              contentStyle={tooltipStyle(chart)}
               formatter={(value: number, name: string) =>
                 name === 'cost' ? formatCurrency(value) : formatNumber(value)
               }
             />
             <Legend
-              wrapperStyle={{ fontSize: '13px' }}
+              wrapperStyle={{ fontSize: '13px', color: chart.axis }}
               formatter={(value) => (value === 'cost' ? 'Cost' : 'Requests')}
             />
             <Area
               yAxisId="cost"
               type="monotone"
               dataKey="cost"
-              stroke="#14B8A6"
-              strokeWidth={2}
+              stroke={chart.gold}
+              strokeWidth={2.5}
               fill="url(#colorCost)"
             />
             <Area
               yAxisId="requests"
               type="monotone"
               dataKey="requests"
-              stroke="#10b981"
+              stroke={chart.forest}
               strokeWidth={2}
               fill="url(#colorRequests)"
             />
           </AreaChart>
         </ResponsiveContainer>
-      </div>
+      </section>
 
-      {/* Bottom Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Top Agents */}
-        <div className="card p-6">
-          <h2 className="text-base font-semibold text-slate-900 mb-4">Top Agents by Cost</h2>
+      {/* Bottom row */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <section className="card p-6">
+          <h2 className="mb-4 font-display text-lg font-semibold text-primary">
+            Biggest Spenders
+          </h2>
           {agentData.length > 0 ? (
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={agentData} layout="vertical" margin={{ left: 20 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" horizontal={false} />
+                <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} horizontal={false} />
                 <XAxis
                   type="number"
-                  tick={{ fontSize: 12, fill: '#64748b' }}
+                  tick={{ fontSize: 12, fill: chart.axis }}
                   axisLine={false}
                   tickLine={false}
                   tickFormatter={(v) => `$${v}`}
@@ -264,62 +270,61 @@ const Dashboard: React.FC = () => {
                 <YAxis
                   type="category"
                   dataKey="agent_name"
-                  tick={{ fontSize: 12, fill: '#64748b' }}
+                  tick={{ fontSize: 12, fill: chart.axis }}
                   axisLine={false}
                   tickLine={false}
                   width={100}
                 />
                 <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#fff',
-                    border: '1px solid #e2e8f0',
-                    borderRadius: '8px',
-                    fontSize: '13px',
-                  }}
+                  contentStyle={tooltipStyle(chart)}
+                  cursor={{ fill: chart.grid, opacity: 0.25 }}
                   formatter={(value: number) => formatCurrency(value)}
                 />
-                <Bar dataKey="total_cost" fill="#14B8A6" radius={[0, 4, 4, 0]} barSize={20} />
+                <Bar dataKey="total_cost" fill={chart.gold} radius={[0, 4, 4, 0]} barSize={20} />
               </BarChart>
             </ResponsiveContainer>
           ) : (
-            <p className="text-sm text-slate-500 text-center py-8">No agent data available</p>
+            <p className="py-8 text-center text-sm text-muted">No agent has spent a penny yet.</p>
           )}
-        </div>
+        </section>
 
-        {/* Budget Status */}
-        <div className="card p-6">
-          <h2 className="text-base font-semibold text-slate-900 mb-4">Budget Status</h2>
+        <section className="card p-6">
+          <h2 className="mb-4 font-display text-lg font-semibold text-primary">Coffers</h2>
           {budgets.length > 0 ? (
             <div className="space-y-4">
               {budgets.map((b) => {
                 const pct = Math.min(b.percentage, 100);
+                const tone =
+                  pct > 90 ? 'oxblood' : pct > 50 ? 'gold' : 'brand';
                 const barColor =
-                  pct > 90 ? 'bg-rose-500' : pct > 50 ? 'bg-amber-500' : 'bg-emerald-500';
+                  tone === 'oxblood'
+                    ? 'bg-oxblood-500'
+                    : tone === 'gold'
+                      ? 'bg-gold-400'
+                      : 'bg-brand-500';
+                const textColor =
+                  tone === 'oxblood'
+                    ? 'text-oxblood-600 dark:text-oxblood-300'
+                    : tone === 'gold'
+                      ? 'text-gold-700 dark:text-gold-300'
+                      : 'text-brand-600 dark:text-brand-300';
                 return (
                   <div key={b.budget_id}>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="text-sm font-medium text-slate-700">{b.name}</span>
-                      <span className="text-xs text-slate-500">
+                    <div className="mb-1.5 flex items-center justify-between">
+                      <span className="text-sm font-medium text-primary">{b.name}</span>
+                      <span className="numeral text-xs text-muted">
                         {formatCurrency(b.spent)} / {formatCurrency(b.limit_amount)}
                       </span>
                     </div>
-                    <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                    <div className="h-2 overflow-hidden rounded-full bg-surface-2">
                       <div
-                        className={`h-full ${barColor} rounded-full transition-all`}
+                        className={`h-full rounded-full transition-all ${barColor}`}
                         style={{ width: `${pct}%` }}
                       />
                     </div>
-                    <div className="flex items-center justify-between mt-1">
-                      <span className="text-xs text-slate-400">{b.scope}</span>
-                      <span
-                        className={`text-xs font-medium ${
-                          pct > 90
-                            ? 'text-rose-600'
-                            : pct > 50
-                              ? 'text-amber-600'
-                              : 'text-emerald-600'
-                        }`}
-                      >
+                    <div className="mt-1 flex items-center justify-between">
+                      <span className="text-xs capitalize text-muted">{b.scope}</span>
+                      <span className={`numeral text-xs font-semibold ${textColor}`}>
                         {pct.toFixed(1)}%
                       </span>
                     </div>
@@ -328,12 +333,10 @@ const Dashboard: React.FC = () => {
               })}
             </div>
           ) : (
-            <p className="text-sm text-slate-500 text-center py-8">No budgets configured</p>
+            <p className="py-8 text-center text-sm text-muted">No coffers under watch.</p>
           )}
-        </div>
+        </section>
       </div>
     </div>
   );
-};
-
-export default Dashboard;
+}
