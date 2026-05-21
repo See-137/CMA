@@ -56,7 +56,12 @@ export function useMutation<TReq, TRes>(
       setLoading(true);
       setError(null);
       try {
-        const result = await api[method]<TRes>(path, body);
+        // delete takes no body; keep the call signatures unambiguous so the
+        // union-typed dispatch type-checks under strict TS.
+        const result =
+          method === 'delete'
+            ? await api.delete<TRes>(path)
+            : await api[method]<TRes>(path, body);
         setLoading(false);
         return result;
       } catch (err) {
