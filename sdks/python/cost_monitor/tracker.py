@@ -22,6 +22,10 @@ if not logger.handlers:
     logger.setLevel(logging.WARNING)
 
 
+# HTTP status codes that are transient; re-buffer the batch rather than drop.
+_TRANSIENT_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
+
+
 class RequestContext:
     """Context object yielded by CostTracker.trace_request.
 
@@ -219,16 +223,32 @@ class CostTracker:
     ) -> None:
         """Convenience: log from an LLM response usage object.
 
-        Works with OpenAI-style usage objects that have ``prompt_tokens``
-        and ``completion_tokens`` — whether they're dicts or attribute-bearing
-        objects (e.g. ``response.usage``).
+        Accepts both OpenAI-style (``prompt_tokens`` / ``completion_tokens``)
+        and Anthropic-style (``input_tokens`` / ``output_tokens``) usage
+        objects, whether dicts or attribute-bearing objects (e.g. ``response.usage``).
         """
         if isinstance(response_usage, dict):
-            tokens_in = response_usage.get("prompt_tokens", 0)
-            tokens_out = response_usage.get("completion_tokens", 0)
+            tokens_in = (
+                response_usage.get("prompt_tokens")
+                or response_usage.get("input_tokens")
+                or 0
+            )
+            tokens_out = (
+                response_usage.get("completion_tokens")
+                or response_usage.get("output_tokens")
+                or 0
+            )
         else:
-            tokens_in = getattr(response_usage, "prompt_tokens", 0)
-            tokens_out = getattr(response_usage, "completion_tokens", 0)
+            tokens_in = (
+                getattr(response_usage, "prompt_tokens", None)
+                or getattr(response_usage, "input_tokens", None)
+                or 0
+            )
+            tokens_out = (
+                getattr(response_usage, "completion_tokens", None)
+                or getattr(response_usage, "output_tokens", None)
+                or 0
+            )
 
         self.log_event(
             agent_name=agent,
@@ -264,11 +284,22 @@ class CostTracker:
             with self._lock:
                 self._buffer = batch + self._buffer
         except httpx.HTTPStatusError as exc:
-            logger.warning(
-                "CMA backend returned HTTP %d — dropping %d events.",
-                exc.response.status_code,
-                len(batch),
-            )
+            status_code = exc.response.status_code
+            if status_code in _TRANSIENT_STATUS_CODES:
+                logger.warning(
+                    "CMA backend returned transient HTTP %d — "
+                    "re-buffering %d events for next flush.",
+                    status_code,
+                    len(batch),
+                )
+                with self._lock:
+                    self._buffer = batch + self._buffer
+            else:
+                logger.warning(
+                    "CMA backend returned HTTP %d — dropping %d events.",
+                    status_code,
+                    len(batch),
+                )
         except Exception:
             logger.warning(
                 "Unexpected error flushing %d events to CMA backend.",
@@ -297,9 +328,16 @@ class CostTracker:
     # ------------------------------------------------------------------
 
     def _flush_loop(self) -> None:
-        """Background thread: flush the buffer every ``flush_interval`` seconds."""
+        """Background thread: flush immediately on first iteration, then sleep.
+
+        Flushing before the first sleep ensures short-lived scripts ship events
+        without waiting a full flush_interval.
+        """
+        first = True
         while self._running:
-            time.sleep(self._flush_interval)
+            if not first:
+                time.sleep(self._flush_interval)
+            first = False
             try:
                 self.flush()
             except Exception:
