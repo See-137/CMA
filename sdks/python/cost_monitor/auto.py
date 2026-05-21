@@ -7,6 +7,7 @@ from cost_monitor.tracker import CostTracker
 logger = logging.getLogger("cost_monitor.auto")
 
 _tracker: CostTracker | None = None
+_atexit_registered = False  # guard against stacking atexit callbacks on repeated calls
 
 
 def auto_instrument(
@@ -15,7 +16,20 @@ def auto_instrument(
     default_agent: str = "auto",
     flush_interval: float = 5.0,
 ) -> CostTracker:
-    global _tracker
+    """Instrument all installed LLM libraries (OpenAI, Anthropic, LangChain).
+
+    Safe to call multiple times; the previous tracker is closed and replaced.
+
+    LangChain note: this function registers a :class:`CMACallbackHandler` in
+    LangChain's global callback manager when langchain_core (or langchain) is
+    installed. If you need per-chain control, import and attach the handler
+    manually instead::
+
+        from cost_monitor._langchain import CMACallbackHandler
+        llm = ChatOpenAI(callbacks=[CMACallbackHandler(tracker)])
+    """
+    global _tracker, _atexit_registered
+
     if _tracker is not None:
         _tracker.close()
 
@@ -44,11 +58,47 @@ def auto_instrument(
     except ImportError:
         pass
 
-    atexit.register(stop)
+    # Register LangChain global callback if langchain_core or langchain is installed.
+    # We attempt to inject into the global callback manager so all chains are covered
+    # automatically. If the global manager is unavailable (older langchain version or
+    # incompatible API), we log a one-time warning and skip silently.
+    try:
+        from cost_monitor._langchain import CMACallbackHandler
+
+        handler = CMACallbackHandler(_tracker)
+
+        try:
+            # langchain_core >= 0.1 exposes a global callback manager
+            from langchain_core.callbacks import get_callback_manager  # type: ignore[attr-defined]
+
+            get_callback_manager().add_handler(handler, inherit=True)
+            logger.info("LangChain auto-instrumentation enabled (global callback manager)")
+        except (ImportError, AttributeError):
+            # Global manager not available in this version; attach to BaseCallbackManager
+            # if possible, otherwise advise manual attachment.
+            try:
+                from langchain.callbacks import get_callback_manager as _gcm  # type: ignore[attr-defined]
+
+                _gcm().add_handler(handler)
+                logger.info("LangChain auto-instrumentation enabled (legacy callback manager)")
+            except (ImportError, AttributeError):
+                logger.info(
+                    "LangChain detected but global callback manager unavailable. "
+                    "Attach CMACallbackHandler manually: "
+                    "llm = ChatOpenAI(callbacks=[CMACallbackHandler(tracker)])"
+                )
+    except ImportError:
+        pass  # langchain not installed
+
+    if not _atexit_registered:
+        atexit.register(stop)
+        _atexit_registered = True
+
     return _tracker
 
 
-def stop():
+def stop() -> None:
+    """Flush and close the active tracker."""
     global _tracker
     if _tracker is not None:
         _tracker.close()
