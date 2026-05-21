@@ -77,13 +77,20 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
 
-    # Start daily rollup & retention background task
-    maintenance_task = asyncio.create_task(_daily_maintenance())
+    # Start daily rollup & retention background task. Gated so multi-worker
+    # deployments can run it on exactly one process (set CMA_ENABLE_MAINTENANCE
+    # =false on the others) — the loop is not safe to run concurrently.
+    maintenance_task = None
+    if settings.ENABLE_MAINTENANCE:
+        maintenance_task = asyncio.create_task(_daily_maintenance())
+    else:
+        logger.info("Daily maintenance disabled (CMA_ENABLE_MAINTENANCE=false)")
 
     yield
 
     # Shutdown
-    maintenance_task.cancel()
+    if maintenance_task is not None:
+        maintenance_task.cancel()
     logger.info("Shutting down CMA backend...")
 
 
@@ -97,9 +104,11 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    # Auth is a Bearer header, not cookies — credentialed CORS buys nothing and
+    # is dangerous if an origin is ever set permissively.
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Admin-Password"],
 )
 
 # Mount all routers under /api/v1

@@ -7,6 +7,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base, get_db
 from app.main import app
 from app.seed import seed_providers
+from app.services.rate_limit import reset as reset_rate_limit
 
 # In-memory SQLite for tests
 TEST_ENGINE = create_engine(
@@ -29,6 +30,7 @@ def override_get_db():
 def setup_db():
     """Create fresh tables for each test and seed provider pricing."""
     Base.metadata.create_all(bind=TEST_ENGINE)
+    reset_rate_limit()  # in-process limiter is global; isolate per test
     db = TestSession()
     try:
         seed_providers(db)

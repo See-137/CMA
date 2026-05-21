@@ -1,5 +1,6 @@
 """RAG chat endpoints — non-streaming and SSE streaming."""
 
+import asyncio
 import json
 import logging
 
@@ -13,10 +14,19 @@ from app.config import settings
 from app.schemas.schemas import ChatRequest, ChatResponse, CitationOut
 from app.services.llm_provider import get_llm_provider
 from app.services.rag_engine import build_messages, retrieve
+from app.services.rate_limit import rate_limit
 from app.services.vector_store import get_events_collection, get_rollups_collection
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+_chat_limit = rate_limit("chat", lambda: settings.RATE_LIMIT_CHAT_PER_MINUTE)
+
+
+async def _retrieve_async(message: str, db: Session):
+    """Run the blocking retrieval (SQL + CPU-bound embedding) off the event loop."""
+    return await asyncio.to_thread(retrieve, message, db)
+
 
 _LLM_ERROR_MAP = {
     401: "LLM API key is invalid or expired. Check CMA_OPENAI_API_KEY.",
@@ -25,10 +35,10 @@ _LLM_ERROR_MAP = {
 }
 
 
-@router.post("", response_model=ChatResponse)
+@router.post("", response_model=ChatResponse, dependencies=[Depends(_chat_limit)])
 async def chat(request: ChatRequest, db: Session = Depends(get_db)):
     """Non-streaming RAG chat."""
-    context = retrieve(request.message, db)
+    context = await _retrieve_async(request.message, db)
 
     history = [m.model_dump() for m in request.history] if request.history else []
     messages = build_messages(request.message, context, history)
@@ -62,10 +72,10 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
     )
 
 
-@router.post("/stream")
+@router.post("/stream", dependencies=[Depends(_chat_limit)])
 async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
     """Streaming RAG chat via Server-Sent Events."""
-    context = retrieve(request.message, db)
+    context = await _retrieve_async(request.message, db)
 
     history = [m.model_dump() for m in request.history] if request.history else []
     messages = build_messages(request.message, context, history)

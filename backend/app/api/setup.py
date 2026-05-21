@@ -1,3 +1,4 @@
+import hmac
 import secrets
 
 import bcrypt
@@ -58,12 +59,11 @@ def reconnect(body: SetupRequest, db: Session = Depends(get_db)):
     if not config or not config.is_setup_complete:
         raise HTTPException(status_code=400, detail="Setup not completed yet")
 
-    if body.admin_email != config.admin_email:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-
-    if not bcrypt.checkpw(
+    email_ok = hmac.compare_digest(config.admin_email, body.admin_email)
+    password_ok = bcrypt.checkpw(
         body.admin_password.encode(), config.admin_password_hash.encode()
-    ):
+    )
+    if not (email_ok and password_ok):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     return SetupResponse(

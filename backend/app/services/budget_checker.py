@@ -52,22 +52,32 @@ def _alert_exists_for_period(
         .filter(
             Alert.budget_id == budget_id,
             Alert.created_at >= period_start,
-            Alert.message.contains(f"{threshold}%"),
+            # Match the unambiguous marker emitted in the message, not a bare
+            # "{n}%" substring which collides across thresholds.
+            Alert.message.contains(f"(threshold: {threshold}%)"),
         )
         .first()
         is not None
     )
 
 
-def check_budget_enforcement(
-    agent_name: str,
-    workflow: str | None,
-    swarm: str | None,
-    db: Session,
-) -> tuple[bool, str | None]:
-    """Check if any active budget with enforcement action blocks this event.
+def _scope_matches(
+    budget: Budget, agent_name: str, workflow: str | None, swarm: str | None
+) -> bool:
+    if budget.scope == "agent" and budget.scope_ref:
+        return budget.scope_ref == agent_name
+    if budget.scope == "swarm" and budget.scope_ref:
+        return budget.scope_ref == swarm
+    if budget.scope == "workflow" and budget.scope_ref:
+        return budget.scope_ref == workflow
+    return True  # scope == "global" matches everything
 
-    Returns (accepted, rejection_reason).
+
+def load_enforcement_state(db: Session) -> list[dict]:
+    """Prefetch active enforcement budgets with their current-period spend.
+
+    Called once per ingestion request so we don't re-run a SUM(cost) query for
+    every budget for every event in a batch.
     """
     budgets = (
         db.query(Budget)
@@ -77,34 +87,37 @@ def check_budget_enforcement(
         )
         .all()
     )
+    return [{"budget": b, "spend": _current_spend(b, db)} for b in budgets]
 
-    for budget in budgets:
-        # Check if this event falls under this budget's scope
-        if (
-            budget.scope == "agent"
-            and budget.scope_ref
-            and budget.scope_ref != agent_name
-        ):
-            continue
-        if budget.scope == "swarm" and budget.scope_ref and budget.scope_ref != swarm:
-            continue
-        if (
-            budget.scope == "workflow"
-            and budget.scope_ref
-            and budget.scope_ref != workflow
-        ):
-            continue
-        # scope == "global" matches everything
 
-        spend = _current_spend(budget, db)
-        if budget.limit_amount > 0 and spend >= budget.limit_amount:
+def event_rejection_reason(
+    state: list[dict],
+    agent_name: str,
+    workflow: str | None,
+    swarm: str | None,
+    cost: float,
+) -> str | None:
+    """Check one event against prefetched enforcement state.
+
+    Returns a rejection reason if a matching budget is already at/over its limit,
+    otherwise accumulates `cost` into matching budgets (so a single batch can't
+    overshoot) and returns None.
+    """
+    matched = []
+    for entry in state:
+        budget = entry["budget"]
+        if not _scope_matches(budget, agent_name, workflow, swarm):
+            continue
+        if budget.limit_amount > 0 and entry["spend"] >= budget.limit_amount:
             return (
-                False,
-                f"Budget '{budget.name}' exceeded: ${spend:.2f} / "
-                f"${budget.limit_amount:.2f} ({budget.period})",
+                f"Budget '{budget.name}' exceeded: ${entry['spend']:.2f} / "
+                f"${budget.limit_amount:.2f} ({budget.period})"
             )
+        matched.append(entry)
 
-    return (True, None)
+    for entry in matched:
+        entry["spend"] += cost
+    return None
 
 
 def check_budgets(db: Session) -> list[Alert]:

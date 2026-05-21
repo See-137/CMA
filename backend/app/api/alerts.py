@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -6,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.models.models import Alert, AlertChannel
 from app.schemas.schemas import AlertChannelCreate, AlertChannelOut, AlertOut
+from app.services.alert_service import UnsafeWebhookURL, validate_external_url
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
 
@@ -37,6 +39,28 @@ def list_channels(db: Session = Depends(get_db)):
 
 @router.post("/channels", response_model=AlertChannelOut, status_code=201)
 def create_channel(body: AlertChannelCreate, db: Session = Depends(get_db)):
+    try:
+        config = json.loads(body.config)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise HTTPException(
+            status_code=422, detail="config must be valid JSON"
+        ) from exc
+    if not isinstance(config, dict):
+        raise HTTPException(status_code=422, detail="config must be a JSON object")
+
+    url_field = {"webhook": "url", "slack": "webhook_url"}.get(body.channel_type)
+    if url_field:
+        url = config.get(url_field)
+        if not url:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{body.channel_type} channel requires '{url_field}' in config",
+            )
+        try:
+            validate_external_url(url)
+        except UnsafeWebhookURL as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     channel = AlertChannel(
         name=body.name,
         channel_type=body.channel_type,

@@ -1,7 +1,7 @@
 import json
 from datetime import datetime
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 # -- Setup --------------------------------------------------------------------
@@ -45,19 +45,25 @@ class LoginResponse(BaseModel):
 
 
 class EventIn(BaseModel):
-    trace_id: str | None = None
-    agent_name: str
-    model: str
-    provider: str
-    tokens_input: int
-    tokens_output: int
-    cost: float | None = None
-    duration_ms: int | None = None
-    status: str = "success"
-    workflow: str | None = None
-    swarm: str | None = None
+    trace_id: str | None = Field(default=None, max_length=255)
+    agent_name: str = Field(min_length=1, max_length=255)
+    model: str = Field(min_length=1, max_length=255)
+    provider: str = Field(min_length=1, max_length=255)
+    tokens_input: int = Field(ge=0)
+    tokens_output: int = Field(ge=0)
+    cost: float | None = Field(default=None, ge=0)
+    duration_ms: int | None = Field(default=None, ge=0)
+    status: str = Field(default="success", max_length=50)
+    workflow: str | None = Field(default=None, max_length=255)
+    swarm: str | None = Field(default=None, max_length=255)
     metadata: dict | None = None
     timestamp: datetime | None = None
+
+
+class EventsEnvelope(BaseModel):
+    """Wrapper shape the SDK sends: {"events": [...]}."""
+
+    events: list[EventIn]
 
 
 class EventOut(BaseModel):
@@ -354,8 +360,8 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    message: str
-    history: list[ChatMessage] = []
+    message: str = Field(min_length=1, max_length=4000)
+    history: list[ChatMessage] = Field(default=[], max_length=50)
     stream: bool = False
 
 
