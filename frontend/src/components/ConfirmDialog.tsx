@@ -43,12 +43,15 @@ export default function ConfirmDialog({
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div
+        className="absolute inset-0 bg-ink-950/60 backdrop-blur-[2px]"
+        onClick={onClose}
+      />
       <div
         role="alertdialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="card relative w-full max-w-sm p-6 animate-scale-in"
+        className="card-ledger relative w-full max-w-sm p-6 animate-scale-in shadow-elevated"
       >
         <div className="flex items-start gap-4">
           {variant === 'danger' && (

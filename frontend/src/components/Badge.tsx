@@ -1,5 +1,3 @@
-import React from 'react';
-
 type BadgeVariant = 'success' | 'warning' | 'danger' | 'info' | 'default';
 
 interface BadgeProps {
@@ -8,21 +6,19 @@ interface BadgeProps {
 }
 
 const variantClasses: Record<BadgeVariant, string> = {
-  success: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20',
-  warning: 'bg-amber-50 text-amber-700 ring-amber-600/20',
-  danger: 'bg-rose-50 text-rose-700 ring-rose-600/20',
-  info: 'bg-teal-50 text-teal-700 ring-teal-600/20',
-  default: 'bg-slate-50 text-slate-700 ring-slate-600/20',
+  success: 'bg-brand-500/12 text-brand-700 ring-brand-600/25 dark:text-brand-300',
+  warning: 'bg-gold-400/15 text-gold-700 ring-gold-600/30 dark:text-gold-300',
+  danger: 'bg-oxblood-500/12 text-oxblood-700 ring-oxblood-600/25 dark:text-oxblood-300',
+  info: 'bg-brand-500/10 text-brand-700 ring-brand-600/20 dark:text-brand-300',
+  default: 'bg-ink-500/10 text-secondary ring-ink-500/20',
 };
 
-const Badge: React.FC<BadgeProps> = ({ text, variant = 'default' }) => {
+export default function Badge({ text, variant = 'default' }: BadgeProps) {
   return (
     <span
-      className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset ${variantClasses[variant]}`}
+      className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide ring-1 ring-inset ${variantClasses[variant]}`}
     >
       {text}
     </span>
   );
-};
-
-export default Badge;
+}

@@ -12,7 +12,7 @@ class ApiError extends Error {
   }
 }
 
-function getAuthHeaders(): Record<string, string> {
+function getAuthHeaders(extra?: Record<string, string>): Record<string, string> {
   const apiKey = localStorage.getItem('api_key');
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -20,7 +20,7 @@ function getAuthHeaders(): Record<string, string> {
   if (apiKey) {
     headers['Authorization'] = `Bearer ${apiKey}`;
   }
-  return headers;
+  return { ...headers, ...extra };
 }
 
 async function handleResponse<T>(response: Response): Promise<T> {
@@ -48,7 +48,11 @@ async function handleResponse<T>(response: Response): Promise<T> {
 }
 
 export const api = {
-  async get<T>(path: string, params?: Record<string, string | number | undefined>): Promise<T> {
+  async get<T>(
+    path: string,
+    params?: Record<string, string | number | undefined>,
+    headers?: Record<string, string>,
+  ): Promise<T> {
     const url = new URL(`${BASE_URL}${path}`, window.location.origin);
     if (params) {
       Object.entries(params).forEach(([key, value]) => {
@@ -59,33 +63,33 @@ export const api = {
     }
     const response = await fetch(url.toString(), {
       method: 'GET',
-      headers: getAuthHeaders(),
+      headers: getAuthHeaders(headers),
     });
     return handleResponse<T>(response);
   },
 
-  async post<T>(path: string, body?: unknown): Promise<T> {
+  async post<T>(path: string, body?: unknown, headers?: Record<string, string>): Promise<T> {
     const response = await fetch(`${BASE_URL}${path}`, {
       method: 'POST',
-      headers: getAuthHeaders(),
+      headers: getAuthHeaders(headers),
       body: body ? JSON.stringify(body) : undefined,
     });
     return handleResponse<T>(response);
   },
 
-  async put<T>(path: string, body?: unknown): Promise<T> {
+  async put<T>(path: string, body?: unknown, headers?: Record<string, string>): Promise<T> {
     const response = await fetch(`${BASE_URL}${path}`, {
       method: 'PUT',
-      headers: getAuthHeaders(),
+      headers: getAuthHeaders(headers),
       body: body ? JSON.stringify(body) : undefined,
     });
     return handleResponse<T>(response);
   },
 
-  async delete<T>(path: string): Promise<T> {
+  async delete<T>(path: string, headers?: Record<string, string>): Promise<T> {
     const response = await fetch(`${BASE_URL}${path}`, {
       method: 'DELETE',
-      headers: getAuthHeaders(),
+      headers: getAuthHeaders(headers),
     });
     return handleResponse<T>(response);
   },

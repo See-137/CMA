@@ -14,6 +14,8 @@ interface DataTableProps<T> {
   onRowClick?: (row: T) => void;
   emptyTitle?: string;
   emptyDescription?: string;
+  /** Stable key per row — avoids array-index reconciliation bugs on delete/reorder. */
+  getRowKey?: (row: T, index: number) => string | number;
 }
 
 function DataTable<T>({
@@ -22,6 +24,7 @@ function DataTable<T>({
   onRowClick,
   emptyTitle = 'No data found',
   emptyDescription = 'There are no records to display.',
+  getRowKey,
 }: DataTableProps<T>) {
   if (data.length === 0) {
     return (
@@ -36,35 +39,43 @@ function DataTable<T>({
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="bg-slate-50 border-b border-slate-200">
-              {columns.map((col) => (
+            <tr className="border-b border-token bg-surface-2">
+              {columns.map((col, ci) => (
                 <th
-                  key={col.accessor}
-                  className="px-4 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider"
+                  key={`${col.accessor}-${ci}`}
+                  className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-muted"
                 >
                   {col.header}
                 </th>
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100">
-            {data.map((row, i) => (
-              <tr
-                key={i}
-                onClick={() => onRowClick?.(row)}
-                className={`${
-                  onRowClick ? 'cursor-pointer' : ''
-                } hover:bg-slate-50 transition-colors`}
-              >
-                {columns.map((col) => (
-                  <td key={col.accessor} className="px-4 py-3 text-slate-700 whitespace-nowrap">
-                    {col.render
-                      ? col.render(row)
-                      : String((row as Record<string, unknown>)[col.accessor] ?? '-')}
-                  </td>
-                ))}
-              </tr>
-            ))}
+          <tbody>
+            {data.map((row, i) => {
+              const rowKey = getRowKey
+                ? getRowKey(row, i)
+                : ((row as Record<string, unknown>).id as string | number) ?? i;
+              return (
+                <tr
+                  key={rowKey}
+                  onClick={() => onRowClick?.(row)}
+                  className={`border-b border-[color:var(--color-border)] transition-colors last:border-0 hover:bg-surface-2 ${
+                    onRowClick ? 'cursor-pointer' : ''
+                  }`}
+                >
+                  {columns.map((col, ci) => (
+                    <td
+                      key={`${col.accessor}-${ci}`}
+                      className="whitespace-nowrap px-4 py-3 text-secondary"
+                    >
+                      {col.render
+                        ? col.render(row)
+                        : String((row as Record<string, unknown>)[col.accessor] ?? '—')}
+                    </td>
+                  ))}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

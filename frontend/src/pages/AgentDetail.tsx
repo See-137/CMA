@@ -12,65 +12,47 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Coins, Zap, Hash } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import Badge from '../components/Badge';
 import DataTable, { Column } from '../components/DataTable';
 import LoadingSpinner from '../components/LoadingSpinner';
+import StatsCard from '../components/StatsCard';
+import { useTheme } from '../contexts/ThemeContext';
+import { getChartTheme, tooltipStyle } from '../utils/chartTheme';
+import { formatCurrency, formatNumber, timeAgo, envVariant } from '../utils/format';
 import type { AgentDetail as AgentDetailType } from '../types';
-
-const formatCurrency = (v: number) =>
-  new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(v);
-
-const formatNumber = (v: number) => new Intl.NumberFormat('en-US').format(v);
-
-const timeAgo = (dateStr: string) => {
-  const now = Date.now();
-  const date = new Date(dateStr).getTime();
-  const diffMs = now - date;
-  const diffMin = Math.floor(diffMs / 60000);
-  if (diffMin < 1) return 'just now';
-  if (diffMin < 60) return `${diffMin}m ago`;
-  const diffHrs = Math.floor(diffMin / 60);
-  if (diffHrs < 24) return `${diffHrs}h ago`;
-  const diffDays = Math.floor(diffHrs / 24);
-  if (diffDays < 7) return `${diffDays}d ago`;
-  return new Date(dateStr).toLocaleDateString();
-};
-
-const envVariant = (env: string) => {
-  switch (env.toLowerCase()) {
-    case 'dev':
-    case 'development':
-      return 'info' as const;
-    case 'staging':
-      return 'warning' as const;
-    case 'prod':
-    case 'production':
-      return 'success' as const;
-    default:
-      return 'default' as const;
-  }
-};
-
-const COLORS = ['#14B8A6', '#F59E0B', '#0D9488', '#D97706', '#0F766E', '#B45309', '#06b6d4'];
 
 const AgentDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { theme } = useTheme();
+  const chart = getChartTheme(theme === 'dark');
+
   const { data: agent, loading, error } = useApi<AgentDetailType>(`/api/v1/agents/${id}`);
 
-  if (loading) return <LoadingSpinner text="Loading agent details..." />;
+  if (loading) return <LoadingSpinner text="Pulling the dossier…" size="lg" />;
   if (error)
     return (
-      <div className="text-center py-12">
-        <p className="text-rose-600">{error}</p>
+      <div className="card-ledger mx-auto max-w-md p-8 text-center">
+        <p className="font-display text-lg text-oxblood-600 dark:text-oxblood-300">{error}</p>
         <button onClick={() => navigate('/agents')} className="btn-secondary mt-4">
           Back to Agents
         </button>
       </div>
     );
   if (!agent) return null;
+
+  const envBadgeVariant = (env: string): 'info' | 'warning' | 'success' | 'default' => {
+    const v = envVariant(env);
+    if (v === 'dev') return 'info';
+    if (v === 'staging') return 'warning';
+    if (v === 'prod') return 'success';
+    return 'default';
+  };
+
+  // Bar chart colours drawn from the chart theme — rotate through gold / forest / oxblood
+  const BAR_COLORS = [chart.gold, chart.forest, chart.oxblood, chart.gold, chart.forest, chart.oxblood, chart.gold];
 
   const modelChartData = agent.models_used.map((m) => ({
     name: m.model_name,
@@ -85,7 +67,7 @@ const AgentDetail: React.FC = () => {
       month: 'short',
       day: 'numeric',
     });
-    const existing = eventsByDate.get(date) || { cost: 0, requests: 0 };
+    const existing = eventsByDate.get(date) ?? { cost: 0, requests: 0 };
     existing.cost += ev.cost;
     existing.requests += 1;
     eventsByDate.set(date, existing);
@@ -102,30 +84,34 @@ const AgentDetail: React.FC = () => {
       header: 'Time',
       accessor: 'timestamp',
       render: (row) => (
-        <span className="text-slate-500">{timeAgo(row.timestamp)}</span>
+        <span className="numeral text-muted">{timeAgo(row.timestamp)}</span>
       ),
     },
     {
       header: 'Model',
       accessor: 'model_name',
-      render: (row) => <span className="font-medium">{row.model_name}</span>,
+      render: (row) => <span className="font-medium text-primary">{row.model_name}</span>,
     },
     { header: 'Provider', accessor: 'provider_name' },
     {
       header: 'Tokens In',
       accessor: 'tokens_input',
-      render: (row) => formatNumber(row.tokens_input),
+      render: (row) => (
+        <span className="numeral text-secondary">{formatNumber(row.tokens_input)}</span>
+      ),
     },
     {
       header: 'Tokens Out',
       accessor: 'tokens_output',
-      render: (row) => formatNumber(row.tokens_output),
+      render: (row) => (
+        <span className="numeral text-secondary">{formatNumber(row.tokens_output)}</span>
+      ),
     },
     {
       header: 'Cost',
       accessor: 'cost',
       render: (row) => (
-        <span className="font-medium">{formatCurrency(row.cost)}</span>
+        <span className="numeral font-medium text-gold">{formatCurrency(row.cost)}</span>
       ),
     },
     {
@@ -142,157 +128,192 @@ const AgentDetail: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Back button */}
+      {/* Back */}
       <button
         onClick={() => navigate('/agents')}
-        className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-900 transition-colors"
+        className="inline-flex items-center gap-1.5 text-sm text-muted transition-colors hover:text-primary"
       >
         <ArrowLeft className="h-4 w-4" />
         Back to Agents
       </button>
 
-      {/* Agent Info */}
-      <div className="card p-6">
-        <div className="flex items-start justify-between">
+      {/* Agent Identity Card */}
+      <div className="card-ledger p-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold text-slate-900">{agent.name}</h1>
+            <p className="eyebrow">Agent Dossier</p>
+            <div className="mt-1 flex flex-wrap items-center gap-3">
+              <h1 className="font-display text-3xl font-semibold tracking-tight text-primary">
+                {agent.name}
+              </h1>
               <Badge
                 text={agent.is_active ? 'Active' : 'Inactive'}
                 variant={agent.is_active ? 'success' : 'default'}
               />
-              <Badge text={agent.environment} variant={envVariant(agent.environment)} />
+              <Badge text={agent.environment} variant={envBadgeVariant(agent.environment)} />
             </div>
             {agent.description && (
-              <p className="mt-2 text-sm text-slate-500">{agent.description}</p>
+              <p className="mt-2 text-sm text-muted">{agent.description}</p>
             )}
           </div>
           <div className="text-right">
-            <p className="text-sm text-slate-500">Total Cost</p>
-            <p className="text-2xl font-bold text-slate-900">{formatCurrency(agent.total_cost)}</p>
+            <p className="eyebrow">Total Expenditure</p>
+            <p className="numeral mt-1 text-3xl font-semibold text-gold">
+              {formatCurrency(agent.total_cost)}
+            </p>
           </div>
         </div>
-        <div className="mt-4 pt-4 border-t border-slate-200 flex flex-wrap gap-6 text-sm">
+
+        <div className="hairline my-4" />
+
+        <div className="flex flex-wrap gap-6 text-sm">
           <div>
-            <span className="text-slate-500">Swarm:</span>{' '}
-            <span className="font-medium text-slate-700">{agent.swarm || '-'}</span>
+            <span className="text-muted">Swarm:</span>{' '}
+            <span className="font-medium text-secondary">{agent.swarm || '—'}</span>
           </div>
           <div>
-            <span className="text-slate-500">Workflow:</span>{' '}
-            <span className="font-medium text-slate-700">{agent.workflow || '-'}</span>
+            <span className="text-muted">Workflow:</span>{' '}
+            <span className="font-medium text-secondary">{agent.workflow || '—'}</span>
           </div>
           <div>
-            <span className="text-slate-500">Requests:</span>{' '}
-            <span className="font-medium text-slate-700">{formatNumber(agent.request_count)}</span>
+            <span className="text-muted">Requests:</span>{' '}
+            <span className="numeral font-medium text-secondary">
+              {formatNumber(agent.request_count)}
+            </span>
           </div>
           <div>
-            <span className="text-slate-500">Created:</span>{' '}
-            <span className="font-medium text-slate-700">
+            <span className="text-muted">Enlisted:</span>{' '}
+            <span className="numeral font-medium text-secondary">
               {new Date(agent.created_at).toLocaleDateString()}
             </span>
           </div>
         </div>
       </div>
 
+      {/* Stats row */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <StatsCard
+          title="Total Cost"
+          value={formatCurrency(agent.total_cost)}
+          icon={Coins}
+          delay={0}
+          invertChange
+        />
+        <StatsCard
+          title="Total Requests"
+          value={formatNumber(agent.request_count)}
+          icon={Zap}
+          delay={60}
+        />
+        <StatsCard
+          title="Total Tokens"
+          value={formatNumber(
+            agent.recent_events.reduce(
+              (acc, ev) => acc + (ev.tokens_input ?? 0) + (ev.tokens_output ?? 0),
+              0
+            )
+          )}
+          icon={Hash}
+          delay={120}
+        />
+      </div>
+
       {/* Charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="card p-6">
-          <h2 className="text-base font-semibold text-slate-900 mb-4">Cost by Model</h2>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <section className="card p-6">
+          <h2 className="mb-4 font-display text-lg font-semibold text-primary">Cost by Model</h2>
           {modelChartData.length > 0 ? (
             <ResponsiveContainer width="100%" height={280}>
               <BarChart data={modelChartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
                 <XAxis
                   dataKey="name"
-                  tick={{ fontSize: 11, fill: '#64748b' }}
+                  tick={{ fontSize: 11, fill: chart.axis }}
                   axisLine={false}
                   tickLine={false}
                 />
                 <YAxis
-                  tick={{ fontSize: 12, fill: '#64748b' }}
+                  tick={{ fontSize: 12, fill: chart.axis }}
                   axisLine={false}
                   tickLine={false}
                   tickFormatter={(v) => `$${v}`}
                 />
                 <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#fff',
-                    border: '1px solid #e2e8f0',
-                    borderRadius: '8px',
-                    fontSize: '13px',
-                  }}
+                  contentStyle={tooltipStyle(chart)}
                   formatter={(value: number) => formatCurrency(value)}
                 />
                 <Bar dataKey="cost" radius={[4, 4, 0, 0]} barSize={36}>
                   {modelChartData.map((_, idx) => (
-                    <Cell key={idx} fill={COLORS[idx % COLORS.length]} />
+                    <Cell key={idx} fill={BAR_COLORS[idx % BAR_COLORS.length]} />
                   ))}
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
           ) : (
-            <p className="text-sm text-slate-500 text-center py-8">No model data</p>
+            <p className="py-8 text-center text-sm text-muted">
+              No model has billed this agent yet.
+            </p>
           )}
-        </div>
+        </section>
 
-        <div className="card p-6">
-          <h2 className="text-base font-semibold text-slate-900 mb-4">Cost Over Time</h2>
+        <section className="card p-6">
+          <h2 className="mb-4 font-display text-lg font-semibold text-primary">
+            Cost Over Time
+          </h2>
           {costTimeseries.length > 0 ? (
             <ResponsiveContainer width="100%" height={280}>
               <AreaChart data={costTimeseries}>
                 <defs>
                   <linearGradient id="colorCostAgent" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#14B8A6" stopOpacity={0.15} />
-                    <stop offset="95%" stopColor="#14B8A6" stopOpacity={0} />
+                    <stop offset="5%" stopColor={chart.gold} stopOpacity={0.22} />
+                    <stop offset="95%" stopColor={chart.gold} stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
                 <XAxis
                   dataKey="date"
-                  tick={{ fontSize: 12, fill: '#64748b' }}
+                  tick={{ fontSize: 12, fill: chart.axis }}
                   axisLine={false}
                   tickLine={false}
                 />
                 <YAxis
-                  tick={{ fontSize: 12, fill: '#64748b' }}
+                  tick={{ fontSize: 12, fill: chart.axis }}
                   axisLine={false}
                   tickLine={false}
                   tickFormatter={(v) => `$${v}`}
                 />
                 <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#fff',
-                    border: '1px solid #e2e8f0',
-                    borderRadius: '8px',
-                    fontSize: '13px',
-                  }}
+                  contentStyle={tooltipStyle(chart)}
                   formatter={(value: number) => formatCurrency(value)}
                 />
                 <Area
                   type="monotone"
                   dataKey="cost"
-                  stroke="#14B8A6"
-                  strokeWidth={2}
+                  stroke={chart.gold}
+                  strokeWidth={2.5}
                   fill="url(#colorCostAgent)"
                 />
               </AreaChart>
             </ResponsiveContainer>
           ) : (
-            <p className="text-sm text-slate-500 text-center py-8">No cost data</p>
+            <p className="py-8 text-center text-sm text-muted">
+              No expenditure on record yet.
+            </p>
           )}
-        </div>
+        </section>
       </div>
 
       {/* Recent Events */}
-      <div>
-        <h2 className="text-base font-semibold text-slate-900 mb-4">Recent Events</h2>
+      <section>
+        <h2 className="mb-4 font-display text-lg font-semibold text-primary">Recent Events</h2>
         <DataTable<RecentEvent>
           columns={eventColumns}
           data={agent.recent_events}
-          emptyTitle="No events"
-          emptyDescription="This agent hasn't logged any events yet."
+          emptyTitle="The ledger is empty"
+          emptyDescription="This agent hasn't logged a single transaction yet."
+          getRowKey={(row) => row.id ?? row.timestamp}
         />
-      </div>
+      </section>
     </div>
   );
 };

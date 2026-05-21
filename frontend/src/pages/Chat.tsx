@@ -1,108 +1,25 @@
-import React, { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import {
   Send,
-  Sparkles,
   Trash2,
-  Database,
-  ChevronDown,
-  ChevronRight,
+  Coins,
   TrendingUp,
   AlertTriangle,
-  DollarSign,
   ArrowRightLeft,
 } from 'lucide-react';
 import { useChat } from '../hooks/useChat';
 import { api } from '../api/client';
-import type { ChatMessage, ChatStatus, Citation } from '../types';
+import { MessageBubble } from '../components/ChatMessage';
+import type { ChatStatus } from '../types';
 
 const starterQuestions = [
-  {
-    text: 'Which agent is burning the most money?',
-    icon: DollarSign,
-    color: 'text-teal-600 bg-teal-50',
-  },
-  {
-    text: 'Why did costs spike recently?',
-    icon: TrendingUp,
-    color: 'text-amber-600 bg-amber-50',
-  },
-  {
-    text: 'Show me everything that broke today',
-    icon: AlertTriangle,
-    color: 'text-rose-600 bg-rose-50',
-  },
-  {
-    text: "GPT-4 vs Claude — who's ripping me off more?",
-    icon: ArrowRightLeft,
-    color: 'text-violet-600 bg-violet-50',
-  },
+  { text: 'Which agent is burning the most money?', icon: Coins },
+  { text: 'Why did costs spike recently?', icon: TrendingUp },
+  { text: 'Show me everything that broke today', icon: AlertTriangle },
+  { text: "GPT-4 vs Claude — who's robbing me blind?", icon: ArrowRightLeft },
 ];
 
-const CitationsList: React.FC<{ citations: Citation[] }> = ({ citations }) => {
-  const [expanded, setExpanded] = useState(false);
-
-  if (!citations.length) return null;
-
-  return (
-    <div className="mt-2">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-1 text-xs text-slate-400 hover:text-slate-600 transition-colors"
-      >
-        {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-        <Database className="h-3 w-3" />
-        {citations.length} source{citations.length !== 1 ? 's' : ''}
-      </button>
-      {expanded && (
-        <div className="mt-1.5 space-y-1 pl-4 border-l-2 border-slate-200">
-          {citations.map((c, i) => (
-            <div key={i} className="text-xs text-slate-500">
-              <span className="inline-block px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-medium mr-1">
-                {c.source_type}
-              </span>
-              <span className="text-slate-400">{c.snippet}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-};
-
-const MessageBubble: React.FC<{ msg: ChatMessage; isStreaming?: boolean }> = ({
-  msg,
-  isStreaming,
-}) => {
-  if (msg.role === 'user') {
-    return (
-      <div className="flex justify-end">
-        <div className="max-w-[70%] px-4 py-3 rounded-2xl rounded-br-md bg-teal-600 text-white text-sm leading-relaxed">
-          {msg.content}
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex justify-start">
-      <div className="max-w-[75%]">
-        <div className="px-4 py-3 rounded-2xl rounded-bl-md bg-white border border-slate-200 text-slate-800 text-sm leading-relaxed whitespace-pre-wrap shadow-subtle">
-          {msg.content}
-          {isStreaming && !msg.content && (
-            <span className="inline-flex gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '0ms' }} />
-              <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '150ms' }} />
-              <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '300ms' }} />
-            </span>
-          )}
-        </div>
-        {msg.citations && <CitationsList citations={msg.citations} />}
-      </div>
-    </div>
-  );
-};
-
-const Chat: React.FC = () => {
+export default function Chat() {
   const { messages, sendMessage, isStreaming, error, clearHistory } = useChat();
   const [input, setInput] = useState('');
   const [status, setStatus] = useState<ChatStatus | null>(null);
@@ -110,10 +27,7 @@ const Chat: React.FC = () => {
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    api
-      .get<ChatStatus>('/api/v1/chat/status')
-      .then(setStatus)
-      .catch(() => {});
+    api.get<ChatStatus>('/api/v1/chat/status').then(setStatus).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -134,68 +48,63 @@ const Chat: React.FC = () => {
     }
   };
 
-  const handleStarter = (text: string) => {
-    sendMessage(text);
-  };
-
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)]">
+    <div className="flex h-[calc(100vh-4rem)] flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between pb-4">
+      <header className="flex items-center justify-between pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex items-center justify-center h-10 w-10 rounded-xl bg-gradient-to-br from-teal-400 to-teal-600 shadow-glow-teal">
-            <Sparkles className="h-5 w-5 text-white" />
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-gold-leaf shadow-glow-gold">
+            <Coins className="h-[22px] w-[22px] text-emerald-950" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Ask Scrooge</h1>
-            <p className="text-sm text-slate-500">
-              CMA's cost intelligence assistant
+            <h1 className="font-display text-2xl font-semibold tracking-tight text-primary">
+              Ask Scrooge
+            </h1>
+            <p className="text-sm text-muted">
+              Keeper of the books
               {status && (
-                <span className="text-slate-400">
-                  {' '}&middot; {status.events_indexed} events indexed &middot; {status.llm_model}
+                <span className="numeral">
+                  {' '}· {status.events_indexed} entries indexed · {status.llm_model}
                 </span>
               )}
             </p>
           </div>
         </div>
         {messages.length > 0 && (
-          <button
-            onClick={clearHistory}
-            className="btn-secondary flex items-center gap-2 text-sm"
-          >
+          <button onClick={clearHistory} className="btn-secondary text-sm">
             <Trash2 className="h-4 w-4" />
             Clear
           </button>
         )}
-      </div>
+      </header>
 
-      {/* Messages area */}
-      <div className="flex-1 overflow-y-auto rounded-xl bg-slate-50 border border-slate-200 p-6">
-        <div className="max-w-3xl mx-auto space-y-4">
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto rounded-xl border border-token bg-surface-2 p-6">
+        <div className="mx-auto max-w-3xl space-y-4">
           {messages.length === 0 ? (
             <div className="py-12 text-center">
-              <Sparkles className="h-12 w-12 text-slate-300 mx-auto mb-4" />
-              <h2 className="text-lg font-semibold text-slate-700 mb-2">
-                Hi, I'm Scrooge.
+              <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-gold-leaf shadow-glow-gold">
+                <Coins className="h-8 w-8 text-emerald-950" />
+              </div>
+              <h2 className="font-display text-xl font-semibold text-primary">
+                Bah. Humbug. Let's see the damage.
               </h2>
-              <p className="text-sm text-slate-500 mb-8 max-w-md mx-auto">
-                Yes, that Scrooge. I've indexed your events, spotted some patterns,
-                and I have strong feelings about what I found.
+              <p className="mx-auto mb-8 mt-2 max-w-md text-sm text-muted">
+                I'm Scrooge — I've counted every token your agents have squandered, and
+                I have opinions. Ask away.
               </p>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-lg mx-auto">
-                {starterQuestions.map(({ text, icon: Icon, color }) => (
+              <div className="mx-auto grid max-w-lg grid-cols-1 gap-3 sm:grid-cols-2">
+                {starterQuestions.map(({ text, icon: Icon }) => (
                   <button
                     key={text}
-                    onClick={() => handleStarter(text)}
-                    className="flex items-center gap-3 px-4 py-3 rounded-xl bg-white border border-slate-200 hover:border-teal-300 hover:shadow-card text-left transition-all group"
+                    onClick={() => sendMessage(text)}
+                    className="group flex items-center gap-3 rounded-xl border border-token bg-surface px-4 py-3 text-left transition-all hover:-translate-y-px hover:border-gold-400/60 hover:shadow-card"
                   >
-                    <div className={`flex items-center justify-center h-8 w-8 rounded-lg ${color}`}>
+                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gold-400/15 text-gold-700 dark:text-gold-300">
                       <Icon className="h-4 w-4" />
                     </div>
-                    <span className="text-sm text-slate-600 group-hover:text-slate-900">
-                      {text}
-                    </span>
+                    <span className="text-sm text-secondary group-hover:text-primary">{text}</span>
                   </button>
                 ))}
               </div>
@@ -210,7 +119,7 @@ const Chat: React.FC = () => {
                 />
               ))}
               {error && (
-                <div className="px-4 py-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-600 text-sm">
+                <div className="rounded-xl border border-oxblood-500/30 bg-oxblood-500/10 px-4 py-3 text-sm text-oxblood-600 dark:text-oxblood-300">
                   {error}
                 </div>
               )}
@@ -220,25 +129,23 @@ const Chat: React.FC = () => {
         </div>
       </div>
 
-      {/* Input area */}
+      {/* Input */}
       <form onSubmit={handleSubmit} className="pt-4">
-        <div className="max-w-3xl mx-auto flex items-end gap-3">
-          <div className="flex-1 relative">
-            <textarea
-              ref={inputRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="What's burning your budget this time?"
-              disabled={isStreaming}
-              rows={1}
-              className="input text-sm py-3 pr-12 resize-none w-full"
-            />
-          </div>
+        <div className="mx-auto flex max-w-3xl items-end gap-3">
+          <textarea
+            ref={inputRef}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="What's bleeding your budget this time?"
+            disabled={isStreaming}
+            rows={1}
+            className="input w-full resize-none py-3 text-sm"
+          />
           <button
             type="submit"
             disabled={!input.trim() || isStreaming}
-            className="flex items-center justify-center h-11 w-11 rounded-xl bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand-600 text-white transition-colors hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Send className="h-4 w-4" />
           </button>
@@ -246,6 +153,4 @@ const Chat: React.FC = () => {
       </form>
     </div>
   );
-};
-
-export default Chat;
+}
