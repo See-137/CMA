@@ -121,8 +121,19 @@ async def _wrap_async_stream(
                 "Pass stream_options=dict(include_usage=True) or upgrade openai>=1.26."
             )
 
+
 def _patch_chat_completions(tracker: CostTracker, openai_module) -> None:
-    from openai.resources.chat import completions as chat_mod
+    try:
+        from openai.resources.chat import completions as chat_mod
+    except ImportError:
+        logger.warning(
+            "cost_monitor: OpenAI SDK layout changed; could not import "
+            "openai.resources.chat.completions. Cost capture is DISABLED for "
+            "the OpenAI chat completions endpoint (this surface will not be "
+            "patched). Verify the installed openai version is within the "
+            "cma-cost-monitor supported range."
+        )
+        return
 
     original_create = chat_mod.Completions.create
 
@@ -282,4 +293,9 @@ def _patch_completions(tracker: CostTracker, openai_module) -> None:
         comp_mod.Completions.create = patched_create
         logger.debug("Patched openai.completions.create")
     except (ImportError, AttributeError):
-        pass
+        logger.warning(
+            "cost_monitor: OpenAI SDK layout changed; could not patch "
+            "openai.resources.completions (legacy completions endpoint). "
+            "Cost capture is DISABLED for that surface. Other OpenAI surfaces "
+            "are unaffected."
+        )

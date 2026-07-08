@@ -10,7 +10,11 @@ requires-python = ">=3.9"
 dependencies = ["httpx>=0.25.0"]
 
 [project.optional-dependencies]
-openai = ["openai>=1.0.0"]
-anthropic = ["anthropic>=0.8.0"]
-langchain = ["langchain-core>=0.1.0"]
-all = ["openai>=1.0.0", "anthropic>=0.8.0", "langchain-core>=0.1.0"]
+# Upper bounds cap below the next SDK major to guard the monkey-patch
+# instrumentation against silent breakage on an unbounded major bump.
+# Ranges include the currently-tested majors (openai 2.x, anthropic 0.x,
+# langchain-core 1.x); re-verify instrumentation before widening a cap.
+openai = ["openai>=1.0.0,<3.0.0"]
+anthropic = ["anthropic>=0.8.0,<1.0.0"]
+langchain = ["langchain-core>=0.1.0,<2.0.0"]
+all = ["openai>=1.0.0,<3.0.0", "anthropic>=0.8.0,<1.0.0", "langchain-core>=0.1.0,<2.0.0"]

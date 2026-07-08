@@ -28,7 +28,7 @@ cma-dev.bat sk-proj-YOUR-KEY
 ```powershell
 cd backend; pytest
 ```
-- ~37 tests across 6 modules, isolated SQLite (schema built from models in `conftest.py`)
+- 37 tests across 6 modules (34 test functions, parametrized), isolated SQLite (schema built from models in `conftest.py`)
 - `test_events.py` — ingestion, auto-discovery, cost calc
 - `test_auth.py` — setup + login
 - `test_budgets.py` — enforcement + threshold alerts
@@ -145,6 +145,7 @@ docker compose up -d
 - On Windows, npm/npx are .cmd shims — `Start-Process` needs `cmd.exe /c npm`, not `npm` directly
 - Vite proxy (`/api` -> localhost:8000) only works in dev; prod nginx handles routing
 - `frontend/package-lock.json` is **committed** (keep it so) — CI/local/Docker install identical deps. A floating lockfile previously broke `frontend-build` twice (stricter TS; `simple-icons` dropping the trademarked OpenAI logo, now inlined). Tests create the `data/` dir + use an isolated DB since Alembic, not `create_all`, owns the schema.
+- SDK auto-instrumentation (`sdks/python/cost_monitor/_openai.py`, `_anthropic.py`) monkey-patches **internal** SDK module paths (`openai.resources.chat.completions`, `anthropic.resources.messages`). `openai`/`anthropic` are pinned to a major range in `sdks/python/pyproject.toml` with no lockfile, and verified against the currently-installed SDK majors. A major SDK bump can move those paths: the patch now logs a **loud** `logger.warning` and disables cost capture for the affected surface (no longer a silent no-op), but capture stays off until the path is updated. **Re-verify instrumentation after upgrading either SDK**, and widen the pin only once the new major is confirmed working.
 
 ## Scrooge (RAG assistant)
 - Personality defined in `SYSTEM_PROMPT` in `rag_engine.py`

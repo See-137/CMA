@@ -120,7 +120,7 @@ Prefer explicit control? Use `CostTracker` directly — see
 ## Testing
 
 ```bash
-cd backend && pytest        # ~37 tests, in-memory SQLite
+cd backend && pytest        # 37 tests, in-memory SQLite
 cd frontend && npm run build # tsc + vite build
 ```
 

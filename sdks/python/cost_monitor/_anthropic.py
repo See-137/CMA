@@ -19,7 +19,6 @@ def patch_anthropic(tracker: CostTracker) -> None:
     _patch_messages(tracker)
 
 
-
 def _wrap_sync_stream(
     stream: Any,
     tracker,
@@ -133,8 +132,19 @@ async def _wrap_async_stream(
                 "This may indicate an unsupported stream type."
             )
 
+
 def _patch_messages(tracker: CostTracker) -> None:
-    from anthropic.resources import messages as msg_mod
+    try:
+        from anthropic.resources import messages as msg_mod
+    except ImportError:
+        logger.warning(
+            "cost_monitor: Anthropic SDK layout changed; could not import "
+            "anthropic.resources.messages. Cost capture is DISABLED for the "
+            "Anthropic messages endpoint (this surface will not be patched). "
+            "Verify the installed anthropic version is within the "
+            "cma-cost-monitor supported range."
+        )
+        return
 
     original_create = msg_mod.Messages.create
 
