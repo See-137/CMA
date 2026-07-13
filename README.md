@@ -98,6 +98,16 @@ Configuration is via a root `.env` (copy from `.env.template`). All backend
 settings use the `CMA_` prefix. By default chat uses a local Ollama; set
 `CMA_LLM_PROVIDER=openai` and `CMA_OPENAI_API_KEY=...` to use OpenAI.
 
+### First run
+
+On first launch a 4-step wizard configures the instance — admin login, deployment
++ locale, providers to track, and a starting daily budget — then issues an API key
+to connect your agents.
+
+| Guided setup | Ready to go |
+|---|---|
+| ![Setup wizard](docs/screenshots/setup-wizard.png) | ![Setup complete](docs/screenshots/setup-complete.png) |
+
 ## SDK usage
 
 ```python
