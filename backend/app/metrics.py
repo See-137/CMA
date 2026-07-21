@@ -63,6 +63,51 @@ SCRAPE_ERRORS = Counter(
     "Errors computing scrape-time gauges (DB/vector store unreachable)",
 )
 
+# Stage names are 1:1 with the OTel span names a future tracing migration
+# would use — the histogram IS the span breakdown, minus the waterfall UI.
+# Buckets span the union of stage costs: low-millisecond intent detection
+# (regex + three entity-name SELECTs) up to multi-second LLM generation.
+#
+# Reading notes (measurement honesty):
+# - llm_total is observed ONLY for completed generations — time-to-failure
+#   and truncated-disconnect samples would collapse the percentiles during
+#   incidents. Failure rates live in cma_chat_requests_total.
+# - Stream-mode llm_total spans provider start to stream end, which
+#   includes SSE write backpressure from slow clients — it is end-to-end
+#   stream duration, not pure provider time.
+# - sql_queries is observed on every request, including ones where no data
+#   intent fires (a near-zero no-op sample); the lowest bucket approximates
+#   the conversational/no-op traffic fraction.
+# - Stages do NOT sum to request wall time: the asyncio.to_thread queue
+#   wait before retrieve() starts is unanchored by design.
+RAG_STAGE_SECONDS = Histogram(
+    "cma_rag_stage_seconds",
+    "RAG pipeline stage latency",
+    ["stage"],
+    buckets=(0.001, 0.005, 0.025, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
+)
+
+RAG_STAGE_NAMES = (
+    "intent",
+    "embed_query",
+    "vector_search",
+    "sql_queries",
+    "llm_first_token",
+    "llm_total",
+)
+
+# Counted at the SSE serialization point: streaming LLM failures ship as
+# {"type": "error"} data events inside an HTTP 200 — invisible to every
+# status-code-based monitor, so HTTP metrics alone cannot see them.
+CHAT_REQUESTS = Counter(
+    "cma_chat_requests_total",
+    "Chat requests by transport mode and outcome",
+    ["mode", "outcome"],  # mode: sync|stream; outcome: ok|llm_error|cancelled
+)
+
+CHAT_MODES = ("sync", "stream")
+CHAT_OUTCOMES = ("ok", "llm_error", "cancelled")
+
 MAINTENANCE_JOB_NAMES = ("rollup", "retention", "embed_backfill")
 
 # Successful backlog computations are cached briefly: the gauge needs a full
@@ -161,3 +206,8 @@ def init_metrics() -> None:
         EVENTS_INGESTED.labels(status=status)
     for job in MAINTENANCE_JOB_NAMES:
         MAINTENANCE_FAILURES.labels(job=job)
+    for stage in RAG_STAGE_NAMES:
+        RAG_STAGE_SECONDS.labels(stage=stage)
+    for mode in CHAT_MODES:
+        for outcome in CHAT_OUTCOMES:
+            CHAT_REQUESTS.labels(mode=mode, outcome=outcome)

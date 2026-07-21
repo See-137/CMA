@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.models import Agent, CostEvent, ModelPricing, Provider
+from app.metrics import RAG_STAGE_SECONDS
 from app.services.vector_store import embed_text, search_events, search_rollups
 from app.timeutils import utcnow
 
@@ -399,33 +400,42 @@ class RetrievalContext:
 
 
 def retrieve(query: str, db: Session) -> RetrievalContext:
-    """Hybrid retrieval: vector search + intent-based SQL queries."""
+    """Hybrid retrieval: vector search + intent-based SQL queries.
+
+    Each stage is timed under cma_rag_stage_seconds{stage} — stage names
+    are a published contract (1:1 with future OTel span names).
+    """
     ctx = RetrievalContext()
 
-    intent = detect_query_intent(query, db)
+    with RAG_STAGE_SECONDS.labels(stage="intent").time():
+        intent = detect_query_intent(query, db)
 
     # 1. Vector search across both collections
-    query_embedding = embed_text(query)
+    with RAG_STAGE_SECONDS.labels(stage="embed_query").time():
+        query_embedding = embed_text(query)
 
-    # Build ChromaDB where filter
-    where = None
-    where_clauses = []
-    if intent.agents and len(intent.agents) == 1:
-        where_clauses.append({"agent_name": intent.agents[0]})
-    if intent.providers and len(intent.providers) == 1:
-        where_clauses.append({"provider_name": intent.providers[0]})
-    if intent.needs_failures:
-        where_clauses.append({"status": {"$ne": "success"}})
+    with RAG_STAGE_SECONDS.labels(stage="vector_search").time():
+        # Build ChromaDB where filter
+        where = None
+        where_clauses = []
+        if intent.agents and len(intent.agents) == 1:
+            where_clauses.append({"agent_name": intent.agents[0]})
+        if intent.providers and len(intent.providers) == 1:
+            where_clauses.append({"provider_name": intent.providers[0]})
+        if intent.needs_failures:
+            where_clauses.append({"status": {"$ne": "success"}})
 
-    if len(where_clauses) == 1:
-        where = where_clauses[0]
-    elif len(where_clauses) > 1:
-        where = {"$and": where_clauses}
+        if len(where_clauses) == 1:
+            where = where_clauses[0]
+        elif len(where_clauses) > 1:
+            where = {"$and": where_clauses}
 
-    event_results = search_events(
-        query_embedding, n_results=settings.RAG_TOP_K, where=where
-    )
-    rollup_results = search_rollups(query_embedding, n_results=settings.RAG_TOP_K // 2)
+        event_results = search_events(
+            query_embedding, n_results=settings.RAG_TOP_K, where=where
+        )
+        rollup_results = search_rollups(
+            query_embedding, n_results=settings.RAG_TOP_K // 2
+        )
 
     # Filter by similarity threshold (cosine distance: lower = more similar)
     threshold = settings.RAG_SIMILARITY_THRESHOLD
@@ -452,75 +462,76 @@ def retrieve(query: str, db: Session) -> RetrievalContext:
             )
 
     # 2. Intent-based SQL queries for precise data
-    if intent.needs_aggregation:
-        agg = _run_aggregation_query(intent, db)
-        ctx.sql_results.extend(agg)
-        if agg:
-            ctx.citations.append(
-                Citation(
-                    source_type="sql_query",
-                    snippet=f"Aggregation query: {len(agg)} groups",
+    with RAG_STAGE_SECONDS.labels(stage="sql_queries").time():
+        if intent.needs_aggregation:
+            agg = _run_aggregation_query(intent, db)
+            ctx.sql_results.extend(agg)
+            if agg:
+                ctx.citations.append(
+                    Citation(
+                        source_type="sql_query",
+                        snippet=f"Aggregation query: {len(agg)} groups",
+                    )
                 )
-            )
 
-    if intent.needs_comparison:
-        cmp = _run_comparison_query(intent, db)
-        ctx.sql_results.extend(cmp)
-        if cmp:
-            ctx.citations.append(
-                Citation(
-                    source_type="sql_query",
-                    snippet=f"Cost comparison: {len(cmp)} models",
+        if intent.needs_comparison:
+            cmp = _run_comparison_query(intent, db)
+            ctx.sql_results.extend(cmp)
+            if cmp:
+                ctx.citations.append(
+                    Citation(
+                        source_type="sql_query",
+                        snippet=f"Cost comparison: {len(cmp)} models",
+                    )
                 )
-            )
 
-    if intent.needs_timeline:
-        tl = _run_timeline_query(intent, db)
-        ctx.sql_results.extend(tl)
-        if tl:
-            ctx.citations.append(
-                Citation(
-                    source_type="sql_query",
-                    snippet=f"Timeline: {len(tl)} data points",
+        if intent.needs_timeline:
+            tl = _run_timeline_query(intent, db)
+            ctx.sql_results.extend(tl)
+            if tl:
+                ctx.citations.append(
+                    Citation(
+                        source_type="sql_query",
+                        snippet=f"Timeline: {len(tl)} data points",
+                    )
                 )
-            )
 
-    if intent.needs_failures:
-        fails = _run_failures_query(intent, db)
-        ctx.sql_results.extend(fails)
-        if fails:
-            ctx.citations.append(
-                Citation(
-                    source_type="sql_query",
-                    snippet=f"Failures: {len(fails)} events",
+        if intent.needs_failures:
+            fails = _run_failures_query(intent, db)
+            ctx.sql_results.extend(fails)
+            if fails:
+                ctx.citations.append(
+                    Citation(
+                        source_type="sql_query",
+                        snippet=f"Failures: {len(fails)} events",
+                    )
                 )
-            )
 
-    # Fallback: if no SQL results fired but the query looks data-related,
-    # pull a general aggregation so Scrooge has real data to work with.
-    any_data_intent = (
-        intent.needs_aggregation
-        or intent.needs_comparison
-        or intent.needs_timeline
-        or intent.needs_failures
-        or intent.agents
-        or intent.models
-        or intent.providers
-        or intent.time_range
-    )
-    if not ctx.sql_results and any_data_intent:
-        fallback_intent = QueryIntent(
-            needs_aggregation=True, time_range=intent.time_range
+        # Fallback: if no SQL results fired but the query looks data-related,
+        # pull a general aggregation so Scrooge has real data to work with.
+        any_data_intent = (
+            intent.needs_aggregation
+            or intent.needs_comparison
+            or intent.needs_timeline
+            or intent.needs_failures
+            or intent.agents
+            or intent.models
+            or intent.providers
+            or intent.time_range
         )
-        agg = _run_aggregation_query(fallback_intent, db)
-        ctx.sql_results.extend(agg)
-        if agg:
-            ctx.citations.append(
-                Citation(
-                    source_type="sql_query",
-                    snippet=f"General aggregation: {len(agg)} groups",
-                )
+        if not ctx.sql_results and any_data_intent:
+            fallback_intent = QueryIntent(
+                needs_aggregation=True, time_range=intent.time_range
             )
+            agg = _run_aggregation_query(fallback_intent, db)
+            ctx.sql_results.extend(agg)
+            if agg:
+                ctx.citations.append(
+                    Citation(
+                        source_type="sql_query",
+                        snippet=f"General aggregation: {len(agg)} groups",
+                    )
+                )
 
     return ctx
 

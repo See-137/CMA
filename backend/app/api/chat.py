@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -11,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.config import settings
+from app.metrics import CHAT_REQUESTS, RAG_STAGE_SECONDS
 from app.schemas.schemas import ChatRequest, ChatResponse, CitationOut
 from app.services.llm_provider import get_llm_provider
 from app.services.rag_engine import build_messages, retrieve
@@ -44,16 +46,25 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
     messages = build_messages(request.message, context, history)
 
     provider = get_llm_provider()
+    # llm_total is observed ONLY on success: time-to-failure samples (an
+    # outage returning instant 401s) would collapse the latency percentiles
+    # into "faster than ever" during exactly the incident that matters.
+    # Failure RATES live in CHAT_REQUESTS, which segments by outcome.
+    llm_start = time.perf_counter()
     try:
         response = await provider.generate(messages)
     except HTTPStatusError as exc:
+        CHAT_REQUESTS.labels(mode="sync", outcome="llm_error").inc()
         code = exc.response.status_code
         detail = _LLM_ERROR_MAP.get(code, f"LLM provider returned {code}")
         logger.error("LLM HTTP %s: %s", code, detail)
         raise HTTPException(status_code=502, detail=detail) from exc
     except Exception as exc:
+        CHAT_REQUESTS.labels(mode="sync", outcome="llm_error").inc()
         logger.exception("LLM generation failed")
         raise HTTPException(status_code=502, detail="LLM generation failed") from exc
+
+    RAG_STAGE_SECONDS.labels(stage="llm_total").observe(time.perf_counter() - llm_start)
 
     citations = [
         CitationOut(
@@ -64,6 +75,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         for c in context.citations
     ]
 
+    CHAT_REQUESTS.labels(mode="sync", outcome="ok").inc()
     return ChatResponse(
         answer=response.content,
         citations=citations,
@@ -88,21 +100,54 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
     ]
 
     async def event_generator():
-        # Send citations first
-        yield f"data: {json.dumps({'type': 'citations', 'data': citations})}\n\n"
-
-        # Stream LLM response
+        # Outcome is counted at the serialization point: an LLM failure
+        # ships as an {"type": "error"} data event inside an HTTP 200,
+        # invisible to status-code-based monitoring. State is initialized
+        # BEFORE the first yield and the citations frame sits INSIDE the
+        # try — a client that disconnects during the citations send must
+        # land in the cancelled bucket, not in no bucket at all.
+        outcome = "ok"
+        got_first = False
+        start = None
         try:
+            yield f"data: {json.dumps({'type': 'citations', 'data': citations})}\n\n"
+
+            # Timer anchored AFTER the citations frame is drained, so
+            # first-token latency measures the provider, not the client's
+            # ability to absorb the citations write.
+            start = time.perf_counter()
             async for chunk in provider.stream(messages):
+                if not got_first:
+                    got_first = True
+                    RAG_STAGE_SECONDS.labels(stage="llm_first_token").observe(
+                        time.perf_counter() - start
+                    )
                 yield f"data: {json.dumps({'type': 'content', 'data': chunk})}\n\n"
         except HTTPStatusError as exc:
+            outcome = "llm_error"
             code = exc.response.status_code
             detail = _LLM_ERROR_MAP.get(code, f"LLM provider returned {code}")
             logger.error("Streaming LLM HTTP %s: %s", code, detail)
             yield f"data: {json.dumps({'type': 'error', 'data': detail})}\n\n"
+        except (GeneratorExit, asyncio.CancelledError):
+            # Client went away mid-stream — count it distinctly, then let the
+            # cancellation propagate.
+            outcome = "cancelled"
+            raise
         except Exception:
+            outcome = "llm_error"
             logger.exception("Streaming LLM error")
             yield f"data: {json.dumps({'type': 'error', 'data': 'LLM generation failed'})}\n\n"
+        finally:
+            # llm_total only for COMPLETED generations — time-to-failure and
+            # truncated-disconnect samples would drag the percentiles down
+            # during exactly the incidents they exist to surface. Failure
+            # rates live in CHAT_REQUESTS, segmented by outcome.
+            if outcome == "ok" and start is not None:
+                RAG_STAGE_SECONDS.labels(stage="llm_total").observe(
+                    time.perf_counter() - start
+                )
+            CHAT_REQUESTS.labels(mode="stream", outcome=outcome).inc()
 
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
