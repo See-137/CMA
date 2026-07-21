@@ -203,3 +203,213 @@ def fake_backend() -> FakeBackend:
     server.shutdown()
     server.server_close()
     thread.join(timeout=2)
+
+
+# ---------------------------------------------------------------------------
+# Fake LLM provider server (OpenAI + Anthropic wire formats)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FakeLLMServer:
+    """Serves minimal-but-valid OpenAI and Anthropic API responses.
+
+    Fixed usage in every response: 7 input tokens, 3 output tokens — tests
+    assert on these exact numbers. Records every parsed request body.
+    """
+
+    server: ThreadingHTTPServer
+    thread: threading.Thread
+    requests: list[dict[str, Any]] = field(default_factory=list)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    @property
+    def url(self) -> str:
+        host, port = self.server.server_address
+        return f"http://127.0.0.1:{port}"
+
+    def record(self, path: str, body: dict[str, Any]) -> None:
+        with self.lock:
+            self.requests.append({"path": path, "body": body})
+
+    def bodies(self, path_suffix: str) -> list[dict[str, Any]]:
+        with self.lock:
+            return [r["body"] for r in self.requests if r["path"].endswith(path_suffix)]
+
+
+_OPENAI_COMPLETION = {
+    "id": "chatcmpl-test",
+    "object": "chat.completion",
+    "created": 1700000000,
+    "model": "gpt-4o",
+    "choices": [
+        {
+            "index": 0,
+            "message": {"role": "assistant", "content": "hi"},
+            "finish_reason": "stop",
+        }
+    ],
+    "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+}
+
+
+def _openai_sse(include_usage: bool) -> bytes:
+    base = {
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "created": 1700000000,
+        "model": "gpt-4o",
+    }
+    chunks = [
+        {
+            **base,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": "hi"},
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {**base, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+    ]
+    if include_usage:
+        chunks.append(
+            {
+                **base,
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 7,
+                    "completion_tokens": 3,
+                    "total_tokens": 10,
+                },
+            }
+        )
+    lines = [f"data: {json.dumps(c)}\n\n" for c in chunks]
+    lines.append("data: [DONE]\n\n")
+    return "".join(lines).encode()
+
+
+_ANTHROPIC_MESSAGE = {
+    "id": "msg_test",
+    "type": "message",
+    "role": "assistant",
+    "model": "claude-sonnet-test",
+    "content": [{"type": "text", "text": "hi"}],
+    "stop_reason": "end_turn",
+    "stop_sequence": None,
+    "usage": {"input_tokens": 7, "output_tokens": 3},
+}
+
+
+def _anthropic_sse() -> bytes:
+    events = [
+        (
+            "message_start",
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_test",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-sonnet-test",
+                    "content": [],
+                    "stop_reason": None,
+                    "stop_sequence": None,
+                    "usage": {"input_tokens": 7, "output_tokens": 0},
+                },
+            },
+        ),
+        (
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            },
+        ),
+        (
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "hi"},
+            },
+        ),
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        (
+            "message_delta",
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                "usage": {"output_tokens": 3},
+            },
+        ),
+        ("message_stop", {"type": "message_stop"}),
+    ]
+    return "".join(
+        f"event: {name}\ndata: {json.dumps(payload)}\n\n" for name, payload in events
+    ).encode()
+
+
+class _LLMHandler(BaseHTTPRequestHandler):
+    llm: FakeLLMServer  # injected per-server subclass
+
+    def do_POST(self) -> None:  # noqa: N802 (http.server API)
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            body = json.loads(raw)
+        except json.JSONDecodeError:
+            body = {}
+        self.llm.record(self.path, body)
+
+        streaming = bool(body.get("stream"))
+        if self.path.endswith("/chat/completions"):
+            if streaming:
+                include_usage = bool(
+                    (body.get("stream_options") or {}).get("include_usage")
+                )
+                self._send_sse(_openai_sse(include_usage))
+            else:
+                self._send_json(_OPENAI_COMPLETION)
+        elif self.path.endswith("/messages"):
+            if streaming:
+                self._send_sse(_anthropic_sse())
+            else:
+                self._send_json(_ANTHROPIC_MESSAGE)
+        else:
+            self._send_json({"error": f"unhandled path {self.path}"}, status=404)
+
+    def _send_json(self, payload: dict[str, Any], status: int = 200) -> None:
+        data = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _send_sse(self, data: bytes) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *args: Any) -> None:
+        pass
+
+
+@pytest.fixture
+def fake_llm() -> FakeLLMServer:
+    handler = type("BoundLLMHandler", (_LLMHandler,), {})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    llm = FakeLLMServer(server=server, thread=thread)
+    handler.llm = llm
+    thread.start()
+    yield llm
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=2)

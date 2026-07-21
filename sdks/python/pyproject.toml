@@ -14,7 +14,9 @@ openai = ["openai>=1.0.0"]
 anthropic = ["anthropic>=0.8.0"]
 langchain = ["langchain-core>=0.1.0"]
 all = ["openai>=1.0.0", "anthropic>=0.8.0", "langchain-core>=0.1.0"]
-dev = ["pytest>=8.0", "pytest-timeout>=2.3"]
+# openai/anthropic: the instrumentation tests exercise the real SDKs
+# against a local fake server — collection fails without them.
+dev = ["pytest>=8.0", "pytest-timeout>=2.3", "openai>=1.26", "anthropic>=0.8.0"]
 
 [tool.pytest.ini_options]
 # Transport tests spin real threads (worker + fake HTTP server) around retry
