@@ -145,6 +145,7 @@ def test_http_red_baseline_with_exclusions(authed_client):
     and /metrics + /health are excluded (anchored patterns)."""
     authed_client.post("/api/v1/events", json=_events_payload(1))
     authed_client.get("/health")
+    authed_client.get("/health/ready")
     text = _scrape(authed_client)  # also ensures /metrics itself was hit
 
     handlers = set()
@@ -159,6 +160,9 @@ def test_http_red_baseline_with_exclusions(authed_client):
     )
     assert "/metrics" not in handlers, "excluded handler /metrics was instrumented"
     assert "/health" not in handlers, "excluded handler /health was instrumented"
+    assert "/health/ready" not in handlers, (
+        "excluded handler /health/ready was instrumented"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -192,9 +192,10 @@ app.include_router(chat_router, prefix=PREFIX, dependencies=auth_deps)
 app.include_router(search_router, prefix=PREFIX, dependencies=auth_deps)
 
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+# Liveness + readiness (no auth — orchestrator probes hold no credentials)
+from app.api.health import router as health_router  # noqa: E402
+
+app.include_router(health_router)
 
 
 # Self-observability: HTTP RED baseline via the instrumentator (route
@@ -206,8 +207,11 @@ def health():
 init_metrics()
 # Anchored patterns: excluded_handlers compiles regexes matched with
 # unanchored re.search — a bare "/metrics" would exclude any future route
-# merely containing that substring.
-Instrumentator(excluded_handlers=[r"^/metrics$", r"^/health$"]).instrument(app)
+# merely containing that substring. Health probes fire every few seconds
+# and would drown real traffic in the HTTP metrics.
+Instrumentator(
+    excluded_handlers=[r"^/metrics$", r"^/health$", r"^/health/ready$"]
+).instrument(app)
 
 
 @app.get("/metrics", dependencies=[Depends(require_metrics_access)])
