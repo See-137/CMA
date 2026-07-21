@@ -42,6 +42,31 @@ def require_api_key(
     return api_key
 
 
+def require_metrics_access(
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db),
+) -> None:
+    """Auth for /metrics: a metrics-scoped token, or the API key as fallback.
+
+    Prometheus scrape configs typically live in repo-managed YAML — putting
+    the master API key there grants ingest + full read to anyone who can
+    read the config. CMA_METRICS_TOKEN lets the scraper hold a credential
+    that can ONLY read metrics. Unset, the API key still works.
+    """
+    from app.config import settings
+
+    token = settings.METRICS_TOKEN
+    if (
+        token
+        and authorization
+        and authorization.startswith("Bearer ")
+        and hmac.compare_digest(authorization[7:], token)
+    ):
+        return
+
+    require_api_key(authorization=authorization, db=db)
+
+
 def require_admin(
     x_admin_password: str | None = Header(None),
     db: Session = Depends(get_db),
@@ -64,4 +89,4 @@ def require_admin(
 
 
 # Re-export for convenience — all route modules import from here
-__all__ = ["get_db", "require_api_key", "require_admin"]
+__all__ = ["get_db", "require_api_key", "require_admin", "require_metrics_access"]

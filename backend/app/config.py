@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     RAG_SIMILARITY_THRESHOLD: float = 0.3
     RAG_MAX_CONTEXT_TOKENS: int = 3000
 
+    # Optional metrics-scoped credential for /metrics (Prometheus scrape
+    # configs shouldn't have to hold the master API key). Unset = API key only.
+    METRICS_TOKEN: str | None = None
+
     # Ingestion / abuse limits
     MAX_EVENTS_PER_REQUEST: int = 1000
     RATE_LIMIT_LOGIN_PER_MINUTE: int = 10

@@ -2,8 +2,10 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, generate_latest
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from app.api import (
     agents,
@@ -16,47 +18,96 @@ from app.api import (
     setup,
 )
 from app.api.admin import router as admin_router
-from app.api.deps import require_api_key
+from app.api.deps import require_api_key, require_metrics_access
 from app.config import settings
 from app.database import SessionLocal
+from app.metrics import (
+    MAINTENANCE_FAILURES,
+    MAINTENANCE_LAST_SUCCESS,
+    init_metrics,
+)
 from app.seed import seed_providers
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-async def _daily_maintenance() -> None:
-    """Background task: runs rollup and retention once per day."""
-    import asyncio
+def _run_maintenance_job(name: str, fn) -> None:
+    """Run one maintenance job; record success timestamp or failure count.
 
-    from app.services.retention import prune_old_events
+    Failures are logged and swallowed — one broken job must not kill the
+    loop or block the jobs after it. (Retention is safe to run after a
+    failed rollup: it only prunes dates whose rollups completed.)
+    """
+    try:
+        fn()
+        MAINTENANCE_LAST_SUCCESS.labels(job=name).set_to_current_time()
+    except Exception:
+        MAINTENANCE_FAILURES.labels(job=name).inc()
+        logger.exception("Maintenance job %r failed", name)
+
+
+def _rollup_job() -> None:
     from app.services.rollup import backfill_rollups, compute_daily_rollups
+
+    db = SessionLocal()
+    try:
+        backfill_rollups(db)
+        compute_daily_rollups(db)  # yesterday by default
+    finally:
+        db.close()
+
+
+def _retention_job() -> None:
+    from app.services.retention import prune_old_events
+
+    db = SessionLocal()
+    try:
+        prune_old_events(db)
+    finally:
+        db.close()
+
+
+def _embed_backfill_job() -> None:
+    from app.services.vector_store import (
+        backfill_event_embeddings,
+        embed_rollups_for_date,
+    )
+
+    db = SessionLocal()
+    try:
+        backfill_event_embeddings(db, batch_size=500)
+        embed_rollups_for_date(db)
+    finally:
+        db.close()
+
+
+def _maintenance_jobs() -> list[tuple[str, object]]:
+    """The maintenance job list — names are a published contract (metric
+    labels that dashboards/alerts key on), so tests assert them.
+
+    Each job opens and closes its OWN session: a shared session is NOT
+    isolation — a DB-level failure in one job leaves the session in a
+    PendingRollbackError state that cascades into every job after it,
+    misattributing one failure as three, and pending rows from a
+    half-finished job could be committed by a later one.
+    """
+    return [
+        ("rollup", _rollup_job),
+        ("retention", _retention_job),
+        ("embed_backfill", _embed_backfill_job),
+    ]
+
+
+async def _daily_maintenance() -> None:
+    """Background task: runs rollup, retention, and embedding backfill once
+    per day, each isolated (own session) and metricized per job."""
+    import asyncio
 
     await asyncio.sleep(10)  # let startup settle
     while True:
-        try:
-            db = SessionLocal()
-            try:
-                backfill_rollups(db)
-                compute_daily_rollups(db)  # yesterday by default
-                prune_old_events(db)
-
-                # Embed any events/rollups not yet in ChromaDB
-                try:
-                    from app.services.vector_store import (
-                        backfill_event_embeddings,
-                        embed_rollups_for_date,
-                    )
-
-                    backfill_event_embeddings(db, batch_size=500)
-                    embed_rollups_for_date(db)
-                except Exception:
-                    logger.warning("Vector backfill failed", exc_info=True)
-            finally:
-                db.close()
-        except Exception:
-            logger.exception("Daily maintenance failed")
-
+        for name, fn in _maintenance_jobs():
+            _run_maintenance_job(name, fn)
         await asyncio.sleep(86400)  # 24 hours
 
 
@@ -138,3 +189,21 @@ app.include_router(search_router, prefix=PREFIX, dependencies=auth_deps)
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# Self-observability: HTTP RED baseline via the instrumentator (route
+# templating avoids /agents/123-style path cardinality), domain metrics via
+# app.metrics. /metrics is auth-gated — it exposes operational detail.
+# Known limitation: require_api_key 503s pre-setup, so Prometheus shows the
+# target down until the setup wizard completes; each scrape also costs one
+# SetupConfig read.
+init_metrics()
+# Anchored patterns: excluded_handlers compiles regexes matched with
+# unanchored re.search — a bare "/metrics" would exclude any future route
+# merely containing that substring.
+Instrumentator(excluded_handlers=[r"^/metrics$", r"^/health$"]).instrument(app)
+
+
+@app.get("/metrics", dependencies=[Depends(require_metrics_access)])
+def metrics() -> Response:
+    return Response(generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)

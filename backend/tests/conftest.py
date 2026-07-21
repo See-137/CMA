@@ -6,6 +6,10 @@ import os
 # (setdefault keeps an explicit CMA_DATABASE_URL override working.)
 os.environ.setdefault("CMA_DATABASE_URL", "sqlite:///./data/test_suite.db")
 os.environ.setdefault("CMA_ENABLE_MAINTENANCE", "false")
+# Isolate the vector store too: the /metrics backlog gauge traverses
+# _count_vector_events into ChromaDB — without this, test scrapes would
+# initialize a client against the developer's live ./data/chroma store.
+os.environ.setdefault("CMA_CHROMA_PERSIST_DIR", "./data/test_chroma")
 os.makedirs("data", exist_ok=True)  # data/ is gitignored — absent on fresh CI checkouts
 
 import pytest  # noqa: E402

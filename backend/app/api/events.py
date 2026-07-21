@@ -15,6 +15,11 @@ from app.schemas.schemas import (
     EventsIngestionResponse,
     PaginatedEvents,
 )
+from app.metrics import (
+    BUDGET_STATE_LOAD_SECONDS,
+    EVENTS_INGESTED,
+    INGEST_BATCH_SIZE,
+)
 from app.services.budget_checker import (
     check_budgets,
     event_rejection_reason,
@@ -86,13 +91,17 @@ def ingest_events(
             f"(max {settings.MAX_EVENTS_PER_REQUEST})",
         )
 
+    INGEST_BATCH_SIZE.observe(len(events))
+
     processed = 0
     rejected = 0
+    errored = 0
     rejection_reasons: list[str] = []
     created: list[CostEvent] = []
 
     # Prefetch enforcement budgets + baseline spend once for the whole batch.
-    enforcement = load_enforcement_state(db)
+    with BUDGET_STATE_LOAD_SECONDS.time():
+        enforcement = load_enforcement_state(db)
 
     for event in events:
         cost = event.cost
@@ -122,6 +131,7 @@ def ingest_events(
             created.append(cost_event)
             processed += 1
         except Exception:
+            errored += 1
             logger.exception("Failed to process event")
 
     # IDs are assigned by the savepoint flush above — collect them now (before
@@ -158,6 +168,12 @@ def ingest_events(
                 bg_db.close()
 
         background_tasks.add_task(_bg_embed, event_ids)
+
+    EVENTS_INGESTED.labels(status="processed").inc(processed)
+    EVENTS_INGESTED.labels(status="rejected").inc(rejected)
+    # Savepoint failures are the outcome that signals the SERVICE is broken —
+    # invisible in processed/rejected, so they get their own bounded label.
+    EVENTS_INGESTED.labels(status="errored").inc(errored)
 
     return EventsIngestionResponse(
         received=len(events),
