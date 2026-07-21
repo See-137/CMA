@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     # configs shouldn't have to hold the master API key). Unset = API key only.
     METRICS_TOKEN: str | None = None
 
+    # Logging: file output is always JSON lines (the machine-read surface);
+    # console stays human-readable unless flipped for container stdout.
+    LOG_LEVEL: str = "INFO"
+    LOG_JSON_CONSOLE: bool = False
+
     # Ingestion / abuse limits
     MAX_EVENTS_PER_REQUEST: int = 1000
     RATE_LIMIT_LOGIN_PER_MINUTE: int = 10

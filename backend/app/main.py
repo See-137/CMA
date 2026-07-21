@@ -21,6 +21,7 @@ from app.api.admin import router as admin_router
 from app.api.deps import require_api_key, require_metrics_access
 from app.config import settings
 from app.database import SessionLocal
+from app.logging_config import RequestIDMiddleware, setup_logging
 from app.metrics import (
     MAINTENANCE_FAILURES,
     MAINTENANCE_LAST_SUCCESS,
@@ -28,7 +29,7 @@ from app.metrics import (
 )
 from app.seed import seed_providers
 
-logging.basicConfig(level=logging.INFO)
+setup_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -150,6 +151,11 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Outermost (added last below would invert — Starlette wraps in reverse add
+# order): RequestID goes first here so it ends up inside CORS, which is fine
+# — the contextvar is set before any route or background task runs.
+app.add_middleware(RequestIDMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

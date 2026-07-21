@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_admin
 from app.config import settings
+from app.logging_config import LOG_FILE
 from app.models.models import Agent, Alert, Budget, CostEvent, SetupConfig
 from app.timeutils import utcnow
 
@@ -52,14 +53,24 @@ def system_status(db: Session = Depends(get_db)):
 
 @router.get("/logs", dependencies=admin_only)
 def recent_logs():
-    """Return recent application log lines."""
-    log_file = os.path.join("data", "cma.log")
-    if not os.path.exists(log_file):
-        return {"lines": ["No log file found. Logs are printed to stdout."]}
+    """Return recent application log lines (JSON lines from the rotating
+    file handler — the path is owned by app.logging_config).
 
-    with open(log_file, "r") as f:
-        lines = f.readlines()
+    The read retries once: on Windows, holding a read handle at the exact
+    moment the handler rotates makes the rename fail (WinError 32) —
+    keeping the read window short and retrying beats colliding twice.
+    """
+    if not os.path.exists(LOG_FILE):
+        return {"lines": ["No log file found yet — nothing has been logged."]}
 
+    for attempt in range(2):
+        try:
+            with open(LOG_FILE, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            break
+        except OSError:
+            if attempt:
+                raise
     # Return last 100 lines
     return {"lines": [line.rstrip() for line in lines[-100:]]}
 
