@@ -28,7 +28,7 @@ cma-dev.bat sk-proj-YOUR-KEY
 ```powershell
 cd backend; pytest
 ```
-- ~37 tests across 6 modules, isolated SQLite (schema built from models in `conftest.py`)
+- ~78 tests across 10 modules, isolated SQLite (schema built from models in `conftest.py`); SDK transport/instrumentation tests live in `sdks/python/tests` (run separately: `cd sdks/python; pytest tests`)
 - `test_events.py` — ingestion, auto-discovery, cost calc
 - `test_auth.py` — setup + login
 - `test_budgets.py` — enforcement + threshold alerts
@@ -56,6 +56,8 @@ cd backend; pytest
 - **Lazy singletons** — ChromaDB client, embedding model, LLM provider cached per process lifetime
 - **Upsert-safe rollups** — daily aggregation is idempotent, safe to re-run
 - **Retention safety** — only prunes events for dates with completed rollups (prevents data loss)
+- **Prometheus over OTel** — single process, no cross-service propagation to buy; RAG stage histograms are span-shaped (1:1 names) so an OTel migration stays mechanical. Metrics carry NO agent/model labels (unbounded cardinality); CMA's own rollups watch the spend, Prometheus watches the service
+- **JSON file logging, human console** — `data/cma.log` is JSON lines (machine surface: /admin/logs, shippers); request IDs via contextvar middleware, no structlog (zero call-site changes)
 
 ## Database schema (9 tables)
 | Table | Purpose | Key detail |
@@ -112,6 +114,7 @@ Indexes on: `CostEvent.timestamp`, `CostEvent.agent_name`
 - Chat: `POST /api/v1/chat/stream` (SSE), `POST /api/v1/chat` (non-streaming)
 - Semantic search: `POST /api/v1/search/semantic`
 - Admin: `POST /api/v1/admin/reset` (monitoring only), `POST /api/v1/admin/reset-full` (everything) — destructive/sensitive admin routes (reset, reset-full, export, logs) require an `X-Admin-Password` header
+- Observability: `GET /metrics` (Prometheus; API key or `CMA_METRICS_TOKEN`), `GET /health` (liveness), `GET /health/ready` (readiness: Postgres hard-fails 503, vector store degrades) — health endpoints unauthenticated, all three excluded from HTTP metrics
 - Full Swagger at `/docs`
 
 ## Background tasks
@@ -125,8 +128,10 @@ Indexes on: `CostEvent.timestamp`, `CostEvent.agent_name`
 ## Deployment (Docker)
 ```powershell
 docker compose up -d
+# with the metrics rig (Prometheus :9090 + Grafana :3000, provisioned dashboard):
+docker compose --profile observability up -d
 ```
-- 3 services: postgres:16-alpine, backend (python:3.11-slim), frontend (nginx:alpine)
+- 3 services: postgres:16-alpine, backend (python:3.11-slim), frontend (nginx:alpine); `--profile observability` adds prometheus + grafana (set `CMA_METRICS_TOKEN` in `.env` AND write the same value to `deploy/prometheus/metrics-token` — git-ignored, see `.example`)
 - Startup order enforced via healthchecks (postgres -> backend -> frontend)
 - Backend Dockerfile installs CPU-only PyTorch for sentence-transformers
 - Frontend uses multi-stage build (node:18 -> nginx)

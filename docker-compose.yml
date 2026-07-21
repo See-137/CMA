@@ -28,6 +28,10 @@ services:
       - CMA_LLM_PROVIDER=ollama
       - CMA_LLM_MODEL=llama3
       - CMA_OLLAMA_BASE_URL=http://host.docker.internal:11434
+      # Metrics-scoped credential for the Prometheus scraper (optional —
+      # unset means /metrics accepts the API key only). The same value
+      # must be written to deploy/prometheus/metrics-token.
+      - CMA_METRICS_TOKEN=${CMA_METRICS_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -52,6 +56,43 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Observability rig — opt-in: docker compose --profile observability up -d
+  # Prometheus scrapes the backend's auth-gated /metrics with the
+  # metrics-scoped token; Grafana auto-provisions the CMA dashboard.
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    profiles: ["observability"]
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus/metrics-token:/etc/prometheus/secrets/metrics-token:ro
+      - prom-data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    profiles: ["observability"]
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      # Grafana's own default; change via .env for anything non-local.
+      - GF_SECURITY_ADMIN_PASSWORD=${CMA_GRAFANA_PASSWORD:-admin}
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
 volumes:
   pg-data:
   chroma-data:
+  prom-data:
+  grafana-data:

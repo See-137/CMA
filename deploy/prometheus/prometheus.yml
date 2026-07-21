@@ -1,0 +1,23 @@
+# Prometheus scrape config for CMA self-observability.
+#
+# Auth: the backend's /metrics accepts a metrics-scoped credential
+# (CMA_METRICS_TOKEN) so this config never holds the master API key.
+# The token is read from a file mounted by docker-compose — create
+# deploy/prometheus/metrics-token (git-ignored) with the same value you
+# set for CMA_METRICS_TOKEN in .env. See metrics-token.example.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: cma-backend
+    metrics_path: /metrics
+    scheme: http
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/secrets/metrics-token
+    static_configs:
+      - targets: ["backend:8000"]
+        labels:
+          service: cma

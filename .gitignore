@@ -37,6 +37,9 @@ Thumbs.db
 # Docker
 docker-compose.override.yml
 
+# Observability secrets (committed: metrics-token.example)
+deploy/prometheus/metrics-token
+
 # Logs
 *.log
 logs/
