@@ -1,0 +1,48 @@
+# CMA - Cost Monitoring Agent, native (non-Docker) deploy.
+# Single process serves the API and, when CMA_SERVE_STATIC_DIR is set in the
+# EnvironmentFile, the built frontend as well. Binds localhost only — access
+# the dashboard over an SSH tunnel (ssh -L 8000:127.0.0.1:8000 <host>).
+#
+# Install:
+#   chmod 600 /home/oleg/cma/.env        # holds API keys — keep it private
+#   sudo cp cma.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now cma
+
+[Unit]
+Description=CMA - Cost Monitoring Agent
+After=network-online.target
+Wants=network-online.target
+# Stop true crash loops without tripping on transient flaps.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=oleg
+WorkingDirectory=/home/oleg/cma/backend
+EnvironmentFile=/home/oleg/cma/.env
+# Alembic owns the schema — migrate before every start (idempotent).
+ExecStartPre=/home/oleg/cma/.venv/bin/alembic upgrade head
+ExecStart=/home/oleg/cma/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+
+# Hardening. The process holds a plaintext ingest key (SetupConfig.api_key)
+# and writes only its data dir + the HF model cache (sentence-transformers
+# downloads the embedding model to ~/.cache on first run).
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/oleg/cma/backend/data /home/oleg/.cache
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -217,3 +217,38 @@ Instrumentator(
 @app.get("/metrics", dependencies=[Depends(require_metrics_access)])
 def metrics() -> Response:
     return Response(generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
+
+
+# Optional single-port deploy: serve the built React frontend from this process.
+# Mounted LAST so every registered route above (API, health, metrics, docs)
+# takes precedence; unknown paths fall back to index.html for SPA routing.
+if settings.SERVE_STATIC_DIR:
+    if not os.path.isdir(settings.SERVE_STATIC_DIR):
+        # A missing dist dir (e.g. frontend not built yet) must degrade to
+        # API-only, not crash the whole service into a systemd restart loop.
+        logger.warning(
+            "CMA_SERVE_STATIC_DIR=%r is not a directory — frontend serving "
+            "disabled, API-only mode",
+            settings.SERVE_STATIC_DIR,
+        )
+    else:
+        from fastapi.staticfiles import StaticFiles  # noqa: E402
+        from starlette.exceptions import HTTPException as _StarletteHTTPException  # noqa: E402
+
+        class _SPAStaticFiles(StaticFiles):
+            # StaticFiles *raises* HTTPException(404) for unknown paths (it
+            # does not return a 404 response) — catch it and serve the app
+            # shell so client-side routes survive deep links and refreshes.
+            async def get_response(self, path: str, scope):
+                try:
+                    return await super().get_response(path, scope)
+                except _StarletteHTTPException as exc:
+                    if exc.status_code == 404:
+                        return await super().get_response("index.html", scope)
+                    raise
+
+        app.mount(
+            "/",
+            _SPAStaticFiles(directory=settings.SERVE_STATIC_DIR, html=True),
+            name="frontend",
+        )

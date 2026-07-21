@@ -21,6 +21,13 @@ SEED_DATA = [
         "name": "Anthropic",
         "provider_type": "anthropic",
         "models": [
+            # Current generation (prices per 1M tokens, standard tier)
+            {"model_name": "claude-opus-4-8", "input": 5.00, "output": 25.00},
+            {"model_name": "claude-opus-4-7", "input": 5.00, "output": 25.00},
+            {"model_name": "claude-sonnet-5", "input": 3.00, "output": 15.00},
+            {"model_name": "claude-sonnet-4-6", "input": 3.00, "output": 15.00},
+            {"model_name": "claude-haiku-4-5", "input": 1.00, "output": 5.00},
+            # Legacy (kept for older event streams and test fixtures)
             {"model_name": "claude-3.5-sonnet", "input": 3.00, "output": 15.00},
             {"model_name": "claude-3-opus", "input": 15.00, "output": 75.00},
             {"model_name": "claude-3-sonnet", "input": 3.00, "output": 15.00},

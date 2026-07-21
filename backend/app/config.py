@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     # enabled — required if you point alerts at a localhost dev endpoint.
     ALLOW_PRIVATE_WEBHOOKS: bool = False
 
+    # Optional: serve the built frontend (frontend/dist) from this process.
+    # Set to the dist directory path — use an ABSOLUTE path (a relative one
+    # resolves against the process cwd, which under systemd is WorkingDirectory,
+    # not the repo root). Empty = API-only (Docker/nginx and dev setups keep
+    # their own frontend). A missing directory logs a warning and degrades to
+    # API-only instead of failing startup.
+    SERVE_STATIC_DIR: str = ""
+
     model_config = {"env_prefix": "CMA_", "env_file": ".env", "extra": "ignore"}
 
 
