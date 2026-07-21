@@ -54,3 +54,6 @@ coverage.xml
 
 # Claude Code
 .claude/
+
+# Local QA scratch
+.qa-scratch/
