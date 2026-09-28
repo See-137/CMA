@@ -167,7 +167,7 @@ def chat_status():
         events_count = get_events_collection().count()
         rollups_count = get_rollups_collection().count()
     except Exception:
-        logger.warning("Could not query vector store counts")
+        logger.warning("Could not query vector store counts", exc_info=True)
 
     llm_available = True
     if settings.LLM_PROVIDER == "openai" and not settings.OPENAI_API_KEY:

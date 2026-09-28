@@ -2,7 +2,7 @@ import hashlib
 import hmac
 
 import bcrypt
-from fastapi import Depends, HTTPException, Header
+from fastapi import Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -11,7 +11,7 @@ from app.models.models import SetupConfig
 
 def _verify_password(plain: str, hashed: str) -> bool:
     """Constant-time password check supporting bcrypt and legacy SHA-256."""
-    if hashed.startswith("$2b$") or hashed.startswith("$2a$"):
+    if hashed.startswith(("$2b$", "$2a$")):
         return bcrypt.checkpw(plain.encode(), hashed.encode())
     return hmac.compare_digest(hashlib.sha256(plain.encode()).hexdigest(), hashed)
 
@@ -89,4 +89,4 @@ def require_admin(
 
 
 # Re-export for convenience — all route modules import from here
-__all__ = ["get_db", "require_api_key", "require_admin", "require_metrics_access"]
+__all__ = ["get_db", "require_admin", "require_api_key", "require_metrics_access"]

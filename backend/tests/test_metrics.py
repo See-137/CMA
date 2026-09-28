@@ -57,7 +57,7 @@ def _events_payload(n: int) -> dict:
 
 
 def _disable_backlog_cache(monkeypatch) -> None:
-    import app.metrics as metrics
+    from app import metrics
 
     monkeypatch.setattr(metrics, "_BACKLOG_TTL_SECONDS", 0.0)
 
@@ -286,7 +286,7 @@ def test_413_batches_are_not_observed(authed_client, monkeypatch):
 def test_backlog_gauge_clamps_at_zero(authed_client, monkeypatch):
     """Orphaned vectors (best-effort deletes) can make the vector count
     exceed the SQL count — the gauge must clamp, not go negative."""
-    import app.metrics as metrics
+    from app import metrics
 
     _disable_backlog_cache(monkeypatch)
     monkeypatch.setattr(metrics, "_count_sql_events", lambda: 5)
@@ -304,7 +304,7 @@ def test_scrape_survives_collector_failure(authed_client, monkeypatch):
     """A dead DB at scrape time must degrade to: gauge OMITTED (absent beats
     stale or fabricated-zero), scrape-error counter incremented, exposition
     still 200. Failures are never served from the TTL cache."""
-    import app.metrics as metrics
+    from app import metrics
 
     _disable_backlog_cache(monkeypatch)
 

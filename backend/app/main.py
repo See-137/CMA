@@ -185,15 +185,15 @@ app.include_router(dashboard.router, prefix=PREFIX, dependencies=auth_deps)
 app.include_router(admin_router, prefix=PREFIX, dependencies=auth_deps)
 
 # RAG chat + semantic search
-from app.api.chat import router as chat_router  # noqa: E402
-from app.api.search import router as search_router  # noqa: E402
+from app.api.chat import router as chat_router
+from app.api.search import router as search_router
 
 app.include_router(chat_router, prefix=PREFIX, dependencies=auth_deps)
 app.include_router(search_router, prefix=PREFIX, dependencies=auth_deps)
 
 
 # Liveness + readiness (no auth — orchestrator probes hold no credentials)
-from app.api.health import router as health_router  # noqa: E402
+from app.api.health import router as health_router
 
 app.include_router(health_router)
 
@@ -232,8 +232,10 @@ if settings.SERVE_STATIC_DIR:
             settings.SERVE_STATIC_DIR,
         )
     else:
-        from fastapi.staticfiles import StaticFiles  # noqa: E402
-        from starlette.exceptions import HTTPException as _StarletteHTTPException  # noqa: E402
+        from fastapi.staticfiles import StaticFiles
+        from starlette.exceptions import (
+            HTTPException as _StarletteHTTPException,
+        )
 
         class _SPAStaticFiles(StaticFiles):
             # StaticFiles *raises* HTTPException(404) for unknown paths (it

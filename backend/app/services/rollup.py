@@ -60,14 +60,16 @@ def compute_daily_rollups(db: Session, target_date: date | None = None) -> int:
             .first()
         )
 
-        values = dict(
-            total_cost=float(row.total_cost or 0),
-            total_tokens_input=int(row.total_tokens_input or 0),
-            total_tokens_output=int(row.total_tokens_output or 0),
-            request_count=int(row.request_count or 0),
-            failure_count=int(row.failure_count or 0),
-            avg_duration_ms=float(row.avg_duration_ms) if row.avg_duration_ms else None,
-        )
+        values = {
+            "total_cost": float(row.total_cost or 0),
+            "total_tokens_input": int(row.total_tokens_input or 0),
+            "total_tokens_output": int(row.total_tokens_output or 0),
+            "request_count": int(row.request_count or 0),
+            "failure_count": int(row.failure_count or 0),
+            "avg_duration_ms": float(row.avg_duration_ms)
+            if row.avg_duration_ms
+            else None,
+        }
 
         if existing:
             for k, v in values.items():

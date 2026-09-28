@@ -81,7 +81,7 @@ def _event_to_text(row) -> str:
     if isinstance(row, dict):
         g = row.get
     else:
-        g = lambda k, d=None: getattr(row, k, d)  # noqa: E731
+        g = lambda k, d=None: getattr(row, k, d)
 
     return (
         f"Agent '{g('agent_name')}' called {g('model_name')} via {g('provider_name')}. "
@@ -98,7 +98,7 @@ def _rollup_to_text(row) -> str:
     if isinstance(row, dict):
         g = row.get
     else:
-        g = lambda k, d=None: getattr(row, k, d)  # noqa: E731
+        g = lambda k, d=None: getattr(row, k, d)
 
     return (
         f"Daily summary for {g('date')}: "
@@ -119,7 +119,7 @@ def _event_metadata(row) -> dict:
     if isinstance(row, dict):
         g = row.get
     else:
-        g = lambda k, d=None: getattr(row, k, d)  # noqa: E731
+        g = lambda k, d=None: getattr(row, k, d)
 
     ts = g("timestamp")
     if isinstance(ts, datetime):
@@ -141,7 +141,7 @@ def _rollup_metadata(row) -> dict:
     if isinstance(row, dict):
         g = row.get
     else:
-        g = lambda k, d=None: getattr(row, k, d)  # noqa: E731
+        g = lambda k, d=None: getattr(row, k, d)
 
     d = g("date")
     if isinstance(d, date):
@@ -184,7 +184,7 @@ def clear_vector_store() -> None:
             client.delete_collection(name)
             logger.info("Cleared ChromaDB collection: %s", name)
         except Exception:
-            logger.debug("Collection %s did not exist, skipping", name)
+            logger.debug("Collection %s did not exist, skipping", name, exc_info=True)
 
 
 # ---------------------------------------------------------------------------

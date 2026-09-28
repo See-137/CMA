@@ -7,6 +7,11 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.config import settings
+from app.metrics import (
+    BUDGET_STATE_LOAD_SECONDS,
+    EVENTS_INGESTED,
+    INGEST_BATCH_SIZE,
+)
 from app.models.models import Agent, CostEvent
 from app.schemas.schemas import (
     EventIn,
@@ -14,11 +19,6 @@ from app.schemas.schemas import (
     EventsEnvelope,
     EventsIngestionResponse,
     PaginatedEvents,
-)
-from app.metrics import (
-    BUDGET_STATE_LOAD_SECONDS,
-    EVENTS_INGESTED,
-    INGEST_BATCH_SIZE,
 )
 from app.services.budget_checker import (
     check_budgets,
