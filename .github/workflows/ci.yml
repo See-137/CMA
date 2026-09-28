@@ -59,7 +59,7 @@ jobs:
         with:
           python-version: "3.11"
       # Only what Alembic + the model metadata need — keeps this job fast.
-      - run: pip install "alembic>=1.13" "sqlalchemy>=2.0.23" "psycopg2-binary>=2.9" "pydantic-settings>=2.1"
+      - run: pip install "alembic>=1.13" "sqlalchemy>=2.0.23,<2.1" "psycopg2-binary>=2.9" "pydantic-settings>=2.1"
       - name: Apply migrations on Postgres
         run: cd backend && alembic upgrade head
       - name: Verify migrations are reversible
