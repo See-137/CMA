@@ -10,7 +10,7 @@
 ## Running locally
 ```powershell
 # PowerShell (recommended)
-.\cma-dev.ps1 -Key sk-proj-YOUR-KEY
+.\cma-dev.ps1          # reads CMA_OPENAI_API_KEY from .env; avoid passing keys on the command line
 
 # Without OpenAI key — uses Ollama (must be running locally)
 .\cma-dev.ps1
@@ -23,9 +23,9 @@
 
 ## Running tests
 ```powershell
-cd backend; pytest
+cd backend; pip install -r requirements-dev.txt; pytest
 ```
-- ~78 tests across 10 modules, isolated SQLite (schema built from models in `conftest.py`); SDK transport/instrumentation tests live in `sdks/python/tests` (run separately: `cd sdks/python; pytest tests`)
+- 89 test functions across backend/tests and sdks/python/tests, isolated SQLite (schema built from models in `conftest.py`); SDK transport/instrumentation tests live in `sdks/python/tests` (run separately: `cd sdks/python; pytest tests`)
 - `test_events.py` — ingestion, auto-discovery, cost calc
 - `test_auth.py` — setup + login
 - `test_budgets.py` — enforcement + threshold alerts
@@ -131,7 +131,7 @@ docker compose --profile observability up -d
 - 3 services: postgres:16-alpine, backend (python:3.11-slim), frontend (nginx:alpine); `--profile observability` adds prometheus + grafana (set `CMA_METRICS_TOKEN` in `.env` AND write the same value to `deploy/prometheus/metrics-token` — git-ignored, see `.example`)
 - Startup order enforced via healthchecks (postgres -> backend -> frontend)
 - Backend Dockerfile installs CPU-only PyTorch for sentence-transformers
-- Frontend uses multi-stage build (node:18 -> nginx)
+- Frontend uses multi-stage build (node:20 -> nginx)
 - Volumes: `pg-data` (postgres), `chroma-data` (vector store)
 
 ## Gotchas

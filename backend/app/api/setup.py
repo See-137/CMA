@@ -5,11 +5,17 @@ import bcrypt
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db
+from app.api.deps import _verify_password, get_db
+from app.config import settings
 from app.models.models import SetupConfig
 from app.schemas.schemas import SetupRequest, SetupResponse, SetupStatusResponse
+from app.services.rate_limit import rate_limit
 
 router = APIRouter(prefix="/setup", tags=["setup"])
+
+# Shares the "login" bucket: reconnect hands out the API key on a correct
+# password, so it must be guessed no faster than /auth/login.
+_login_limit = rate_limit("login", lambda: settings.RATE_LIMIT_LOGIN_PER_MINUTE)
 
 
 def _hash_password(password: str) -> str:
@@ -52,7 +58,9 @@ def run_setup(body: SetupRequest, db: Session = Depends(get_db)):
     )
 
 
-@router.post("/reconnect", response_model=SetupResponse)
+@router.post(
+    "/reconnect", response_model=SetupResponse, dependencies=[Depends(_login_limit)]
+)
 def reconnect(body: SetupRequest, db: Session = Depends(get_db)):
     """Return existing API key after verifying admin credentials."""
     config = db.query(SetupConfig).first()
@@ -60,9 +68,7 @@ def reconnect(body: SetupRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Setup not completed yet")
 
     email_ok = hmac.compare_digest(config.admin_email, body.admin_email)
-    password_ok = bcrypt.checkpw(
-        body.admin_password.encode(), config.admin_password_hash.encode()
-    )
+    password_ok = _verify_password(body.admin_password, config.admin_password_hash)
     if not (email_ok and password_ok):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 

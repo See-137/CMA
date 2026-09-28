@@ -84,8 +84,11 @@ Design decisions worth knowing:
 ### Docker
 
 ```bash
+cp .env.template .env      # then set POSTGRES_PASSWORD (and CMA_GRAFANA_PASSWORD if you use the observability profile)
 docker compose up -d
 ```
+
+Compose refuses to start without the Postgres password. Every published port is bound to `127.0.0.1`, because the setup endpoint is unauthenticated until the wizard has run; for remote access put a reverse proxy in front or use an SSH tunnel.
 
 Open <http://localhost:5173> and complete the setup wizard. The wizard creates the admin credentials and shows the ingest API key; copy it for the SDK. If you lose it, the Reconnect screen returns it after admin login.
 
@@ -116,7 +119,7 @@ npm install
 npm run dev
 ```
 
-On Windows, `cma-dev.ps1` starts both with one command.
+On Windows, `cma-dev.ps1` starts both with one command. For a Docker-based desktop install, `install.bat` builds the images and creates a shortcut that runs `cma.bat`.
 
 ### Configuration
 
@@ -132,6 +135,8 @@ Copy `.env.template` to `.env` in the repo root. Every backend setting uses the 
 | `CMA_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | sentence-transformers model, downloaded on first run |
 | `CMA_RAG_TOP_K` | `10` | Retrieved chunks per question |
 | `CMA_ALLOW_PRIVATE_WEBHOOKS` | `false` | Permit alert webhooks to private networks (disables the SSRF guard) |
+| `POSTGRES_PASSWORD` | required | Database password for the Compose stack |
+| `CMA_GRAFANA_PASSWORD` | `admin` | Grafana admin password; change it before exposing port 3000 beyond loopback |
 | `CMA_ENABLE_MAINTENANCE` | `true` | Run the rollup / backfill / prune loop on this instance |
 | `CMA_METRICS_TOKEN` | unset | Bearer token that gates the Prometheus endpoint |
 | `CMA_SERVE_STATIC_DIR` | empty | Serve the built frontend from the API process (single-port native deploy) |
@@ -177,7 +182,7 @@ See [`sdks/python/README.md`](sdks/python/README.md) for the full API and [`exam
 
 ## API
 
-All routes are under `/api/v1` and require the ingest key (`X-API-Key`) except setup, auth and health. Destructive admin operations additionally require the admin password.
+All routes are under `/api/v1` and require the ingest key as `Authorization: Bearer <key>`, except setup, auth and health. Destructive admin operations additionally require an `X-Admin-Password` header, and failed admin attempts are rate limited like login.
 
 | Area | Endpoints |
 |---|---|
@@ -187,7 +192,7 @@ All routes are under `/api/v1` and require the ingest key (`X-API-Key`) except s
 | Dashboard | `/dashboard/overview`, `/timeseries`, `/top-agents`, `/model-usage`, `/budget-status` |
 | Scrooge | `POST /chat`, `POST /chat/stream`, `GET /chat/status` |
 | Search | `POST /search/semantic` |
-| Admin | `/admin/status`, `/admin/logs`, `/admin/export`, `/admin/reset` |
+| Admin | `/admin/status`, `/admin/logs`, `/admin/export`, `/admin/reset` (monitoring data), `/admin/reset-full` (everything, including setup) |
 | Health | `GET /health` (liveness), `GET /health/ready` (readiness with bounded DB and vector-store checks) |
 
 The interactive OpenAPI docs at `/docs` are the authoritative reference.
@@ -196,12 +201,12 @@ The interactive OpenAPI docs at `/docs` are the authoritative reference.
 
 **Docker Compose** is the default: PostgreSQL, backend, and an nginx-served frontend, with Prometheus and Grafana behind the `observability` profile.
 
-**Native (no Docker)** is supported for small hosts. [`deploy/systemd/cma.service`](deploy/systemd/cma.service) runs migrations before every start, serves API and frontend from one port bound to localhost, and applies a strict systemd sandbox (`ProtectSystem=strict`, empty capability set, read-only home, private tmp and devices). Reach the dashboard over an SSH tunnel.
+**Native (no Docker)** is supported for small hosts. [`deploy/systemd/cma.service`](deploy/systemd/cma.service) expects the checkout at `/opt/cma` under a dedicated `cma` user, runs migrations before every start, serves API and frontend from one port bound to localhost, and applies a strict systemd sandbox (`ProtectSystem=strict`, empty capability set, read-only home, private tmp and devices). Reach the dashboard over an SSH tunnel.
 
 ## Testing and CI
 
 ```bash
-cd backend && pytest                 # backend suite, in-memory SQLite
+cd backend && pip install -r requirements-dev.txt && pytest   # backend suite, in-memory SQLite
 cd sdks/python && pip install -e ".[dev]" && pytest   # SDK, incl. real openai/anthropic clients against a fake server
 cd frontend && npm run build         # tsc + vite build
 ```
