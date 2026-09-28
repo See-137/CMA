@@ -17,7 +17,7 @@ _login_limit = rate_limit("login", lambda: settings.RATE_LIMIT_LOGIN_PER_MINUTE)
 
 def _needs_rehash(hashed: str) -> bool:
     """Check if password hash needs upgrade to bcrypt."""
-    return not (hashed.startswith("$2b$") or hashed.startswith("$2a$"))
+    return not hashed.startswith(("$2b$", "$2a$"))
 
 
 @router.post(

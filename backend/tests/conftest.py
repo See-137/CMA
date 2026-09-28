@@ -12,16 +12,16 @@ os.environ.setdefault("CMA_ENABLE_MAINTENANCE", "false")
 os.environ.setdefault("CMA_CHROMA_PERSIST_DIR", "./data/test_chroma")
 os.makedirs("data", exist_ok=True)  # data/ is gitignored — absent on fresh CI checkouts
 
-import pytest  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
-from sqlalchemy import create_engine  # noqa: E402
-from sqlalchemy.orm import sessionmaker  # noqa: E402
-from sqlalchemy.pool import StaticPool  # noqa: E402
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
-from app.database import Base, engine, get_db  # noqa: E402
-from app.main import app  # noqa: E402
-from app.seed import seed_providers  # noqa: E402
-from app.services.rate_limit import reset as reset_rate_limit  # noqa: E402
+from app.database import Base, engine, get_db
+from app.main import app
+from app.seed import seed_providers
+from app.services.rate_limit import reset as reset_rate_limit
 
 # In-memory SQLite for tests
 TEST_ENGINE = create_engine(

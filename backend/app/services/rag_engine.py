@@ -9,8 +9,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models.models import Agent, CostEvent, ModelPricing, Provider
 from app.metrics import RAG_STAGE_SECONDS
+from app.models.models import Agent, CostEvent, ModelPricing, Provider
 from app.services.vector_store import embed_text, search_events, search_rollups
 from app.timeutils import utcnow
 
@@ -55,17 +55,19 @@ class QueryIntent:
 _AGG_PATTERNS = re.compile(
     r"\b(total|sum|how much|spend|spent|cost|expensive|cheapest|average|avg"
     r"|latest|overview|summary|breakdown|report|usage)\b",
-    re.I,
+    re.IGNORECASE,
 )
 _CMP_PATTERNS = re.compile(
-    r"\b(compare|vs|versus|difference|switch|save|saving|alternative|instead)\b", re.I
+    r"\b(compare|vs|versus|difference|switch|save|saving|alternative|instead)\b",
+    re.IGNORECASE,
 )
 _TIME_PATTERNS = re.compile(
     r"\b(trend|over time|spike|spik|increase|decrease|change|when did|timeline|history)\b",
-    re.I,
+    re.IGNORECASE,
 )
 _FAIL_PATTERNS = re.compile(
-    r"\b(fail|failed|failure|error|broken|timeout|timed out|issue|problem)\b", re.I
+    r"\b(fail|failed|failure|error|broken|timeout|timed out|issue|problem)\b",
+    re.IGNORECASE,
 )
 
 _RELATIVE_TIME = {
@@ -106,7 +108,7 @@ _RELATIVE_TIME = {
 }
 
 # Match "last N days/hours"
-_LAST_N_RE = re.compile(r"last\s+(\d+)\s+(day|hour|week|month)s?", re.I)
+_LAST_N_RE = re.compile(r"last\s+(\d+)\s+(day|hour|week|month)s?", re.IGNORECASE)
 
 # Day names
 _DAYS = {

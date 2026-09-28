@@ -3,8 +3,8 @@
 import json
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import AsyncIterator
 
 import httpx
 
@@ -74,8 +74,9 @@ class OpenAIProvider(LLMProvider):
         )
 
     async def stream(self, messages, temperature=0.3, max_tokens=1500):
-        async with httpx.AsyncClient(timeout=120) as client:
-            async with client.stream(
+        async with (
+            httpx.AsyncClient(timeout=120) as client,
+            client.stream(
                 "POST",
                 f"{self.base_url}/chat/completions",
                 headers={
@@ -89,22 +90,23 @@ class OpenAIProvider(LLMProvider):
                     "max_tokens": max_tokens,
                     "stream": True,
                 },
-            ) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    payload = line[6:]
-                    if payload.strip() == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(payload)
-                        delta = chunk["choices"][0].get("delta", {})
-                        text = delta.get("content", "")
-                        if text:
-                            yield text
-                    except (json.JSONDecodeError, KeyError, IndexError):
-                        continue
+            ) as resp,
+        ):
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                payload = line[6:]
+                if payload.strip() == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(payload)
+                    delta = chunk["choices"][0].get("delta", {})
+                    text = delta.get("content", "")
+                    if text:
+                        yield text
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    continue
 
 
 class OllamaProvider(LLMProvider):
@@ -139,8 +141,9 @@ class OllamaProvider(LLMProvider):
         )
 
     async def stream(self, messages, temperature=0.3, max_tokens=1500):
-        async with httpx.AsyncClient(timeout=120) as client:
-            async with client.stream(
+        async with (
+            httpx.AsyncClient(timeout=120) as client,
+            client.stream(
                 "POST",
                 f"{self.base_url}/api/chat",
                 json={
@@ -152,18 +155,19 @@ class OllamaProvider(LLMProvider):
                         "num_predict": max_tokens,
                     },
                 },
-            ) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line.strip():
-                        continue
-                    try:
-                        chunk = json.loads(line)
-                        text = chunk.get("message", {}).get("content", "")
-                        if text:
-                            yield text
-                    except json.JSONDecodeError:
-                        continue
+            ) as resp,
+        ):
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.strip():
+                    continue
+                try:
+                    chunk = json.loads(line)
+                    text = chunk.get("message", {}).get("content", "")
+                    if text:
+                        yield text
+                except json.JSONDecodeError:
+                    continue
 
 
 _provider_instance: LLMProvider | None = None

@@ -25,9 +25,8 @@ def _val(name: str, labels: dict | None = None) -> float:
 
 
 def _stub_retrieval(monkeypatch) -> None:
-    from app.services.rag_engine import RetrievalContext
-
     import app.api.chat as chat_api
+    from app.services.rag_engine import RetrievalContext
 
     monkeypatch.setattr(chat_api, "retrieve", lambda msg, db: RetrievalContext())
 
@@ -164,7 +163,6 @@ def test_retrieve_observes_all_pipeline_stages(monkeypatch):
     """retrieve() times its four stages regardless of what the query needs —
     an empty intent still passes through every stage block."""
     import app.services.rag_engine as rag
-
     from tests.conftest import TestSession
 
     monkeypatch.setattr(rag, "detect_query_intent", lambda q, db: rag.QueryIntent())
