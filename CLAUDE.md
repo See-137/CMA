@@ -12,9 +12,6 @@
 # PowerShell (recommended)
 .\cma-dev.ps1 -Key sk-proj-YOUR-KEY
 
-# cmd.exe
-cma-dev.bat sk-proj-YOUR-KEY
-
 # Without OpenAI key — uses Ollama (must be running locally)
 .\cma-dev.ps1
 ```
@@ -140,7 +137,7 @@ docker compose --profile observability up -d
 ## Gotchas
 - If events show `cost: 0` — check that model pricing exists in `model_pricing` table for the exact model name + provider combo
 - After admin reset, ChromaDB is cleared automatically (`clear_vector_store()` in both reset endpoints)
-- `cma-dev.bat` starts uvicorn with `--reload` but file watching is unreliable on Windows — restart manually if code changes aren't picked up
+- `cma-dev.ps1` starts uvicorn with `--reload` but file watching is unreliable on Windows — restart manually if code changes aren't picked up
 - The RAG intent detector uses regex patterns in `_AGG_PATTERNS`, `_CMP_PATTERNS`, etc. — if a query type doesn't trigger SQL, check these patterns first
 - Fallback aggregation only fires when at least one data intent is detected — pure conversational queries get vector-only context
 - `gpt-4o-mini` doesn't lean hard into the Scrooge personality — larger models follow the system prompt more faithfully
