@@ -57,3 +57,6 @@ coverage.xml
 
 # Local QA scratch
 .qa-scratch/
+scripts/
+docs/rag-architecture.html
+_ruff*/

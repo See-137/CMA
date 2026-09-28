@@ -2,11 +2,12 @@ import hashlib
 import hmac
 
 import bcrypt
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.models import SetupConfig
+from app.services.rate_limit import limit_failures
 
 
 def _verify_password(plain: str, hashed: str) -> bool:
@@ -68,6 +69,7 @@ def require_metrics_access(
 
 
 def require_admin(
+    request: Request,
     x_admin_password: str | None = Header(None),
     db: Session = Depends(get_db),
 ) -> None:
@@ -83,6 +85,9 @@ def require_admin(
     if not x_admin_password or not _verify_password(
         x_admin_password, config.admin_password_hash
     ):
+        from app.config import settings
+
+        limit_failures("admin", request, settings.RATE_LIMIT_LOGIN_PER_MINUTE)
         raise HTTPException(
             status_code=403, detail="Admin password required for this operation"
         )

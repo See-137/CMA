@@ -195,7 +195,7 @@ const SetupWizard: React.FC = () => {
               <input
                 type="email"
                 className="input"
-                placeholder="keeper@counting-house.com"
+                placeholder="keeper@example.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
               />
@@ -442,7 +442,7 @@ const SetupWizard: React.FC = () => {
                 <input
                   type="email"
                   className="input"
-                  placeholder="keeper@counting-house.com"
+                  placeholder="keeper@example.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleReconnect()}

@@ -178,3 +178,55 @@ def test_login_is_rate_limited(authed_client, monkeypatch):
             json={"email": "test@example.com", "password": "wrong"},
         )
     assert last.status_code == 429
+
+
+# -- Credential guessing surfaces share the login limiter ---------------------
+
+
+def test_reconnect_is_rate_limited(authed_client, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "RATE_LIMIT_LOGIN_PER_MINUTE", 3)
+    last = None
+    for _ in range(6):
+        last = authed_client.post(
+            "/api/v1/setup/reconnect",
+            json={"admin_email": "test@example.com", "admin_password": "wrong"},
+        )
+    assert last.status_code == 429
+
+
+def test_admin_failures_are_rate_limited_but_successes_are_not(
+    authed_client, monkeypatch
+):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "RATE_LIMIT_LOGIN_PER_MINUTE", 3)
+    # Correct password: unlimited (the UI can call admin reads freely).
+    for _ in range(6):
+        ok = authed_client.get(
+            "/api/v1/admin/logs", headers={"X-Admin-Password": "testpass123"}
+        )
+        assert ok.status_code == 200
+    # Wrong password: 403 until the failure budget is spent, then 429.
+    last = None
+    for _ in range(6):
+        last = authed_client.get(
+            "/api/v1/admin/logs", headers={"X-Admin-Password": "wrong"}
+        )
+    assert last.status_code == 429
+
+
+def test_rate_limit_ignores_spoofed_x_forwarded_for(authed_client, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "RATE_LIMIT_LOGIN_PER_MINUTE", 3)
+    # A fresh X-Forwarded-For per request must not open a fresh bucket.
+    last = None
+    for i in range(6):
+        last = authed_client.post(
+            "/api/v1/auth/login",
+            json={"email": "test@example.com", "password": "wrong"},
+            headers={"X-Forwarded-For": f"10.0.0.{i}"},
+        )
+    assert last.status_code == 429

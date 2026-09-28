@@ -4,7 +4,7 @@ services:
     environment:
       POSTGRES_DB: cma
       POSTGRES_USER: cma
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cma_dev_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
       - pg-data:/var/lib/postgresql/data
     healthcheck:
@@ -16,13 +16,15 @@ services:
 
   backend:
     build: ./backend
+    # Bound to loopback: put a reverse proxy (or an SSH tunnel) in front for
+    # remote access. /api/v1/setup is unauthenticated until the wizard runs,
+    # so a fresh instance must never be reachable from the network.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
-      - ./backend/app:/app/app:ro
       - chroma-data:/app/data/chroma
     environment:
-      - CMA_DATABASE_URL=postgresql://cma:${POSTGRES_PASSWORD:-cma_dev_password}@postgres:5432/cma
+      - CMA_DATABASE_URL=postgresql://cma:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/cma
       - CMA_CORS_ORIGINS=["http://localhost:5173","http://localhost:3000"]
       - CMA_CHROMA_PERSIST_DIR=/app/data/chroma
       - CMA_LLM_PROVIDER=ollama
@@ -50,7 +52,7 @@ services:
   frontend:
     build: ./frontend
     ports:
-      - "5173:80"
+      - "127.0.0.1:5173:80"
     depends_on:
       backend:
         condition: service_healthy
@@ -67,18 +69,20 @@ services:
       - ./deploy/prometheus/metrics-token:/etc/prometheus/secrets/metrics-token:ro
       - prom-data:/prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     depends_on:
       backend:
         condition: service_healthy
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:11.1.0
+    image: grafana/grafana:11.6.9
     profiles: ["observability"]
     environment:
       - GF_SECURITY_ADMIN_USER=admin
-      # Grafana's own default; change via .env for anything non-local.
+      # Compose interpolates this even when the profile is off, so it cannot be
+      # required. Port 3000 is loopback-only; set CMA_GRAFANA_PASSWORD in .env
+      # before exposing Grafana any further.
       - GF_SECURITY_ADMIN_PASSWORD=${CMA_GRAFANA_PASSWORD:-admin}
       - GF_AUTH_ANONYMOUS_ENABLED=false
     volumes:
@@ -86,7 +90,7 @@ services:
       - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       - prometheus
     restart: unless-stopped

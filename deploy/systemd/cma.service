@@ -1,10 +1,12 @@
 # CMA - Cost Monitoring Agent, native (non-Docker) deploy.
 # Single process serves the API and, when CMA_SERVE_STATIC_DIR is set in the
-# EnvironmentFile, the built frontend as well. Binds localhost only â€” access
+# EnvironmentFile, the built frontend as well. Binds localhost only — access
 # the dashboard over an SSH tunnel (ssh -L 8000:127.0.0.1:8000 <host>).
 #
-# Install:
-#   chmod 600 /home/oleg/cma/.env        # holds API keys â€” keep it private
+# Install (checkout at /opt/cma, venv at /opt/cma/.venv):
+#   sudo useradd --system --home /opt/cma --shell /usr/sbin/nologin cma
+#   sudo chown -R cma:cma /opt/cma
+#   sudo chmod 600 /opt/cma/.env        # holds API keys — keep it private
 #   sudo cp cma.service /etc/systemd/system/
 #   sudo systemctl daemon-reload && sudo systemctl enable --now cma
 
@@ -18,24 +20,27 @@ StartLimitBurst=10
 
 [Service]
 Type=simple
-User=oleg
-WorkingDirectory=/home/oleg/cma/backend
-EnvironmentFile=/home/oleg/cma/.env
-# Alembic owns the schema â€” migrate before every start (idempotent).
-ExecStartPre=/home/oleg/cma/.venv/bin/alembic upgrade head
-ExecStart=/home/oleg/cma/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+User=cma
+Group=cma
+WorkingDirectory=/opt/cma/backend
+EnvironmentFile=/opt/cma/.env
+# sentence-transformers downloads the embedding model on first run; keep the
+# cache inside the data dir so it is the only writable path besides the DB.
+Environment=HF_HOME=/opt/cma/backend/data/hf
+# Alembic owns the schema — migrate before every start (idempotent).
+ExecStartPre=/opt/cma/.venv/bin/alembic upgrade head
+ExecStart=/opt/cma/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=5
 
 # Hardening. The process holds a plaintext ingest key (SetupConfig.api_key)
-# and writes only its data dir + the HF model cache (sentence-transformers
-# downloads the embedding model to ~/.cache on first run).
+# and writes only its data dir (SQLite/Chroma/logs + the model cache above).
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/home/oleg/cma/backend/data /home/oleg/.cache
+ProtectHome=true
+ReadWritePaths=/opt/cma/backend/data
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

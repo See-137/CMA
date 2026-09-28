@@ -82,8 +82,12 @@ export default function Integrations() {
     });
   }, []);
 
+  // Copy gets the real key; the on-screen snippet only ever shows it masked,
+  // so a screenshot or screen share cannot leak it.
   const inject = (code: string): string =>
     code.replace(/YOUR_ENDPOINT/g, endpoint).replace(/YOUR_API_KEY/g, apiKey);
+  const injectMasked = (code: string): string =>
+    code.replace(/YOUR_ENDPOINT/g, endpoint).replace(/YOUR_API_KEY/g, maskedKey);
 
   const fetchStatus = useCallback(async () => {
     setStatusLoading(true);
@@ -596,7 +600,7 @@ curl "YOUR_ENDPOINT/api/v1/events?agent_name=my-agent&status=success&per_page=10
               </div>
               <pre className="overflow-x-auto p-4">
                 <code className="whitespace-pre font-mono text-xs leading-relaxed text-brand-300">
-                  {inject(selected.code)}
+                  {injectMasked(selected.code)}
                 </code>
               </pre>
             </div>

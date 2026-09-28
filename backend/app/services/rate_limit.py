@@ -15,9 +15,13 @@ _hits: dict[str, list[float]] = {}
 
 
 def _client_id(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        return fwd.split(",")[0].strip()
+    """Peer address as seen by the ASGI server.
+
+    X-Forwarded-For is deliberately NOT parsed here: the caller controls it, so
+    keying on it lets anyone reset their own bucket per request. Behind a
+    reverse proxy, run uvicorn with --proxy-headers --forwarded-allow-ips so the
+    server rewrites request.client from the trusted proxy's header instead.
+    """
     return request.client.host if request.client else "unknown"
 
 
@@ -53,6 +57,17 @@ def rate_limit(name: str, limit, window: float = 60.0):
         _check(f"{name}:{_client_id(request)}", resolved, window)
 
     return dependency
+
+
+def limit_failures(
+    name: str, request: Request, limit: int, window: float = 60.0
+) -> None:
+    """Count one failed attempt for the caller and raise 429 once over `limit`.
+
+    For guards that must stay unlimited on success (admin operations the UI
+    polls) but must not be brute-forceable.
+    """
+    _check(f"{name}:{_client_id(request)}", limit, window)
 
 
 def reset() -> None:
