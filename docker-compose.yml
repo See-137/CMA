@@ -7,6 +7,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
       - pg-data:/var/lib/postgresql/data
+    networks:
+      - cma
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U cma"]
       interval: 10s
@@ -34,6 +36,10 @@ services:
       # unset means /metrics accepts the API key only). The same value
       # must be written to deploy/prometheus/metrics-token.
       - CMA_METRICS_TOKEN=${CMA_METRICS_TOKEN:-}
+      # Only the frontend's X-Forwarded-For is trusted (see backend/Dockerfile).
+      - FORWARDED_ALLOW_IPS=172.28.0.10
+    networks:
+      - cma
     depends_on:
       postgres:
         condition: service_healthy
@@ -53,6 +59,9 @@ services:
     build: ./frontend
     ports:
       - "127.0.0.1:5173:80"
+    networks:
+      cma:
+        ipv4_address: 172.28.0.10
     depends_on:
       backend:
         condition: service_healthy
@@ -68,6 +77,8 @@ services:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./deploy/prometheus/metrics-token:/etc/prometheus/secrets/metrics-token:ro
       - prom-data:/prometheus
+    networks:
+      - cma
     ports:
       - "127.0.0.1:9090:9090"
     depends_on:
@@ -89,11 +100,19 @@ services:
       - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
+    networks:
+      - cma
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
       - prometheus
     restart: unless-stopped
+
+networks:
+  cma:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
 
 volumes:
   pg-data:
