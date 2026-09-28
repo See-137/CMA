@@ -4,6 +4,7 @@
 Capture every token your agents spend at the call site, attribute it per agent, model and provider, enforce budgets, and ask **Scrooge**, a built-in RAG assistant, why the bill moved.
 
 [![CI](https://github.com/See-137/CMA/actions/workflows/ci.yml/badge.svg)](https://github.com/See-137/CMA/actions/workflows/ci.yml)
+![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
 ![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white)
@@ -244,3 +245,7 @@ CMA is a working single-maintainer project used to monitor a personal multi-agen
 - Quality evaluation for Scrooge: a golden question set with expected sources, run in CI.
 
 Issues and pull requests are welcome.
+
+## License
+
+[MIT](LICENSE)
