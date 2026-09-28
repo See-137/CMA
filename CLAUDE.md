@@ -12,7 +12,6 @@
 # PowerShell (recommended)
 .\cma-dev.ps1 -Key sk-proj-YOUR-KEY
 
-
 # Without OpenAI key — uses Ollama (must be running locally)
 .\cma-dev.ps1
 ```
