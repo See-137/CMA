@@ -1,6 +1,6 @@
 # CMA Cost Monitor — Python SDK
 
-Track LLM costs across multi-agent systems by sending events to a [CMA](https://github.com/your-org/cma) backend.
+Track LLM costs across multi-agent systems by sending events to a [CMA](https://github.com/See-137/CMA) backend.
 
 ## Installation
 
