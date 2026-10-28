@@ -542,7 +542,7 @@ def _run_timeline_query(intent: QueryIntent, db: Session) -> list[dict]:
             "type": "timeline",
             "granularity": unit,
             "timezone": intent.tz.key,
-            "bucket": utc_iso(bucket_start_utc(r.bucket, intent.tz)),
+            "bucket": utc_iso(bucket_start_utc(r.bucket, unit, intent.tz)),
             "cost": round(float(r.cost), 6),
             "requests": int(r.requests),
         }

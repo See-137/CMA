@@ -72,8 +72,9 @@ def to_local(value: datetime, tz: ZoneInfo) -> datetime:
 def from_local(local: datetime, tz: ZoneInfo) -> datetime:
     """Local wall-clock time (naive or aware in ``tz``) -> naive UTC.
 
-    A wall time that does not exist (skipped by a DST jump) or occurs twice
-    resolves with fold=0, i.e. the offset in force before the transition.
+    A repeated wall time resolves by its ``fold`` (0 = first occurrence,
+    the offset in force before the transition); a skipped one with fold=0
+    maps to the instant after the gap.
     """
     aware = local.replace(tzinfo=tz) if local.tzinfo is None else local
     return aware.astimezone(timezone.utc).replace(tzinfo=None)
@@ -89,9 +90,13 @@ def local_floor(unit: str, tz: ZoneInfo, now: datetime | None = None) -> datetim
         raise ValueError(f"unknown unit {unit!r}")
     local = to_local(now or utcnow(), tz).replace(tzinfo=None)
     if unit == "hour":
+        # Keeps fold: the second 01:00 of a fall-back night is its own hour.
         start = local.replace(minute=0, second=0, microsecond=0)
     else:
-        start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+        # Calendar boundaries are the FIRST occurrence of local midnight
+        # (fold=0), or a repeated midnight (e.g. America/Havana) would move
+        # the start of "today" during the repeated hour.
+        start = local.replace(hour=0, minute=0, second=0, microsecond=0, fold=0)
         if unit == "week":
             start -= timedelta(days=start.weekday())
         elif unit == "month":
@@ -111,7 +116,7 @@ def shift_local(
         index = local.year * 12 + (local.month - 1) + months
         local = local.replace(year=index // 12, month=index % 12 + 1)
     local += timedelta(days=days)
-    return from_local(local, tz)
+    return from_local(local.replace(fold=0), tz)
 
 
 def local_bucket(value: datetime, unit: str, tz: ZoneInfo) -> datetime:

@@ -34,17 +34,23 @@ def _zone(name: str) -> ZoneInfo | None:
 
 
 def _sqlite_local_bucket(value: str | None, unit: str, tz_name: str) -> str | None:
-    """SQLite UDF: local wall-clock start of the hour/day containing a naive
-    UTC timestamp string, as 'YYYY-MM-DD HH:MM'."""
+    """SQLite UDF: the bucket key for a naive-UTC timestamp string.
+
+    hour -> the UTC instant at which the containing local hour began (exact
+            even when a local hour repeats at a DST fall-back);
+    day  -> the local calendar date at midnight (a date is never ambiguous).
+    Both as 'YYYY-MM-DD HH:MM'.
+    """
     if value is None:
         return None
     tz = _zone(tz_name) or ZoneInfo("UTC")
-    local = to_local(datetime.fromisoformat(str(value)), tz).replace(tzinfo=None)
+    local = to_local(datetime.fromisoformat(str(value)), tz)
     if unit == "hour":
-        local = local.replace(minute=0, second=0, microsecond=0)
-    else:
-        local = local.replace(hour=0, minute=0, second=0, microsecond=0)
-    return local.strftime(_FMT)
+        start = local.replace(minute=0, second=0, microsecond=0)  # keeps fold
+        return from_local(start, tz).strftime(_FMT)
+    return local.replace(
+        tzinfo=None, hour=0, minute=0, second=0, microsecond=0
+    ).strftime(_FMT)
 
 
 def register_sqlite_functions(dbapi_connection) -> None:
@@ -56,17 +62,26 @@ def register_sqlite_functions(dbapi_connection) -> None:
 
 
 def local_bucket_expr(column, unit: str, tz: ZoneInfo, db: Session):
-    """SQL expression: local wall-clock start of the bucket holding ``column``."""
+    """SQL expression for the bucket key of ``column`` (see _sqlite_local_bucket):
+    hour keys are UTC instants, day keys are local calendar dates."""
     if unit not in _UNITS:
         raise ValueError(f"unknown bucket unit {unit!r}")
     if db.get_bind().dialect.name == "sqlite":
         return func.cma_local_bucket(column, unit, tz.key)
-    return func.date_trunc(unit, func.timezone(tz.key, func.timezone("UTC", column)))
+    local = func.timezone(tz.key, func.timezone("UTC", column))
+    if unit == "hour":
+        # ts minus the time elapsed since the local hour began: the hour's
+        # start as a UTC instant, so the two 01:00 hours of a fall-back day
+        # stay separate buckets.
+        return column - (local - func.date_trunc("hour", local))
+    return func.date_trunc("day", local)
 
 
-def bucket_start_utc(value, tz: ZoneInfo) -> datetime:
-    """Local bucket start (SQLite string or Postgres naive datetime) -> naive
-    UTC instant."""
+def bucket_start_utc(value, unit: str, tz: ZoneInfo) -> datetime:
+    """Bucket key (SQLite string or Postgres naive datetime) -> naive-UTC
+    bucket start. Day keys are local midnights (first occurrence)."""
     if isinstance(value, str):
-        value = datetime.strptime(value, _FMT).replace(tzinfo=tz)
-    return from_local(value, tz)
+        value = datetime.strptime(value, _FMT)  # noqa: DTZ007 - naive by design
+    if unit == "hour":
+        return value
+    return from_local(value.replace(fold=0), tz)

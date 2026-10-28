@@ -145,7 +145,7 @@ def dashboard_timeseries(
 
     data = [
         TimeseriesPoint(
-            timestamp=utc_iso(bucket_start_utc(row.ts, tz)),
+            timestamp=utc_iso(bucket_start_utc(row.ts, unit, tz)),
             cost=round(float(row.cost), 6),
             requests=int(row.requests),
         )

@@ -229,3 +229,34 @@ def test_scrooge_scope_states_the_zone_and_timeline_is_local(tokyo):
         ("2026-10-26T15:00Z", 1.0),
         ("2026-10-27T15:00Z", 2.0),
     ]
+
+
+# -- DST fall-back (Codex review of #25) --------------------------------------
+
+
+def test_repeated_local_midnight_keeps_today_stable():
+    """America/Havana repeats midnight when DST ends (2026-11-01): the start
+    of "today" must not move during the repeated hour."""
+    tz = ZoneInfo("America/Havana")
+    starts = {
+        local_floor("day", tz, U(2026, 11, 1, h, 30))  # 00:30 CDT, 00:30 CST, 01:30 CST
+        for h in (4, 5, 6)
+    }
+    assert starts == {U(2026, 11, 1, 4, 0)}
+
+
+def test_fall_back_hours_stay_separate_buckets(db, monkeypatch, authed_client):
+    """America/New_York 2026-11-01: 01:30 EDT (05:30Z) and 01:30 EST (06:30Z)
+    are different hours and must not merge."""
+    db.query(SetupConfig).update({"timezone": "America/New_York"})
+    db.commit()
+    monkeypatch.setattr(dashboard, "utcnow", lambda: U(2026, 11, 1, 8, 0))
+    _event(db, U(2026, 11, 1, 5, 30), 1.0)
+    _event(db, U(2026, 11, 1, 6, 30), 2.0)
+    series = authed_client.get(
+        "/api/v1/dashboard/timeseries?period=today&granularity=hour"
+    ).json()
+    assert [(p["timestamp"], p["cost"]) for p in series["data"]] == [
+        ("2026-11-01T05:00Z", 1.0),
+        ("2026-11-01T06:00Z", 2.0),
+    ]
