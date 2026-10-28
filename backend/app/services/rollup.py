@@ -21,6 +21,21 @@ def compute_daily_rollups(db: Session, target_date: date | None = None) -> int:
     if target_date is None:
         target_date = (utcnow() - timedelta(days=1)).date()
 
+    archived = (
+        db.query(DailyCostRollup.id)
+        .filter(
+            DailyCostRollup.date == target_date,
+            DailyCostRollup.archived.is_(True),
+        )
+        .first()
+    )
+    if archived:
+        # Raw events for this day were pruned; recomputing from whatever
+        # arrived since would overwrite the archived totals. Retention adds
+        # late events to archived rows instead.
+        logger.info("Rollup for %s is archived — not recomputing", target_date)
+        return 0
+
     start = datetime.combine(target_date, datetime.min.time())
     end = start + timedelta(days=1)
 

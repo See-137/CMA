@@ -39,3 +39,44 @@ def test_late_event_is_in_rollup_before_prune(authed_client):
         assert db.query(CostEvent).count() == 0
     finally:
         db.close()
+
+
+def test_backdated_event_after_prune_adds_to_archived_rollup(authed_client):
+    """A day already pruned has only its rollup left; a late event for that
+    day must be ADDED to the archived totals, never replace them."""
+    db = TestSession()
+    try:
+        old = (utcnow() - timedelta(days=200)).replace(hour=12, microsecond=0)
+        for _ in range(50):
+            db.add(_event(old, 2.0))
+        db.commit()
+        assert prune_old_events(db) == 50  # rollup computed, events gone
+        roll = db.query(DailyCostRollup).filter_by(date=old.date()).one()
+        assert roll.total_cost == 100.0
+
+        db.add(_event(old + timedelta(hours=2), 2.0))  # back-dated arrival
+        db.commit()
+        # Nothing may recompute the archived day from the lone survivor.
+        compute_daily_rollups(db, old.date())
+        db.refresh(roll)
+        assert roll.total_cost == 100.0
+
+        assert prune_old_events(db) == 1
+        db.refresh(roll)
+        assert roll.total_cost == 102.0
+        assert roll.request_count == 51
+    finally:
+        db.close()
+
+
+def test_old_day_without_rollup_is_rolled_up_then_pruned(authed_client):
+    db = TestSession()
+    try:
+        old = (utcnow() - timedelta(days=200)).replace(hour=12, microsecond=0)
+        db.add(_event(old, 3.0))
+        db.commit()
+        assert prune_old_events(db) == 1
+        roll = db.query(DailyCostRollup).filter_by(date=old.date()).one()
+        assert roll.total_cost == 3.0
+    finally:
+        db.close()

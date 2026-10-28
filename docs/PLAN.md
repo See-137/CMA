@@ -118,4 +118,8 @@ Open decisions (owner input needed — they change semantics, compatibility or s
 
 - 2026-10-28 — Baseline recorded. Audit of accounting, budgets, SDK, Scrooge,
   security, ops. PR `fix/accounting-integrity`: S1 complete, S2 RAG-01..08.
-  Backend tests 81 → 131; SDK 14 (unchanged). Decisions D1–D4 raised.
+  Backend tests 81 → 134; SDK 14 (unchanged). Decisions D1–D4 raised.
+  CI green on PR #22 (all five jobs, incl. the backend image build blocked
+  locally). Codex review: two valid findings in this PR's own changes
+  (archived-rollup overwrite in retention, overlapping entity names) fixed
+  with migration 003 + tests.

@@ -180,8 +180,9 @@ def reprice_events(
 
         today = utcnow().date()
         for d in sorted(dates):
-            if d < today:
-                compute_daily_rollups(db, d)
+            # Archived days (raw events already pruned) are skipped by
+            # compute_daily_rollups; retention adds their late events later.
+            if d < today and compute_daily_rollups(db, d):
                 rollup_dates.append(d)
 
     return {

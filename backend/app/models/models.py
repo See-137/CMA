@@ -12,6 +12,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
+from sqlalchemy.sql import false
 
 from app.database import Base
 from app.timeutils import utcnow
@@ -180,6 +181,9 @@ class DailyCostRollup(Base):
     request_count = Column(Integer, default=0)
     failure_count = Column(Integer, default=0)
     avg_duration_ms = Column(Float, nullable=True)
+    # True once the day's raw events were pruned: this row is then the only
+    # record of that spend and must not be recomputed from surviving events.
+    archived = Column(Boolean, nullable=False, default=False, server_default=false())
 
     __table_args__ = (
         UniqueConstraint(
