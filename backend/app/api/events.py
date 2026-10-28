@@ -133,7 +133,13 @@ def ingest_events(
         cost, cost_source = _event_cost(event, db)
 
         reason = event_rejection_reason(
-            enforcement, event.agent_name, event.workflow, event.swarm, cost
+            enforcement,
+            event.agent_name,
+            event.workflow,
+            event.swarm,
+            cost,
+            provider=event.provider,
+            model=event.model,
         )
         if reason:
             rejected += 1

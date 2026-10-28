@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Plus, CheckCircle, Trash2 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
-import { api, ApiError } from '../api/client';
+import { api, ApiError, apiErrorMessage } from '../api/client';
 import DataTable, { Column } from '../components/DataTable';
 import Badge from '../components/Badge';
 import Modal from '../components/Modal';
@@ -72,11 +72,7 @@ const Alerts: React.FC = () => {
       refetchAlerts();
     } catch (err) {
       const msg =
-        err instanceof ApiError
-          ? (err.body as { detail?: string })?.detail ?? err.message
-          : err instanceof Error
-            ? err.message
-            : 'Failed to resolve alert';
+        apiErrorMessage(err, 'Failed to resolve alert');
       setResolveError(msg);
     }
   };
@@ -91,11 +87,7 @@ const Alerts: React.FC = () => {
       setConfirmChannelId(null);
     } catch (err) {
       const msg =
-        err instanceof ApiError
-          ? (err.body as { detail?: string })?.detail ?? err.message
-          : err instanceof Error
-            ? err.message
-            : 'Failed to delete channel';
+        apiErrorMessage(err, 'Failed to delete channel');
       setChannelDeleteError(msg);
     } finally {
       setDeletingChannel(false);
@@ -123,11 +115,7 @@ const Alerts: React.FC = () => {
       refetchChannels();
     } catch (err) {
       const msg =
-        err instanceof ApiError
-          ? (err.body as { detail?: string })?.detail ?? err.message
-          : err instanceof Error
-            ? err.message
-            : 'Failed to create channel';
+        apiErrorMessage(err, 'Failed to create channel');
       setChannelCreateError(msg);
     }
   };

@@ -243,8 +243,11 @@ class ProviderOut(BaseModel):
 # -- Budgets ------------------------------------------------------------------
 
 
-BudgetScope = Literal["global", "agent", "swarm", "workflow"]
-BudgetPeriod = Literal["daily", "weekly", "monthly"]
+# Every value the UI offers must be accepted AND enforced (provider/model
+# scopes and hourly periods were offered by the UI long before they were
+# enforced; see FINDINGS BUD-03).
+BudgetScope = Literal["global", "agent", "swarm", "workflow", "provider", "model"]
+BudgetPeriod = Literal["hourly", "daily", "weekly", "monthly"]
 # "block"/"throttle" are what the UI has always sent; "stop"/"rate_limit"/
 # "model_downgrade" are what enforcement historically recognised. All are
 # accepted so existing clients keep working; see docs/FINDINGS.md (budget
