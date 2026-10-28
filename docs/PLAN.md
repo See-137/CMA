@@ -185,3 +185,7 @@ Owner decisions (2026-10-28):
   per-alert savepoint committed early and left the database locked: alerts
   stored but never sent). Now one commit per alert, dispatched after commit;
   SQLite 8-thread race test added. Backend tests → 215.
+- 2026-10-28 — Second review of #26: APPROVE WITH FOLLOW-UPS; done (rollback
+  after a failed dispatch, tests for re-raise and per-commit dispatch). It also
+  showed OPS-07 is an accounting risk on SQLite (partial batches + SDK retry
+  double-count) — raised to P2, next PR. Backend tests → 217.

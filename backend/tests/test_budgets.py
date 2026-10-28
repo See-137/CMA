@@ -673,3 +673,72 @@ def test_concurrent_checks_on_sqlite_store_and_send_each_alert_once(
     assert len(stored) == 8  # 2 budgets x 4 thresholds
     assert sorted(sent) == stored  # each stored alert sent exactly once
     engine.dispose()
+
+
+def test_only_the_dedup_key_counts_as_a_duplicate(authed_client, monkeypatch):
+    """Any other integrity error is a bug and must surface, not be skipped."""
+    import pytest
+    from sqlalchemy.exc import IntegrityError
+
+    from app.services import budget_checker
+    from tests.conftest import TestSession
+
+    assert budget_checker._is_duplicate_alert(
+        IntegrityError(
+            "INSERT",
+            {},
+            Exception(
+                "UNIQUE constraint failed: alerts.budget_id, alerts.threshold, alerts.period_start"
+            ),
+        )
+    )
+    assert budget_checker._is_duplicate_alert(
+        IntegrityError(
+            "INSERT",
+            {},
+            Exception(
+                'duplicate key value violates unique constraint "uq_alerts_budget_threshold_period"'
+            ),
+        )
+    )
+    assert not budget_checker._is_duplicate_alert(
+        IntegrityError(
+            "INSERT", {}, Exception("NOT NULL constraint failed: alerts.alert_type")
+        )
+    )
+
+    db = TestSession()
+    try:
+        _alert_budget(db, "[100]")
+        _spend_now(db, 2.0)
+        assert len(budget_checker.check_budgets(db)) == 1
+        monkeypatch.setattr(budget_checker, "_alerted_thresholds", lambda *a: set())
+        monkeypatch.setattr(budget_checker, "_is_duplicate_alert", lambda exc: False)
+        with pytest.raises(IntegrityError):
+            budget_checker.check_budgets(db)
+    finally:
+        db.close()
+
+
+def test_each_alert_is_sent_right_after_its_own_commit(authed_client, monkeypatch):
+    """A later failure must not strand an earlier alert stored but unsent."""
+    from app.models.models import Alert
+    from app.services import alert_service, budget_checker
+    from tests.conftest import TestSession
+
+    stored_at_send = []
+
+    def send(alert, db):
+        with TestSession() as other:
+            stored_at_send.append(other.query(Alert).count())
+        raise RuntimeError("webhook down")  # must not stop later alerts
+
+    monkeypatch.setattr(alert_service, "dispatch_alert", send)
+    db = TestSession()
+    try:
+        _alert_budget(db, "[50, 100]")
+        _spend_now(db, 2.0)
+        assert len(budget_checker.check_budgets(db)) == 2
+    finally:
+        db.close()
+    assert stored_at_send == [1, 2]

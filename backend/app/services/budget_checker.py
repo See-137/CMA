@@ -265,6 +265,10 @@ def _dispatch(alert: Alert, db: Session) -> None:
         dispatch_alert(alert, db)
     except Exception:
         logger.exception("Failed to dispatch alert %s", alert.id)
+        # The alert is already committed; clear any failed transaction so a
+        # database error here cannot stop the remaining budgets (Postgres
+        # refuses further statements in an aborted transaction).
+        db.rollback()
 
 
 def check_budgets(db: Session) -> list[Alert]:
@@ -274,6 +278,9 @@ def check_budgets(db: Session) -> list[Alert]:
     so concurrent runs (one per ingestion request) neither duplicate an alert
     (unique key, BUD-06) nor leave one stored but never sent. Budgets are
     visited in id order so concurrent runs take row locks in the same order.
+
+    The returned alerts are expired by later commits: read them while the
+    session is open (the background caller ignores them).
     """
     budgets = (
         db.query(Budget).filter(Budget.is_active.is_(True)).order_by(Budget.id).all()
