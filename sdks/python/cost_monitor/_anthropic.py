@@ -139,6 +139,7 @@ def _wrap_sync_stream(
     tokens_out = 0
     error: BaseException | None = None
     closed_early = False
+    finished = False
     if state is not None:
         state.started = True
     try:
@@ -151,6 +152,8 @@ def _wrap_sync_stream(
             elif etype == "message_delta":
                 usage = getattr(event, "usage", None)
                 tokens_out = getattr(usage, "output_tokens", 0) if usage else 0
+            elif etype == "message_stop":
+                finished = True
             yield event
     except GeneratorExit:
         closed_early = True
@@ -163,6 +166,9 @@ def _wrap_sync_stream(
             is_cancellation(error) or (state is not None and state.closed_by_caller)
         ):
             closed_early, error = True, None
+        if state is not None and state.closed_by_caller and not finished:
+            # The caller's close may also end the read cleanly (EOF).
+            closed_early = True
         if error is not None:
             # Input tokens from message_start are billed even when the
             # stream fails afterwards.
@@ -207,6 +213,7 @@ async def _wrap_async_stream(
     tokens_out = 0
     error: BaseException | None = None
     closed_early = False
+    finished = False
     if state is not None:
         state.started = True
     try:
@@ -219,6 +226,8 @@ async def _wrap_async_stream(
             elif etype == "message_delta":
                 usage = getattr(event, "usage", None)
                 tokens_out = getattr(usage, "output_tokens", 0) if usage else 0
+            elif etype == "message_stop":
+                finished = True
             yield event
     except GeneratorExit:
         closed_early = True
@@ -231,6 +240,9 @@ async def _wrap_async_stream(
             is_cancellation(error) or (state is not None and state.closed_by_caller)
         ):
             closed_early, error = True, None
+        if state is not None and state.closed_by_caller and not finished:
+            # The caller's close may also end the read cleanly (EOF).
+            closed_early = True
         if error is not None:
             # Input tokens from message_start are billed even when the
             # stream fails afterwards.

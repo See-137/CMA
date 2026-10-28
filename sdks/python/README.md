@@ -120,8 +120,9 @@ whatever tokens the provider already reported, at the moment you close it or lea
 `with` block; an exception raised by your own code inside `messages.stream()` does not turn
 billed tokens into a `failure`. One exception: OpenAI's `chat.completions.stream()` /
 `responses.stream()` helpers close the HTTP response directly, so a helper stream left
-part-read is recorded when it is garbage-collected (normally at once in CPython) rather
-than at block exit. For async `messages.stream()`, argument errors are raised when the
+part-read is recorded at the next cyclic garbage collection rather than at block exit (not
+deterministic; it can be lost at interpreter exit). A stream dropped without being read or
+closed is not recorded. For async `messages.stream()`, argument errors are raised when the
 block is entered rather than at the call.
 
 ## Budget enforcement

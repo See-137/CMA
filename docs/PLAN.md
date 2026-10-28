@@ -163,3 +163,6 @@ Owner decisions (2026-10-28):
   minors (unread/cancelled streams, phantom failures, manager reuse); every
   new test checked against a mutation of its fix (FINDINGS REV-24b). Helper
   streams left early deferred as SDK-13. SDK tests → 73.
+- 2026-10-28 — Third review of #24: APPROVE WITH FOLLOW-UPS; follow-ups done
+  (tests for two surviving mutations, thread race, clean-EOF close, SDK-13
+  wording). SDK tests → 78.

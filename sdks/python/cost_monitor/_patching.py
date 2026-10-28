@@ -179,10 +179,11 @@ class InstrumentedStream:
         state = self._cma_state
         state.closed_by_caller = True
         try:
-            if state.finish_unread():
-                pass
-            elif getattr(self._cma_iter, "gi_running", False):
+            # Running check first: a reader that has just entered next() may
+            # not have marked the stream started yet (would record twice).
+            if getattr(self._cma_iter, "gi_running", False):
                 return
+            state.finish_unread()
             close = getattr(self._cma_iter, "close", None)
             if close is not None:
                 close()
@@ -236,10 +237,11 @@ class InstrumentedAsyncStream:
         state = self._cma_state
         state.closed_by_caller = True
         try:
-            if state.finish_unread():
-                pass
-            elif getattr(self._cma_iter, "ag_running", False):
+            # Running check first: a reader that has just entered next() may
+            # not have marked the stream started yet (would record twice).
+            if getattr(self._cma_iter, "ag_running", False):
                 return
+            state.finish_unread()
             aclose = getattr(self._cma_iter, "aclose", None)
             if aclose is not None:
                 await aclose()

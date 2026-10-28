@@ -257,17 +257,35 @@ class _Recorder:
         self.events.append(kw)
 
 
-def test_async_close_from_another_task_closes_the_sdk_stream(caplog):
+def _first_item(provider):
+    from types import SimpleNamespace
+
+    if provider == "anthropic":
+        usage = SimpleNamespace(input_tokens=7)
+        return SimpleNamespace(type="message_start", message=SimpleNamespace(usage=usage))
+    return SimpleNamespace(usage=None, choices=[1])  # an OpenAI content chunk
+
+
+def _wrap(mod, kind, sdk, rec, state):
+    fn = mod._wrap_async_stream if kind == "async" else mod._wrap_sync_stream
+    if mod.__name__.endswith("_openai"):
+        return fn(sdk, rec, "m", "t", 0.0, False, state)
+    return fn(sdk, rec, "m", "t", 0.0, state)
+
+
+@pytest.mark.parametrize("provider,tokens_in", [("anthropic", 7), ("openai", 0)])
+def test_async_close_from_another_task_closes_the_sdk_stream(caplog, provider, tokens_in):
     """close() while another task awaits the next event must not raise and
     must still close the SDK stream (previously aclose() raised
     'asynchronous generator is already running')."""
     import asyncio
     from types import SimpleNamespace
 
-    from cost_monitor import _anthropic
+    from cost_monitor import _anthropic, _openai
     from cost_monitor._patching import InstrumentedAsyncStream, StreamState
 
     rec = _Recorder()
+    mod = _anthropic if provider == "anthropic" else _openai
 
     class FakeSDKStream:
         def __init__(self):
@@ -277,8 +295,7 @@ def test_async_close_from_another_task_closes_the_sdk_stream(caplog):
             return self._events()
 
         async def _events(self):
-            usage = SimpleNamespace(input_tokens=7)
-            yield SimpleNamespace(type="message_start", message=SimpleNamespace(usage=usage))
+            yield _first_item(provider)
             await self.closed.wait()
             raise RuntimeError("stream closed")
 
@@ -288,7 +305,7 @@ def test_async_close_from_another_task_closes_the_sdk_stream(caplog):
     async def run():
         sdk = FakeSDKStream()
         state = StreamState()
-        gen = _anthropic._wrap_async_stream(sdk, rec, "m", "t", 0.0, state)
+        gen = _wrap(mod, "async", sdk, rec, state)
         proxy = InstrumentedAsyncStream(sdk, gen, state)
 
         async def consume():
@@ -305,25 +322,26 @@ def test_async_close_from_another_task_closes_the_sdk_stream(caplog):
     asyncio.run(run())
     (event,) = rec.events
     assert event["status"] == "incomplete"  # the caller's own close
-    assert event["tokens_input"] == 7
+    assert event["tokens_input"] == tokens_in
     assert "failed to record a closed stream" not in caplog.text
 
 
-def test_sync_close_from_another_thread_closes_the_sdk_stream(caplog):
+@pytest.mark.parametrize("provider,tokens_in", [("anthropic", 7), ("openai", 0)])
+def test_sync_close_from_another_thread_closes_the_sdk_stream(caplog, provider, tokens_in):
     import threading
     from types import SimpleNamespace
 
-    from cost_monitor import _anthropic
+    from cost_monitor import _anthropic, _openai
     from cost_monitor._patching import InstrumentedStream, StreamState
 
     rec = _Recorder()
+    mod = _anthropic if provider == "anthropic" else _openai
     closed = threading.Event()
     reading = threading.Event()
 
     class FakeSDKStream:
         def __iter__(self):
-            usage = SimpleNamespace(input_tokens=7)
-            yield SimpleNamespace(type="message_start", message=SimpleNamespace(usage=usage))
+            yield _first_item(provider)
             reading.set()
             closed.wait(2)
             raise RuntimeError("stream closed")
@@ -333,9 +351,7 @@ def test_sync_close_from_another_thread_closes_the_sdk_stream(caplog):
 
     sdk = FakeSDKStream()
     state = StreamState()
-    proxy = InstrumentedStream(
-        sdk, _anthropic._wrap_sync_stream(sdk, rec, "m", "t", 0.0, state), state
-    )
+    proxy = InstrumentedStream(sdk, _wrap(mod, "sync", sdk, rec, state), state)
     errors = []
 
     def consume():
@@ -352,7 +368,7 @@ def test_sync_close_from_another_thread_closes_the_sdk_stream(caplog):
     t.join(2)
     assert closed.is_set() and errors
     (event,) = rec.events
-    assert event["status"] == "incomplete" and event["tokens_input"] == 7
+    assert event["status"] == "incomplete" and event["tokens_input"] == tokens_in
     assert "failed to record a closed stream" not in caplog.text
 
 
@@ -517,3 +533,42 @@ def test_async_stream_argument_error_records_nothing_and_reuse_raises(
     (event,) = _all_events(fake_backend, "anthropic")  # only the real call
     assert event["status"] == "success"
     assert len(fake_llm.bodies("/messages")) == 1
+
+
+def test_ctrl_c_entering_sync_messages_stream_is_incomplete():
+    from cost_monitor import _anthropic
+
+    rec = _Recorder()
+
+    class Manager:
+        def __enter__(self):
+            raise KeyboardInterrupt
+
+        def __exit__(self, *exc):
+            return False
+
+    mgr = _anthropic._InstrumentedStreamManager(Manager(), rec, "m")
+    with pytest.raises(KeyboardInterrupt), mgr:
+        pass
+    (event,) = rec.events
+    assert event["status"] == "incomplete"
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai"])
+def test_caller_close_ending_the_read_cleanly_is_incomplete(provider):
+    """A transport that ends the read with EOF (not an error) after the
+    caller's close must still record incomplete, not success / nothing."""
+    from cost_monitor import _anthropic, _openai
+    from cost_monitor._patching import StreamState
+
+    rec = _Recorder()
+    mod = _anthropic if provider == "anthropic" else _openai
+    state = StreamState()
+
+    def sdk_stream():
+        yield _first_item(provider)
+        state.closed_by_caller = True  # the caller closed; the read ends cleanly
+
+    list(_wrap(mod, "sync", sdk_stream(), rec, state))
+    (event,) = rec.events
+    assert event["status"] == "incomplete"

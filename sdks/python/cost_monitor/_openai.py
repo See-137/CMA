@@ -227,7 +227,7 @@ def _wrap_sync_stream(
             _log_failure(tracker, model, trace_id, start, error)
         elif usage is not None:
             _log_usage(tracker, model, trace_id, start, usage, status)
-        elif closed_early:
+        elif closed_early or (state is not None and state.closed_by_caller):
             _log_incomplete(tracker, model, trace_id, start)
         else:
             logger.warning(
@@ -278,7 +278,7 @@ async def _wrap_async_stream(
             _log_failure(tracker, model, trace_id, start, error)
         elif usage is not None:
             _log_usage(tracker, model, trace_id, start, usage, status)
-        elif closed_early:
+        elif closed_early or (state is not None and state.closed_by_caller):
             _log_incomplete(tracker, model, trace_id, start)
         else:
             logger.warning(
