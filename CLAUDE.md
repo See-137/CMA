@@ -25,7 +25,7 @@
 ```powershell
 cd backend; pip install -r requirements-dev.txt; pytest
 ```
-- 181 backend tests (`backend/tests`) + 26 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
+- 181 backend tests (`backend/tests`) + 64 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
 - `test_events.py` — ingestion, auto-discovery (incl. race), UTC timestamp normalisation
 - `test_pricing.py` — pricing resolution, cost_source, reprice, reset-full reseed
 - `test_scrooge_grounding.py` — Scrooge totals, windows, entity matching, untrusted data block, degradation
@@ -34,6 +34,8 @@ cd backend; pip install -r requirements-dev.txt; pytest
 - `test_auth.py` — setup + login
 - `test_budgets.py` — record-and-flag, pre-call check, validation, threshold alerts
 - `sdks/python/tests/test_budget_enforcement.py` — SDK pre-call enforcement (sync/async/stream, fail-open/closed, caching)
+- `sdks/python/tests/test_surface_coverage.py` / `test_stream_contract.py` — every instrumented surface records one event; streams unchanged for callers; early exit keeps tokens
+- SDK patch targets are listed in `sdks/python/tests/conftest.py::PATCH_TARGETS` (leak guard) — add new targets there
 - `test_dashboard.py` — metrics + rollups
 - `test_setup.py` — initial setup flow
 - `test_regressions.py` — envelope contract, embedder IDs, batch enforcement, admin gating, SSRF, rate limiting
@@ -47,6 +49,10 @@ cd backend; pip install -r requirements-dev.txt; pytest
 - Key vars: `CMA_LLM_PROVIDER` (openai|ollama), `CMA_LLM_MODEL`, `CMA_OPENAI_API_KEY`
 - `CMA_CHROMA_PERSIST_DIR` defaults to `./data/chroma`, `CMA_DATABASE_URL` defaults to `sqlite:///./data/cma.db`
 - NEVER modify `.env` directly — ask the user
+
+## Review and merge workflow
+- The owner does not review code. Merge gate for every PR: (1) an independent reviewer agent (fresh context, did not write the change) reviews the diff and runs code where it suspects bugs; (2) every BLOCKER/MAJOR it raises is fixed or explicitly answered; (3) CI green on the head; (4) automated (Codex) review threads answered. Then merge (squash) without waiting for the owner.
+- Ask the owner only for product decisions (scope, compatibility, cost, irreversible actions), never for code review.
 
 ## Plan and findings
 - `docs/PLAN.md` — baseline, stages with acceptance criteria, open owner decisions (D1–D4), progress log

@@ -104,6 +104,14 @@ def uninstall_all() -> None:
     _originals.clear()
 
 
+def is_cancellation(exc: BaseException) -> bool:
+    """Task cancellation or Ctrl-C: the caller stopped the call, which is an
+    incomplete call (tokens already reported stay billed), not a failure."""
+    import asyncio
+
+    return isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt))
+
+
 class InstrumentedStream:
     """Delegating proxy over an SDK Stream object.
 
@@ -129,7 +137,21 @@ class InstrumentedStream:
             enter()
         return self
 
+    def _cma_finish(self) -> None:
+        # Closing the instrumented generator runs its finally block now, so
+        # a stream left part-read is recorded (as incomplete) when the caller
+        # closes it — not whenever the proxy happens to be garbage-collected.
+        close = getattr(self._cma_iter, "close", None)
+        if close is not None:
+            close()
+
+    def close(self) -> Any:
+        self._cma_finish()
+        close = getattr(self._cma_stream, "close", None)
+        return close() if close is not None else None
+
     def __exit__(self, *exc: Any) -> Any:
+        self._cma_finish()
         exit_ = getattr(self._cma_stream, "__exit__", None)
         if exit_ is not None:
             return exit_(*exc)
@@ -158,7 +180,18 @@ class InstrumentedAsyncStream:
             await enter()
         return self
 
+    async def _cma_finish(self) -> None:
+        aclose = getattr(self._cma_iter, "aclose", None)
+        if aclose is not None:
+            await aclose()
+
+    async def close(self) -> Any:
+        await self._cma_finish()
+        close = getattr(self._cma_stream, "close", None)
+        return await close() if close is not None else None
+
     async def __aexit__(self, *exc: Any) -> Any:
+        await self._cma_finish()
         exit_ = getattr(self._cma_stream, "__aexit__", None)
         if exit_ is not None:
             return await exit_(*exc)

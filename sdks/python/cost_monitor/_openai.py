@@ -12,6 +12,7 @@ from cost_monitor._patching import (
     aprecall_enforce,
     get_active_tracker,
     install,
+    is_cancellation,
     precall_enforce,
 )
 
@@ -38,7 +39,9 @@ def _warn_untracked_response() -> None:
 
 
 def patch_openai() -> None:
-    """Install idempotent patches over OpenAI chat/legacy completions.
+    """Install idempotent patches over OpenAI chat completions (create and
+    parse), legacy completions, embeddings and the Responses API (create and
+    parse), sync and async.
 
     Safe to call repeatedly: already-patched methods are left untouched.
     The wrappers resolve the active tracker at call time, so re-running
@@ -52,16 +55,46 @@ def patch_openai() -> None:
 
     _patch_chat_completions()
     _patch_legacy_completions()
+    _patch_other_surfaces()
 
 
-def _maybe_inject_usage(kwargs: dict[str, Any]) -> dict[str, Any]:
+def _maybe_inject_usage(kwargs: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     """Ask OpenAI for the final usage-only chunk on streams — unless the
-    integrator opted out (Azure api-versions may reject stream_options)."""
+    integrator opted out (Azure api-versions may reject stream_options).
+
+    Returns (kwargs, injected). ``injected`` is True only when CMA added
+    include_usage itself: the usage-only chunk (``choices == []``) is then
+    consumed by the wrapper and never yielded, because caller code written
+    for the stream it asked for commonly indexes ``chunk.choices[0]``.
+    """
     if not config.get("inject_stream_usage", True):
-        return kwargs
+        return kwargs, False
     stream_options = dict(kwargs.get("stream_options") or {})
-    stream_options.setdefault("include_usage", True)
-    return {**kwargs, "stream_options": stream_options}
+    if "include_usage" in stream_options:
+        return kwargs, False
+    stream_options["include_usage"] = True
+    return {**kwargs, "stream_options": stream_options}, True
+
+
+def _is_injected_usage_chunk(chunk: Any, hide: bool) -> bool:
+    return hide and not getattr(chunk, "choices", None) and (
+        getattr(chunk, "usage", None) is not None
+    )
+
+
+def _log_incomplete(tracker, model: str, trace_id: str, start: float) -> None:
+    """The caller stopped reading before the provider reported usage. The
+    call happened (input is billed) but its token counts are unknown."""
+    tracker.log_event(
+        model=model,
+        provider="openai",
+        tokens_input=0,
+        tokens_output=0,
+        duration_ms=int((time.time() - start) * 1000),
+        status="incomplete",
+        trace_id=trace_id,
+        metadata={"reason": "stream closed by caller before usage was reported"},
+    )
 
 
 def _log_failure(
@@ -79,37 +112,108 @@ def _log_failure(
     )
 
 
-def _log_usage(tracker, model: str, trace_id: str, start: float, usage: Any) -> None:
+def _usage_tokens(usage: Any) -> tuple[int, int]:
+    """(input, output) from either usage shape: chat/completions/embeddings
+    (prompt_tokens/completion_tokens) or Responses (input_tokens/output_tokens).
+    """
+    tokens_in = getattr(usage, "prompt_tokens", None)
+    if tokens_in is None:
+        tokens_in = getattr(usage, "input_tokens", 0)
+    tokens_out = getattr(usage, "completion_tokens", None)
+    if tokens_out is None:
+        tokens_out = getattr(usage, "output_tokens", 0)
+    return int(tokens_in or 0), int(tokens_out or 0)
+
+
+def _chunk_usage(chunk: Any) -> Any:
+    """Usage carried by a stream item: chat chunks have .usage; Responses
+    terminal events (response.completed/incomplete/failed) carry
+    .response.usage."""
+    usage = getattr(chunk, "usage", None)
+    if usage is None:
+        usage = getattr(getattr(chunk, "response", None), "usage", None)
+    return usage
+
+
+# Responses API terminal status -> CMA event status. Billed tokens are kept
+# either way; only the outcome differs.
+_RESPONSE_STATUS = {"completed": "success", "incomplete": "incomplete", "failed": "failure"}
+_TERMINAL_EVENTS = {
+    "response.completed": "success",
+    "response.incomplete": "incomplete",
+    "response.failed": "failure",
+}
+
+
+def _outcome_status(obj: Any) -> str:
+    """Status for a finished call from a stream event or a response object.
+    Chat completions/embeddings carry no status and count as success."""
+    event_status = _TERMINAL_EVENTS.get(getattr(obj, "type", None) or "")
+    if event_status:
+        return event_status
+    status = getattr(obj, "status", None)
+    return _RESPONSE_STATUS.get(status, "success") if isinstance(status, str) else "success"
+
+
+def _log_usage(
+    tracker,
+    model: str,
+    trace_id: str,
+    start: float,
+    usage: Any,
+    status: str = "success",
+) -> None:
+    tokens_in, tokens_out = _usage_tokens(usage)
     tracker.log_event(
         model=model,
         provider="openai",
-        tokens_input=getattr(usage, "prompt_tokens", 0),
-        tokens_output=getattr(usage, "completion_tokens", 0),
+        tokens_input=tokens_in,
+        tokens_output=tokens_out,
         duration_ms=int((time.time() - start) * 1000),
-        status="success",
+        status=status,
         trace_id=trace_id,
     )
 
 
 def _wrap_sync_stream(
-    stream: Any, tracker, model: str, trace_id: str, start: float
+    stream: Any,
+    tracker,
+    model: str,
+    trace_id: str,
+    start: float,
+    hide_usage_chunk: bool = False,
 ) -> Iterator[Any]:
-    """Yield every chunk unchanged; log usage after the final chunk."""
+    """Yield every chunk unchanged (except a usage chunk CMA asked for);
+    log usage after the final chunk."""
     usage = None
+    status = "success"
     error: BaseException | None = None
+    closed_early = False
     try:
         for chunk in stream:
-            if getattr(chunk, "usage", None) is not None:
-                usage = chunk.usage
+            chunk_usage = _chunk_usage(chunk)
+            if chunk_usage is not None:
+                usage = chunk_usage
+                status = _outcome_status(chunk)
+            if _is_injected_usage_chunk(chunk, hide_usage_chunk):
+                continue
             yield chunk
+    except GeneratorExit:
+        closed_early = True
+        raise
     except BaseException as exc:
         error = exc
         raise
     finally:
+        if error is not None and is_cancellation(error):
+            closed_early = True
+            error = None
         if error is not None:
             _log_failure(tracker, model, trace_id, start, error)
         elif usage is not None:
-            _log_usage(tracker, model, trace_id, start, usage)
+            _log_usage(tracker, model, trace_id, start, usage, status)
+        elif closed_early:
+            _log_incomplete(tracker, model, trace_id, start)
         else:
             logger.warning(
                 "cost_monitor: OpenAI stream ended with no usage chunk. "
@@ -119,24 +223,43 @@ def _wrap_sync_stream(
 
 
 async def _wrap_async_stream(
-    stream: Any, tracker, model: str, trace_id: str, start: float
+    stream: Any,
+    tracker,
+    model: str,
+    trace_id: str,
+    start: float,
+    hide_usage_chunk: bool = False,
 ) -> AsyncIterator[Any]:
     """Async counterpart of _wrap_sync_stream."""
     usage = None
+    status = "success"
     error: BaseException | None = None
+    closed_early = False
     try:
         async for chunk in stream:
-            if getattr(chunk, "usage", None) is not None:
-                usage = chunk.usage
+            chunk_usage = _chunk_usage(chunk)
+            if chunk_usage is not None:
+                usage = chunk_usage
+                status = _outcome_status(chunk)
+            if _is_injected_usage_chunk(chunk, hide_usage_chunk):
+                continue
             yield chunk
+    except GeneratorExit:
+        closed_early = True
+        raise
     except BaseException as exc:
         error = exc
         raise
     finally:
+        if error is not None and is_cancellation(error):
+            closed_early = True
+            error = None
         if error is not None:
             _log_failure(tracker, model, trace_id, start, error)
         elif usage is not None:
-            _log_usage(tracker, model, trace_id, start, usage)
+            _log_usage(tracker, model, trace_id, start, usage, status)
+        elif closed_early:
+            _log_incomplete(tracker, model, trace_id, start)
         else:
             logger.warning(
                 "cost_monitor: OpenAI async stream ended with no usage chunk. "
@@ -145,7 +268,7 @@ async def _wrap_async_stream(
             )
 
 
-def _make_sync_wrapper(original_create):
+def _make_sync_wrapper(original_create, inject_usage: bool = True):
     def patched_create(self, *args, **kwargs):
         tracker = get_active_tracker()
         if tracker is None:
@@ -156,8 +279,9 @@ def _make_sync_wrapper(original_create):
         trace_id = str(uuid.uuid4())
         model = kwargs.get("model", "unknown")
         is_streaming = kwargs.get("stream", False)
-        if is_streaming:
-            kwargs = _maybe_inject_usage(kwargs)
+        injected = False
+        if is_streaming and inject_usage:
+            kwargs, injected = _maybe_inject_usage(kwargs)
 
         try:
             response = original_create(self, *args, **kwargs)
@@ -166,12 +290,16 @@ def _make_sync_wrapper(original_create):
             raise
 
         if is_streaming:
-            gen = _wrap_sync_stream(response, tracker, model, trace_id, start)
+            gen = _wrap_sync_stream(
+                response, tracker, model, trace_id, start, injected
+            )
             return InstrumentedStream(response, gen)
 
         usage = getattr(response, "usage", None)
         if usage:
-            _log_usage(tracker, model, trace_id, start, usage)
+            _log_usage(
+                tracker, model, trace_id, start, usage, _outcome_status(response)
+            )
         else:
             _warn_untracked_response()
         return response
@@ -179,7 +307,7 @@ def _make_sync_wrapper(original_create):
     return patched_create
 
 
-def _make_async_wrapper(original_acreate):
+def _make_async_wrapper(original_acreate, inject_usage: bool = True):
     async def patched_acreate(self, *args, **kwargs):
         tracker = get_active_tracker()
         if tracker is None:
@@ -190,8 +318,9 @@ def _make_async_wrapper(original_acreate):
         trace_id = str(uuid.uuid4())
         model = kwargs.get("model", "unknown")
         is_streaming = kwargs.get("stream", False)
-        if is_streaming:
-            kwargs = _maybe_inject_usage(kwargs)
+        injected = False
+        if is_streaming and inject_usage:
+            kwargs, injected = _maybe_inject_usage(kwargs)
 
         try:
             response = await original_acreate(self, *args, **kwargs)
@@ -200,12 +329,16 @@ def _make_async_wrapper(original_acreate):
             raise
 
         if is_streaming:
-            gen = _wrap_async_stream(response, tracker, model, trace_id, start)
+            gen = _wrap_async_stream(
+                response, tracker, model, trace_id, start, injected
+            )
             return InstrumentedAsyncStream(response, gen)
 
         usage = getattr(response, "usage", None)
         if usage:
-            _log_usage(tracker, model, trace_id, start, usage)
+            _log_usage(
+                tracker, model, trace_id, start, usage, _outcome_status(response)
+            )
         else:
             _warn_untracked_response()
         return response
@@ -249,3 +382,36 @@ def _patch_legacy_completions() -> None:
             logger.debug("Patched openai.completions.create")
     except (ImportError, AttributeError):
         pass
+
+
+def _patch_other_surfaces() -> None:
+    """Surfaces beyond chat.completions.create.
+
+    parse() methods post directly instead of calling create(), so they need
+    their own patch. The Responses API takes no stream_options.include_usage
+    (usage arrives in the response.completed event), so nothing is injected.
+    """
+    targets = [
+        # (module, class, method, usage injection allowed)
+        ("openai.resources.chat.completions", "Completions", "parse", False),
+        ("openai.resources.chat.completions", "AsyncCompletions", "parse", False),
+        ("openai.resources.completions", "AsyncCompletions", "create", True),
+        ("openai.resources.embeddings", "Embeddings", "create", False),
+        ("openai.resources.embeddings", "AsyncEmbeddings", "create", False),
+        ("openai.resources.responses", "Responses", "create", False),
+        ("openai.resources.responses", "AsyncResponses", "create", False),
+        ("openai.resources.responses", "Responses", "parse", False),
+        ("openai.resources.responses", "AsyncResponses", "parse", False),
+    ]
+    import importlib
+
+    for mod_name, cls_name, method, inject in targets:
+        try:
+            cls = getattr(importlib.import_module(mod_name), cls_name)
+            original = getattr(cls, method)
+        except (ImportError, AttributeError):
+            continue
+        factory = _make_async_wrapper if cls_name.startswith("Async") else _make_sync_wrapper
+        key = f"{mod_name}.{cls_name}.{method}"
+        if install(cls, method, factory(original, inject_usage=inject), key):
+            logger.debug("Patched %s", key)

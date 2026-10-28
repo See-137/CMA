@@ -217,6 +217,74 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
 
+# ---------------------------------------------------------------------------
+# Patch-leak guard: every attribute patch_openai()/patch_anthropic() may
+# touch, captured before any test patches. A test that leaves a patch behind
+# fails loudly instead of poisoning later tests.
+# ---------------------------------------------------------------------------
+
+PATCH_TARGETS = [
+    ("openai.resources.chat.completions", "Completions", "create"),
+    ("openai.resources.chat.completions", "AsyncCompletions", "create"),
+    ("openai.resources.chat.completions", "Completions", "parse"),
+    ("openai.resources.chat.completions", "AsyncCompletions", "parse"),
+    ("openai.resources.completions", "Completions", "create"),
+    ("openai.resources.completions", "AsyncCompletions", "create"),
+    ("openai.resources.embeddings", "Embeddings", "create"),
+    ("openai.resources.embeddings", "AsyncEmbeddings", "create"),
+    ("openai.resources.responses", "Responses", "create"),
+    ("openai.resources.responses", "AsyncResponses", "create"),
+    ("openai.resources.responses", "Responses", "parse"),
+    ("openai.resources.responses", "AsyncResponses", "parse"),
+    ("anthropic.resources.messages", "Messages", "create"),
+    ("anthropic.resources.messages", "AsyncMessages", "create"),
+    ("anthropic.resources.messages", "Messages", "parse"),
+    ("anthropic.resources.messages", "AsyncMessages", "parse"),
+    ("anthropic.resources.messages", "Messages", "stream"),
+    ("anthropic.resources.messages", "AsyncMessages", "stream"),
+    ("anthropic.resources.beta.messages.messages", "Messages", "create"),
+    ("anthropic.resources.beta.messages.messages", "AsyncMessages", "create"),
+    ("anthropic.resources.beta.messages.messages", "Messages", "parse"),
+    ("anthropic.resources.beta.messages.messages", "AsyncMessages", "parse"),
+    ("anthropic.resources.beta.messages.messages", "Messages", "stream"),
+    ("anthropic.resources.beta.messages.messages", "AsyncMessages", "stream"),
+]
+
+
+def _capture_pristine() -> dict[str, tuple[Any, str, Any]]:
+    import importlib
+
+    found = {}
+    for mod_name, cls_name, attr in PATCH_TARGETS:
+        try:
+            cls = getattr(importlib.import_module(mod_name), cls_name)
+            found[f"{mod_name}.{cls_name}.{attr}"] = (cls, attr, cls.__dict__[attr])
+        except (ImportError, AttributeError, KeyError):
+            continue
+    return found
+
+
+PRISTINE = _capture_pristine()
+
+
+@pytest.fixture(autouse=True)
+def restore_llm_sdks():
+    """Kill any live tracker, then verify stop() restored every pristine
+    method — restoring manually only as a last resort."""
+    yield
+    from cost_monitor import auto
+
+    auto.stop()
+    leaked = [
+        name
+        for name, (owner, attr, pristine) in PRISTINE.items()
+        if owner.__dict__.get(attr) is not pristine
+    ]
+    for owner, attr, pristine in PRISTINE.values():
+        setattr(owner, attr, pristine)
+    assert not leaked, f"auto.stop() left patches installed: {leaked}"
+
+
 @pytest.fixture
 def fake_backend() -> FakeBackend:
     handler = type("BoundHandler", (_Handler,), {})
@@ -317,6 +385,80 @@ def _openai_sse(include_usage: bool) -> bytes:
     return "".join(lines).encode()
 
 
+_OPENAI_LEGACY_COMPLETION = {
+    "id": "cmpl-test",
+    "object": "text_completion",
+    "created": 1700000000,
+    "model": "gpt-3.5-turbo-instruct",
+    "choices": [{"index": 0, "text": "hi", "finish_reason": "stop", "logprobs": None}],
+    "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+}
+
+_OPENAI_EMBEDDING = {
+    "object": "list",
+    "data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2]}],
+    "model": "text-embedding-3-small",
+    "usage": {"prompt_tokens": 11, "total_tokens": 11},
+}
+
+_OPENAI_RESPONSE = {
+    "id": "resp_test",
+    "object": "response",
+    "created_at": 1700000000,
+    "status": "completed",
+    "model": "gpt-4o",
+    "output": [
+        {
+            "type": "message",
+            "id": "msg_1",
+            "status": "completed",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "hi", "annotations": []}],
+        }
+    ],
+    "parallel_tool_calls": True,
+    "tool_choice": "auto",
+    "tools": [],
+    "usage": {
+        "input_tokens": 13,
+        "output_tokens": 5,
+        "total_tokens": 18,
+        "input_tokens_details": {"cached_tokens": 0},
+        "output_tokens_details": {"reasoning_tokens": 0},
+    },
+}
+
+
+def _responses_sse(terminal: str = "completed") -> bytes:
+    in_progress = {**_OPENAI_RESPONSE, "status": "in_progress", "output": [], "usage": None}
+    events = [
+        ("response.created", {"type": "response.created", "sequence_number": 0, "response": in_progress}),
+        (
+            "response.output_text.delta",
+            {
+                "type": "response.output_text.delta",
+                "sequence_number": 1,
+                "item_id": "msg_1",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "hi",
+                "logprobs": [],
+            },
+        ),
+        (
+            f"response.{terminal}",
+            {
+                "type": f"response.{terminal}",
+                "sequence_number": 2,
+                "response": {**_OPENAI_RESPONSE, "status": terminal},
+            },
+        ),
+    ]
+    return "".join(
+        f"event: {name}\ndata: {json.dumps(payload)}\n\n" for name, payload in events
+    ).encode()
+
+
 _ANTHROPIC_MESSAGE = {
     "id": "msg_test",
     "type": "message",
@@ -379,6 +521,24 @@ def _anthropic_sse() -> bytes:
     ).encode()
 
 
+# metadata.user_id selects a failing Anthropic stream:
+#   error_first — an SSE error event before message_start
+#   error_mid   — message_start (7 input tokens), then an SSE error event
+_ANTHROPIC_ERROR_MODES = {"error_first", "error_mid"}
+
+
+def _anthropic_error_sse(mode: str) -> bytes:
+    full = _anthropic_sse().decode().split("\n\n")
+    error = (
+        "event: error\ndata: "
+        + json.dumps(
+            {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}
+        )
+    )
+    head = full[:1] if mode == "error_mid" else []
+    return ("\n\n".join([*head, error]) + "\n\n").encode()
+
+
 class _LLMHandler(BaseHTTPRequestHandler):
     llm: FakeLLMServer  # injected per-server subclass
 
@@ -392,7 +552,16 @@ class _LLMHandler(BaseHTTPRequestHandler):
         self.llm.record(self.path, body)
 
         streaming = bool(body.get("stream"))
-        if self.path.endswith("/chat/completions"):
+        path = self.path.split("?", 1)[0]  # beta endpoints add ?beta=true
+        if path.endswith("/embeddings"):
+            self._send_json(_OPENAI_EMBEDDING)
+        elif path.endswith("/responses"):
+            terminal = (body.get("metadata") or {}).get("terminal", "completed")
+            if streaming:
+                self._send_sse(_responses_sse(terminal))
+            else:
+                self._send_json({**_OPENAI_RESPONSE, "status": terminal})
+        elif path.endswith("/chat/completions"):
             if streaming:
                 include_usage = bool(
                     (body.get("stream_options") or {}).get("include_usage")
@@ -400,8 +569,13 @@ class _LLMHandler(BaseHTTPRequestHandler):
                 self._send_sse(_openai_sse(include_usage))
             else:
                 self._send_json(_OPENAI_COMPLETION)
-        elif self.path.endswith("/messages"):
-            if streaming:
+        elif path.endswith("/completions"):  # legacy (non-chat) completions
+            self._send_json(_OPENAI_LEGACY_COMPLETION)
+        elif path.endswith("/messages"):
+            mode = (body.get("metadata") or {}).get("user_id")
+            if streaming and mode in _ANTHROPIC_ERROR_MODES:
+                self._send_sse(_anthropic_error_sse(mode))
+            elif streaming:
                 self._send_sse(_anthropic_sse())
             else:
                 self._send_json(_ANTHROPIC_MESSAGE)

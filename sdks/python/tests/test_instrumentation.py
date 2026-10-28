@@ -29,53 +29,22 @@ import pytest
 
 import cost_monitor.auto as auto
 
-# Pristine originals, captured at import time — before any test patches.
-# name -> (owner, attr, pristine). This is the COMPLETE set of attributes
-# patch_openai()/patch_anthropic() touch; the fixture below both restores
-# and leak-checks against it, so a new patch target that isn't added here
-# fails loudly instead of silently leaking across tests.
-from openai.resources import completions as _oai_legacy
+from anthropic.resources import messages as _anth_messages
 from openai.resources.chat import completions as _oai_chat
 
-from anthropic.resources import messages as _anth_messages
-
-_PRISTINE = {
-    "oai_sync": (_oai_chat.Completions, "create", _oai_chat.Completions.create),
-    "oai_async": (
-        _oai_chat.AsyncCompletions,
-        "create",
-        _oai_chat.AsyncCompletions.create,
-    ),
-    "oai_legacy": (_oai_legacy.Completions, "create", _oai_legacy.Completions.create),
-    "anth_sync": (_anth_messages.Messages, "create", _anth_messages.Messages.create),
-    "anth_async": (
-        _anth_messages.AsyncMessages,
-        "create",
-        _anth_messages.AsyncMessages.create,
-    ),
-    "anth_stream": (_anth_messages.Messages, "stream", _anth_messages.Messages.stream),
-}
+from tests.conftest import PRISTINE
 
 
 def _pristine(name: str):
-    return _PRISTINE[name][2]
-
-
-@pytest.fixture(autouse=True)
-def restore_llm_sdks():
-    """Kill any live tracker, then verify stop() restored every pristine
-    method — restoring manually only as a last resort so one leaky test
-    can't poison the rest of the suite."""
-    yield
-    auto.stop()
-    leaked = [
-        name
-        for name, (owner, attr, pristine) in _PRISTINE.items()
-        if getattr(owner, attr) is not pristine
-    ]
-    for owner, attr, pristine in _PRISTINE.values():
-        setattr(owner, attr, pristine)
-    assert not leaked, f"auto.stop() left patches installed: {leaked}"
+    key = {
+        "oai_sync": "openai.resources.chat.completions.Completions.create",
+        "oai_async": "openai.resources.chat.completions.AsyncCompletions.create",
+        "oai_legacy": "openai.resources.completions.Completions.create",
+        "anth_sync": "anthropic.resources.messages.Messages.create",
+        "anth_async": "anthropic.resources.messages.AsyncMessages.create",
+        "anth_stream": "anthropic.resources.messages.Messages.stream",
+    }[name]
+    return PRISTINE[key][2]
 
 
 def _openai_client(llm):
