@@ -1,12 +1,13 @@
 import json
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.models import Alert, Budget, CostEvent
-from app.timeutils import UTC_ZONE, ZoneInfo, deployment_tz, local_floor
+from app.timeutils import UTC_ZONE, deployment_tz, local_floor
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +22,16 @@ def _period_start(period: str, tz: ZoneInfo = UTC_ZONE) -> datetime:
     return local_floor(_PERIOD_UNIT.get(period, "day"), tz)
 
 
-def _current_spend(budget: Budget, db: Session, tz: ZoneInfo | None = None) -> float:
-    """Calculate total spend for a budget in its current period."""
-    start = _period_start(budget.period, tz or deployment_tz(db))
+def _current_spend(
+    budget: Budget,
+    db: Session,
+    tz: ZoneInfo | None = None,
+    start: datetime | None = None,
+) -> float:
+    """Calculate total spend for a budget in its current period (or since
+    ``start`` when the caller already computed the period start)."""
+    if start is None:
+        start = _period_start(budget.period, tz or deployment_tz(db))
 
     query = db.query(func.coalesce(func.sum(CostEvent.cost), 0.0)).filter(
         CostEvent.timestamp >= start
@@ -131,15 +139,17 @@ def load_enforcement_state(db: Session) -> list[dict]:
     """
     budgets = db.query(Budget).filter(Budget.is_active.is_(True)).all()
     tz = deployment_tz(db)
-    return [
-        {
-            "budget": b,
-            "spend": _current_spend(b, db, tz),
-            "start": _period_start(b.period, tz),
-        }
-        for b in budgets
-        if is_blocking(b)
-    ]
+    state = []
+    for b in budgets:
+        if not is_blocking(b):
+            continue
+        # One period start for both the spend sum and the in-period test, so
+        # a batch at a period boundary cannot mix two periods.
+        start = _period_start(b.period, tz)
+        state.append(
+            {"budget": b, "spend": _current_spend(b, db, start=start), "start": start}
+        )
+    return state
 
 
 def _in_current_period(entry: dict, timestamp: datetime | None) -> bool:

@@ -203,6 +203,10 @@ The interactive OpenAPI docs at `/docs` are the authoritative reference. All dat
 
 **Native (no Docker)** is supported for small hosts. [`deploy/systemd/cma.service`](deploy/systemd/cma.service) expects the checkout at `/opt/cma` under a dedicated `cma` user, runs migrations before every start, serves API and frontend from one port bound to localhost, and applies a strict systemd sandbox (`ProtectSystem=strict`, empty capability set, read-only home, private tmp and devices). Reach the dashboard over an SSH tunnel.
 
+### Time zone
+
+Budget periods, the dashboard's days and comparisons, and Scrooge's "today", "this week" or "monday" follow the IANA time zone chosen in the setup wizard (it defaults to the browser's zone). Storage and every API timestamp stay UTC. The zone can only be chosen at setup for now. **Upgrading:** an install that picked a non-UTC zone in the wizard before this change was still counting in UTC; after upgrading, its daily/weekly/monthly boundaries move to local midnight (the backend logs the zone in effect at startup), and a threshold alert raised between UTC midnight and local midnight can fire once more in the first period. Rolling windows ("last 7 days", "previous 7 days") are exact durations, not calendar days. Daily rollups — and Scrooge's daily summaries from semantic search — are still UTC days.
+
 ## Testing and CI
 
 ```bash
@@ -211,7 +215,7 @@ cd sdks/python && pip install -e ".[dev]" && pytest   # SDK, incl. real openai/a
 cd frontend && npm run build         # tsc + vite build
 ```
 
-The backend suite has 195 tests and the SDK suite 78. The SDK instrumentation tests exercise the real `openai` and `anthropic` client libraries against a local fake HTTP server, so patching is verified against actual SDK internals rather than mocks.
+The backend suite has 210 tests (one, the Postgres bucketing check, runs only when `CMA_TEST_PG_URL` is set, as in CI) and the SDK suite 78. The SDK instrumentation tests exercise the real `openai` and `anthropic` client libraries against a local fake HTTP server, so patching is verified against actual SDK internals rather than mocks.
 
 CI runs on every push and pull request:
 

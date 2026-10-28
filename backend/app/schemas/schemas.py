@@ -60,7 +60,9 @@ class SetupResponse(BaseModel):
 class SetupStatusResponse(BaseModel):
     is_complete: bool
     deployment_name: str | None = None
-    timezone: str | None = None
+    timezone: str | None = None  # as stored
+    # The zone actually used for periods (UTC when the stored one is unknown).
+    effective_timezone: str | None = None
     currency: str | None = None
 
 

@@ -23,7 +23,7 @@ const Budgets: React.FC = () => {
   useEffect(() => {
     api
       .get<SetupStatus>('/api/v1/setup/status')
-      .then((s) => setZone(s.timezone || 'UTC'))
+      .then((s) => setZone(s.effective_timezone || s.timezone || 'UTC'))
       .catch(() => undefined);
   }, []);
   const [formData, setFormData] = useState({

@@ -3,6 +3,7 @@ export interface SetupStatus {
   deployment_name: string;
   timezone: string;
   currency: string;
+  effective_timezone?: string;
 }
 
 export interface SetupRequest {

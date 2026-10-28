@@ -43,8 +43,15 @@ def _sqlite_local_bucket(value: str | None, unit: str, tz_name: str) -> str | No
     """
     if value is None:
         return None
+    # Every zone offset and DST transition falls on a whole minute, so the
+    # bucket depends only on the minute: cache on it (large group-bys).
+    return _bucket_for_minute(str(value)[:16], unit, tz_name)
+
+
+@lru_cache(maxsize=65536)
+def _bucket_for_minute(minute: str, unit: str, tz_name: str) -> str:
     tz = _zone(tz_name) or ZoneInfo("UTC")
-    local = to_local(datetime.fromisoformat(str(value)), tz)
+    local = to_local(datetime.fromisoformat(minute), tz)
     if unit == "hour":
         start = local.replace(minute=0, second=0, microsecond=0)  # keeps fold
         return from_local(start, tz).strftime(_FMT)

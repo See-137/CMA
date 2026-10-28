@@ -25,7 +25,7 @@
 ```powershell
 cd backend; pip install -r requirements-dev.txt; pytest
 ```
-- 195 backend tests (`backend/tests`) + 78 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
+- 210 backend tests (1 needs `CMA_TEST_PG_URL`, set in CI) (`backend/tests`) + 78 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
 - `test_events.py` — ingestion, auto-discovery (incl. race), UTC timestamp normalisation
 - `test_pricing.py` — pricing resolution, cost_source, reprice, reset-full reseed
 - `test_scrooge_grounding.py` — Scrooge totals, windows, entity matching, untrusted data block, degradation
@@ -39,6 +39,7 @@ cd backend; pip install -r requirements-dev.txt; pytest
 - `test_dashboard.py` — metrics + rollups
 - `test_setup.py` — initial setup flow
 - `test_timezone.py` — deployment time zone: DST/half-hour zones, budget periods, dashboard + Scrooge buckets
+- `test_buckets_postgres.py` — SQL bucketing on Postgres equals SQLite (runs when `CMA_TEST_PG_URL` is set; CI's backend-test job has a Postgres service)
 - `test_regressions.py` — envelope contract, embedder IDs, batch enforcement, admin gating, SSRF, rate limiting
 - No frontend tests yet (no vitest/jest configured)
 - Migrations: `cd backend; alembic upgrade head; alembic downgrade base; alembic upgrade head; alembic check` (CI runs this on Postgres)

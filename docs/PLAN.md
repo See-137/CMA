@@ -174,3 +174,7 @@ Owner decisions (2026-10-28):
   dedup, dashboard periods/buckets and Scrooge windows follow the deployment
   time zone; zone validated at setup; `tzdata` added for Windows/slim images.
   Rollup keys stay UTC (ACC-18, deferred). Backend tests → 195.
+- 2026-10-28 — Independent review of #25: REQUEST CHANGES (wizard could not
+  select most zones; 500 on directory names; Cairo midnight-gap days; Postgres
+  bucketing untested in CI). All addressed (FINDINGS REV-25); Postgres service
+  added to CI backend-test. Backend tests → 210.

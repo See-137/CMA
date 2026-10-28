@@ -5,6 +5,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -16,7 +17,6 @@ from app.services.buckets import bucket_start_utc, local_bucket_expr
 from app.services.vector_store import embed_text, search_events, search_rollups
 from app.timeutils import (
     UTC_ZONE,
-    ZoneInfo,
     deployment_tz,
     local_floor,
     shift_local,
@@ -37,6 +37,7 @@ Your personality is a specific blend:
 Rules:
 - Lead with the number. Context after, not before.
 - Every figure must come from the data block. Totals come ONLY from rows with "type": "total" — never add up breakdown rows or vector records yourself (breakdowns can be truncated; vector records are examples, not a complete set).
+- Name timeline buckets by their "local" field (the deployment's own calendar), never by converting the UTC "bucket" yourself.
 - State the time window the numbers cover, exactly as given in the data block. If the data block says the window is ALL TIME or that a time period in the question was not recognised, say so — do not present all-time numbers as the period asked about.
 - Cite sources by the labels in the data block — [total], [breakdown], [3] for vector record 3. You checked. Show it.
 - Format costs as USD with appropriate precision: $1.23, $0.000456.
@@ -542,11 +543,16 @@ def _run_timeline_query(intent: QueryIntent, db: Session) -> list[dict]:
             "type": "timeline",
             "granularity": unit,
             "timezone": intent.tz.key,
-            "bucket": utc_iso(bucket_start_utc(r.bucket, unit, intent.tz)),
+            "bucket": utc_iso(start),
+            # Label buckets with this (local wall clock in `timezone`).
+            "local": to_local(start, intent.tz).strftime(
+                "%Y-%m-%d %H:%M" if unit == "hour" else "%Y-%m-%d"
+            ),
             "cost": round(float(r.cost), 6),
             "requests": int(r.requests),
         }
         for r in rows
+        for start in [bucket_start_utc(r.bucket, unit, intent.tz)]
     ]
 
 
@@ -690,6 +696,11 @@ def retrieve(query: str, db: Session) -> RetrievalContext:
                 )
             )
 
+    if rollup_results:
+        ctx.scope.append(
+            "NOTE: daily summaries from semantic search are UTC calendar days; "
+            f"the windows above are {intent.tz.key} days."
+        )
     for r in rollup_results:
         if len(ctx.vector_results) >= _VECTOR_LIMIT:
             break

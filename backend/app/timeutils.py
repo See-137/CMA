@@ -5,8 +5,9 @@ stays compatible with the timezone-naive DateTime columns used across the schema
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from datetime import datetime, time, timedelta, timezone
+from functools import lru_cache
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 
 def utcnow() -> datetime:
@@ -38,13 +39,54 @@ UTC_ZONE = ZoneInfo("UTC")
 _warned_zones: set[str] = set()
 
 
+# Keys zoneinfo resolves but that are not real zones: "localtime" is the
+# container's own setting, the others are tz-database internals. Browsers
+# (Intl) reject them, so the UI could not render them either.
+_NOT_ZONES = {"localtime", "Factory", "posixrules", "posix", "right"}
+
+
+@lru_cache(maxsize=1)
+def _zone_names() -> frozenset[str]:
+    return frozenset(available_timezones()) - _NOT_ZONES
+
+
+# Legacy names browsers (ICU) still report as canonical — e.g. an Indian
+# machine says "Asia/Calcutta" — which a Postgres built without tzdata's
+# backward links does not know. Stored under the current IANA name.
+_LEGACY_ZONES = {
+    "Africa/Asmera": "Africa/Asmara",
+    "America/Buenos_Aires": "America/Argentina/Buenos_Aires",
+    "America/Catamarca": "America/Argentina/Catamarca",
+    "America/Cordoba": "America/Argentina/Cordoba",
+    "America/Godthab": "America/Nuuk",
+    "America/Indianapolis": "America/Indiana/Indianapolis",
+    "America/Jujuy": "America/Argentina/Jujuy",
+    "America/Louisville": "America/Kentucky/Louisville",
+    "America/Mendoza": "America/Argentina/Mendoza",
+    "Asia/Calcutta": "Asia/Kolkata",
+    "Asia/Katmandu": "Asia/Kathmandu",
+    "Asia/Rangoon": "Asia/Yangon",
+    "Asia/Saigon": "Asia/Ho_Chi_Minh",
+    "Atlantic/Faeroe": "Atlantic/Faroe",
+    "Europe/Kiev": "Europe/Kyiv",
+    "Pacific/Enderbury": "Pacific/Kanton",
+    "Pacific/Ponape": "Pacific/Pohnpei",
+    "Pacific/Truk": "Pacific/Chuuk",
+}
+
+
 def parse_zone(name: str | None) -> ZoneInfo | None:
-    """ZoneInfo for an IANA name, or None when it is not a known zone."""
+    """ZoneInfo for a known IANA zone name (legacy browser names mapped to
+    their current name), or None. Never raises."""
     if not name or not isinstance(name, str):
         return None
+    name = name.strip()
+    name = _LEGACY_ZONES.get(name, name)
+    if name not in _zone_names():
+        return None
     try:
-        return ZoneInfo(name.strip())
-    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
         return None
 
 
@@ -109,14 +151,20 @@ def local_floor(unit: str, tz: ZoneInfo, now: datetime | None = None) -> datetim
 def shift_local(
     value: datetime, tz: ZoneInfo, *, days: int = 0, months: int = 0
 ) -> datetime:
-    """Move a naive-UTC instant by whole local days/months (wall-clock
-    arithmetic, so a local day across a DST change is 23 or 25 hours)."""
-    local = to_local(value, tz).replace(tzinfo=None)
+    """Start (naive UTC) of the local day ``days``/``months`` away from the
+    local day that begins at ``value``.
+
+    For period starts only: works on local *dates*, so a day that began
+    after a DST gap at midnight (e.g. Africa/Cairo, where 00:00 does not
+    exist and the day starts at 01:00) still shifts to the previous day's
+    true start, not to 01:00 on it.
+    """
+    day = to_local(value, tz).date()
     if months:
-        index = local.year * 12 + (local.month - 1) + months
-        local = local.replace(year=index // 12, month=index % 12 + 1)
-    local += timedelta(days=days)
-    return from_local(local.replace(fold=0), tz)
+        index = day.year * 12 + (day.month - 1) + months
+        day = day.replace(year=index // 12, month=index % 12 + 1)
+    day += timedelta(days=days)
+    return from_local(datetime.combine(day, time()), tz)
 
 
 def local_bucket(value: datetime, unit: str, tz: ZoneInfo) -> datetime:

@@ -260,3 +260,170 @@ def test_fall_back_hours_stay_separate_buckets(db, monkeypatch, authed_client):
         ("2026-11-01T05:00Z", 1.0),
         ("2026-11-01T06:00Z", 2.0),
     ]
+
+
+# -- Independent review of #25 ----------------------------------------------
+
+
+@pytest.mark.parametrize("bad", ["Asia", "America", "localtime", "Factory", ""])
+def test_setup_rejects_non_zones_with_422(client, bad):
+    resp = client.post(
+        "/api/v1/setup",
+        json={"admin_email": "a@b.c", "admin_password": "pw123456", "timezone": bad},
+    )
+    assert resp.status_code == 422
+
+
+def test_setup_stores_legacy_browser_zone_under_current_name(client):
+    resp = client.post(
+        "/api/v1/setup",
+        json={
+            "admin_email": "a@b.c",
+            "admin_password": "pw123456",
+            "timezone": "Asia/Calcutta",
+        },
+    )
+    assert resp.status_code == 200
+    status = client.get("/api/v1/setup/status").json()
+    assert status["timezone"] == status["effective_timezone"] == "Asia/Kolkata"
+
+
+def test_status_reports_the_effective_zone(db, client):
+    db.query(SetupConfig).update({"timezone": "Mars/Olympus"})
+    db.commit()
+    status = client.get("/api/v1/setup/status").json()
+    assert (
+        status["timezone"] == "Mars/Olympus" and status["effective_timezone"] == "UTC"
+    )
+
+
+def test_alert_inside_the_local_period_deduplicates(tokyo, authed_client):
+    """An alert at 05:00 Tokyo today (20:00Z yesterday) is in Tokyo's current
+    period but before UTC midnight: dedup must use the local start."""
+    from app.models.models import Alert
+    from app.services.budget_checker import check_budgets
+
+    tokyo.add(
+        Budget(
+            name="day",
+            scope="global",
+            period="daily",
+            limit_amount=1.0,
+            alert_thresholds="[100]",
+        )
+    )
+    tokyo.commit()
+    _event(tokyo, U(2026, 10, 27, 16, 0), 2.0)
+    tokyo.add(
+        Alert(
+            budget_id=1,
+            alert_type="budget_exceeded",
+            severity="critical",
+            message="earlier today (threshold: 100%)",
+            created_at=U(2026, 10, 27, 20, 0),
+        )
+    )
+    tokyo.commit()
+    assert check_budgets(tokyo) == []
+
+
+def test_ingestion_flags_over_budget_in_the_local_period(tokyo, authed_client):
+    """Spend since Tokyo midnight (but before UTC midnight) exhausts the
+    budget, so the next event is flagged at ingestion."""
+    _event(tokyo, U(2026, 10, 27, 16, 0), 2.0)  # 01:00 Tokyo today
+    tokyo.add(
+        Budget(
+            name="day",
+            scope="global",
+            period="daily",
+            limit_amount=1.0,
+            control_action="block",
+        )
+    )
+    tokyo.commit()
+    resp = authed_client.post(
+        "/api/v1/events",
+        json={
+            "agent_name": "a",
+            "model": "gpt-4o",
+            "provider": "openai",
+            "tokens_input": 1,
+            "tokens_output": 1,
+            "cost": 0.5,
+            "timestamp": "2026-10-28T01:00:00Z",
+        },
+    )
+    assert resp.status_code in (200, 201), resp.text
+    assert resp.json()["over_budget"] == 1
+
+
+def test_scrooge_weekday_uses_the_local_weekday(db, monkeypatch):
+    # Tuesday 20:00Z is already Wednesday 05:00 in Tokyo.
+    db.query(SetupConfig).update({"timezone": TOKYO})
+    db.commit()
+    now = U(2026, 10, 27, 20, 0)
+    for mod in (timeutils, rag):
+        monkeypatch.setattr(mod, "utcnow", lambda: now)
+    intent = rag.detect_query_intent("what did we spend on monday", db)
+    assert intent.time_range == (U(2026, 10, 25, 15, 0), U(2026, 10, 26, 15, 0))
+
+
+JERUSALEM = ZoneInfo("Asia/Jerusalem")  # DST ends 2026-10-25 02:00 local
+
+
+def test_named_periods_across_a_25_hour_day(db, monkeypatch):
+    db.query(SetupConfig).update({"timezone": "Asia/Jerusalem"})
+    db.commit()
+    now = U(2026, 10, 26, 10, 0)  # Monday 12:00 IST
+    for mod in (timeutils, rag, dashboard):
+        monkeypatch.setattr(mod, "utcnow", lambda: now)
+    sunday = (U(2026, 10, 24, 21, 0), U(2026, 10, 25, 22, 0))  # 25 hours
+    assert rag.detect_query_intent("spend yesterday", db).time_range == sunday
+    assert rag.detect_query_intent("spend on sunday", db).time_range == sunday
+    # Today-so-far (12 h) against the same 12 h of yesterday.
+    assert dashboard._prev_period_bounds("today", JERUSALEM) == (
+        U(2026, 10, 24, 21, 0),
+        U(2026, 10, 25, 9, 0),
+    )
+
+
+def test_cairo_midnight_dst_gap_keeps_whole_days(db, monkeypatch):
+    """Africa/Cairo: 2026-04-24 00:00 does not exist (DST starts at
+    midnight). Yesterday and last Friday must be whole local days."""
+    db.query(SetupConfig).update({"timezone": "Africa/Cairo"})
+    db.commit()
+    now = U(2026, 4, 24, 10, 0)
+    for mod in (timeutils, rag):
+        monkeypatch.setattr(mod, "utcnow", lambda: now)
+    assert rag.detect_query_intent("spend yesterday", db).time_range == (
+        U(2026, 4, 22, 22, 0),
+        U(2026, 4, 23, 22, 0),
+    )
+    later = U(2026, 4, 27, 10, 0)  # Monday
+    for mod in (timeutils, rag):
+        monkeypatch.setattr(mod, "utcnow", lambda: later)
+    assert rag.detect_query_intent("spend on friday", db).time_range == (
+        U(2026, 4, 23, 22, 0),  # Friday 01:00 EEST = first instant of the day
+        U(2026, 4, 24, 21, 0),  # Saturday 00:00 EEST
+    )
+
+
+def test_hourly_budget_period_in_a_half_hour_zone():
+    from app.services.budget_checker import _period_start
+
+    tz = ZoneInfo("Asia/Kolkata")
+    import app.timeutils as tu
+
+    orig = tu.utcnow
+    tu.utcnow = lambda: U(2026, 10, 28, 22, 45)
+    try:
+        assert _period_start("hourly", tz) == U(2026, 10, 28, 22, 30)
+    finally:
+        tu.utcnow = orig
+
+
+def test_scrooge_timeline_rows_carry_local_labels(tokyo):
+    _event(tokyo, U(2026, 10, 27, 16, 0), 2.0)
+    ctx = rag.retrieve("show the cost trend this month", tokyo)
+    (row,) = [r for r in ctx.sql_results if r.get("type") == "timeline"]
+    assert row["bucket"] == "2026-10-27T15:00Z" and row["local"] == "2026-10-28"

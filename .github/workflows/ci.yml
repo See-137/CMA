@@ -26,6 +26,24 @@ jobs:
   backend-test:
     runs-on: ubuntu-latest
     needs: backend-lint
+    # Postgres for the dialect-specific tests (e.g. time-zone bucketing in
+    # SQL); the rest of the suite runs on SQLite.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: cma_test
+          POSTGRES_USER: cma
+          POSTGRES_PASSWORD: cma
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cma"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      CMA_TEST_PG_URL: postgresql://cma:cma@localhost:5432/cma_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
