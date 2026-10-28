@@ -25,7 +25,7 @@
 ```powershell
 cd backend; pip install -r requirements-dev.txt; pytest
 ```
-- 174 backend tests (`backend/tests`) + 26 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
+- 181 backend tests (`backend/tests`) + 26 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
 - `test_events.py` — ingestion, auto-discovery (incl. race), UTC timestamp normalisation
 - `test_pricing.py` — pricing resolution, cost_source, reprice, reset-full reseed
 - `test_scrooge_grounding.py` — Scrooge totals, windows, entity matching, untrusted data block, degradation

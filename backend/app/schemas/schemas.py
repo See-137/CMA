@@ -284,7 +284,7 @@ class BudgetCreate(BaseModel):
     alert_thresholds: list[Threshold] = [50, 75, 90, 100]
     control_action: BudgetAction = "alert"
 
-    @field_validator("scope_ref", "name")
+    @field_validator("scope_ref", "name", mode="before")
     @classmethod
     def _trim(cls, v: str | None) -> str | None:
         # "OpenAI " would never match the provider "OpenAI".
@@ -306,7 +306,7 @@ class BudgetUpdate(BaseModel):
     control_action: BudgetAction | None = None
     is_active: bool | None = None
 
-    @field_validator("scope_ref", "name")
+    @field_validator("scope_ref", "name", mode="before")
     @classmethod
     def _trim(cls, v: str | None) -> str | None:
         return _strip(v)

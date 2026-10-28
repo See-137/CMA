@@ -147,3 +147,6 @@ Owner decisions (2026-10-28):
   fixes, focused re-review (approve with follow-ups) and green CI. PR #23
   ported onto master; it also carries the re-review follow-ups and
   provider/model scopes in the pre-call check. Backend tests → 174; SDK 26.
+- 2026-10-28 — Independent re-review of PR #23: REQUEST CHANGES (multi-batch
+  reprice left partial rollups; four minors). Fixed with regression tests
+  (FINDINGS REV-23). Backend tests → 181.

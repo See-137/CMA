@@ -125,8 +125,11 @@ _RELATIVE_TIME = {
 
 # Match "last N days/hours"
 _LAST_N_RE = re.compile(
-    r"(?:last|past|previous)\s+(\d+)\s+(day|hour|week|month)s?", re.IGNORECASE
+    r"(?:last|past)\s+(\d+)\s+(day|hour|week|month)s?", re.IGNORECASE
 )
+# "previous N days": after another window ("last 7 days vs previous 7 days")
+# it means the N units BEFORE that window; on its own, the last N units.
+_PREV_N_RE = re.compile(r"previous\s+(\d+)\s+(day|hour|week|month)s?", re.IGNORECASE)
 
 # Day names
 _DAYS = {
@@ -155,12 +158,13 @@ _TIME_HINT_RE = re.compile(
     r"|\b(?:this|last|past|previous|next)\s+(?:year|quarter|weekend|fortnight)\b"
     r"|\b(?:past|previous|over the)\s+\d+\s+(?:hour|day|week|month|year)s?\b"
     r"|\b\d+\s+(?:hour|day|week|month|year)s?\s+ago\b"
-    r"|\b(?:past|previous|last)\s+(?:few|couple(?:\s+of)?|several)\s+\w+"
+    r"|\b(?:past|previous|last)\s+(?:few|couple(?:\s+of)?|several)\s+"
+    r"(?:hour|day|week|month|year)s?\b"
     r"|\b(?:in|over)\s+the\s+(?:past|last)\s+(?:week|month|year|quarter)\b"
     r"|\b(?:a|an|one|two|three|four|five|six|several|few)\s+"
     r"(?:hour|day|week|month|year)s?\s+ago\b"
     r"|\byear[\s-]to[\s-]date\b|\bytd\b|\bmonth[\s-]to[\s-]date\b|\bmtd\b"
-    r"|\bsince\s+(?:the\b|\d)",
+    r"|\bsince\s+(?:the\b|last\b|\d)",
     re.IGNORECASE,
 )
 
@@ -193,6 +197,20 @@ def _find_windows(q_lower: str) -> list[tuple[int, str, tuple[datetime, datetime
         now = utcnow()
         label = f"last {n} {unit}{'s' if n != 1 else ''}"
         found.append((m.start(), label, (now - delta, now)))
+        taken.append(m.span())
+
+    for m in _PREV_N_RE.finditer(q_lower):
+        n, unit = int(m.group(1)), m.group(2).lower()
+        delta = {
+            "day": timedelta(days=n),
+            "hour": timedelta(hours=n),
+            "week": timedelta(weeks=n),
+            "month": timedelta(days=n * 30),
+        }[unit]
+        earlier = [f for f in found if f[0] < m.start()]
+        anchor = earlier[-1][2][0] if earlier else utcnow()
+        label = f"previous {n} {unit}{'s' if n != 1 else ''}"
+        found.append((m.start(), label, (anchor - delta, anchor)))
         taken.append(m.span())
 
     for phrase in sorted(_RELATIVE_TIME, key=len, reverse=True):

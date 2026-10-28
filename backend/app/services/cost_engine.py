@@ -216,16 +216,20 @@ def reprice_events(
             # Recompute this batch's completed days right away, so an
             # interrupted reprice never leaves committed events newer than
             # their rollups (a re-run only sees the remaining events).
-            for d in sorted(batch_dates - recomputed):
-                recomputed.add(d)
+            # Every batch re-rolls every completed day it touched (idempotent):
+            # a day whose events span several batches must be recomputed
+            # after its LAST batch, not only its first.
+            for d in sorted(batch_dates):
                 if d >= today:
                     continue
                 if compute_daily_rollups(db, d):
-                    rollup_dates.append(d)
-                else:
+                    if d not in recomputed:
+                        rollup_dates.append(d)
+                elif d not in recomputed:
                     # Archived days (raw events already pruned) are skipped;
                     # retention adds their late events later.
                     archived_dates.append(d)
+                recomputed.add(d)
         else:
             db.expunge_all()  # keep memory flat; nothing was changed
         batch_dates = set()

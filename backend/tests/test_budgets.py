@@ -466,3 +466,11 @@ def test_scope_ref_is_trimmed(authed_client):
     )
     assert resp.json()["scope_ref"] == "OpenAI"
     assert resp.json()["name"] == "cap"
+
+
+def test_blank_budget_name_is_rejected(authed_client):
+    resp = authed_client.post(
+        "/api/v1/budgets",
+        json={"name": "   ", "scope": "global", "period": "daily", "limit_amount": 1},
+    )
+    assert resp.status_code == 422

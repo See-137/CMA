@@ -46,7 +46,8 @@ def check_budget(
     Returns allowed=false with the exhausted blocking budgets (any
     control_action other than "alert") whose scope matches. Global budgets
     always match; agent/swarm/workflow/provider/model budgets match only when
-    that attribute is supplied. The SDK calls this before each LLM call when
+    that attribute is supplied (a legacy scoped row with an empty scope_ref
+    behaves as global, exactly as its spend is summed). The SDK calls this before each LLM call when
     enforce_budgets=True.
     """
     violations = precall_check(db, agent_name, workflow, swarm, provider, model)

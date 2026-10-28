@@ -361,3 +361,35 @@ def test_interrupted_reprice_leaves_no_stale_rollups(authed_client, db, monkeypa
     db.rollback()
     roll = db.query(DailyCostRollup).filter_by(date=day1.date()).one()
     assert roll.total_cost == pytest.approx(5.0)  # first batch's day is current
+
+
+def test_reprice_rolls_up_a_day_spanning_several_batches(
+    authed_client, db, monkeypatch
+):
+    """Re-review #23: a day whose events spanned batches kept the rollup from
+    its first batch only ($5 of $10)."""
+    from datetime import timedelta
+
+    from app.models.models import CostEvent, DailyCostRollup
+    from app.services import cost_engine
+    from app.timeutils import utcnow
+
+    day = (utcnow() - timedelta(days=3)).replace(microsecond=0)
+    for _ in range(4):
+        db.add(
+            CostEvent(
+                agent_name="a",
+                model_name="gpt-4o",
+                provider_name="openai",
+                tokens_input=1_000_000,
+                tokens_output=0,
+                cost=0.0,
+                timestamp=day,
+            )
+        )
+    db.commit()
+    monkeypatch.setattr(cost_engine, "_REPRICE_BATCH", 2)
+    res = cost_engine.reprice_events(db)
+    assert res["rollup_dates_recomputed"] == [day.date().isoformat()]
+    roll = db.query(DailyCostRollup).filter_by(date=day.date()).one()
+    assert roll.total_cost == pytest.approx(10.0)

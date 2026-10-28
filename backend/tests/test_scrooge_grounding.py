@@ -264,3 +264,26 @@ def test_past_n_days_and_since_relative_parse(db):
     start, end = intent.time_range
     assert intent.time_label == "since yesterday"
     assert (end - start) > timedelta(days=1) - timedelta(seconds=1)
+
+
+def test_previous_n_after_a_window_is_the_window_before(db):
+    """Re-review #23: 'last 7 days vs previous 7 days' compared a window with
+    itself."""
+    intent = rag.detect_query_intent("compare last 7 days vs previous 7 days", db)
+    ((label, (pstart, pend)),) = intent.extra_windows
+    start, _ = intent.time_range
+    assert label == "previous 7 days"
+    assert pend == start and (pend - pstart) == timedelta(days=7)
+
+
+@pytest.mark.parametrize(
+    "question,flagged",
+    [
+        ("what did the last few calls cost", False),
+        ("cost of the last couple of runs", False),
+        ("spend over the past few days", True),
+        ("costs since last deploy", True),
+    ],
+)
+def test_few_and_since_last_hints(db, question, flagged):
+    assert rag.detect_query_intent(question, db).unparsed_time is flagged
