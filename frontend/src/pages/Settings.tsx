@@ -308,7 +308,7 @@ const Settings: React.FC = () => {
     reprice: {
       title: 'Reprice Unpriced Events',
       description:
-        'Recompute the cost of events that were recorded at $0 because no model price matched, using current pricing. Client-supplied costs are not changed. Enter your admin password to proceed.',
+        'Recompute the cost of events recorded at $0 because no model price matched, using current pricing. Costs sent by your own client are not changed — except events recorded before cost tracking existed, where a client-sent $0 with tokens cannot be told apart from an unpriced event. Days already pruned keep their archived totals. Enter your admin password to proceed.',
       submitLabel: 'Reprice',
     },
     export: {

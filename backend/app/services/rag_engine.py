@@ -476,6 +476,13 @@ def _run_comparison_query(intent: QueryIntent, db: Session) -> list[dict]:
 _TIMELINE_POINTS = 72
 
 
+def _bucket_utc(value) -> str:
+    """Timeline bucket start as UTC ISO-8601 with 'Z' (same on both DBs)."""
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value if len(value) > 10 else value + " 00:00")
+    return value.isoformat(timespec="minutes") + "Z"
+
+
 def _run_timeline_query(intent: QueryIntent, db: Session) -> list[dict]:
     """Cost trend: hourly buckets for windows up to 3 days, daily beyond (or
     with no window). Keeps the MOST RECENT buckets if there are too many."""
@@ -507,7 +514,7 @@ def _run_timeline_query(intent: QueryIntent, db: Session) -> list[dict]:
         {
             "type": "timeline",
             "granularity": "hour" if hourly else "day",
-            "bucket": str(r.bucket),
+            "bucket": _bucket_utc(r.bucket),
             "cost": round(float(r.cost), 6),
             "requests": int(r.requests),
         }
@@ -772,7 +779,9 @@ def _data_block(context: RetrievalContext) -> str:
                 "breakdown": "[breakdown]",
                 "breakdown_remainder": "[breakdown]",
             }.get(r.get("type"), f"[{r.get('type', 'sql')}]")
-            parts.append(f"{label} {json.dumps(r, default=str)}")
+            # Escape '<' so a stored name like "</data>" can't close the block.
+            body = json.dumps(r, default=str).replace("<", "\\u003c")
+            parts.append(f"{label} {body}")
     else:
         parts.append(
             "\nNo SQL data was retrieved (the question did not ask about spend, "
@@ -784,7 +793,8 @@ def _data_block(context: RetrievalContext) -> str:
             "(examples for explanation only — NOT a complete set, never sum them)"
         )
         for i, r in enumerate(context.vector_results):
-            parts.append(f"[{i + 1}] {r.get('document', '')}")
+            doc = str(r.get("document", "")).replace("<", "\u2039")
+            parts.append(f"[{i + 1}] {doc}")
     parts.append("</data>")
     return "\n".join(parts)
 

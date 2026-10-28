@@ -265,3 +265,57 @@ def test_reembedding_is_chunked(monkeypatch, db):
     monkeypatch.setattr(vector_store, "embed_texts", lambda texts: [[0.0]] * len(texts))
     assert vector_store.embed_and_upsert_events(db, ids) == 1200
     assert max(batches) <= 500 and sum(batches) == 1200
+
+
+def test_snapshot_fallback_is_marked_estimated(authed_client):
+    """A dated snapshot priced via its alias may cost more or less than the
+    alias; the cost is stored but flagged as an estimate."""
+    _ingest(authed_client, model="gpt-4o-2024-05-13")
+    item = authed_client.get("/api/v1/events").json()["items"][0]
+    assert item["cost_source"] == "estimated"
+    assert item["cost"] == pytest.approx(2.5)
+
+
+def test_reprice_rejects_inverted_range(authed_client):
+    resp = authed_client.post(
+        "/api/v1/admin/reprice",
+        json={"from_date": "2026-10-02T00:00:00Z", "to_date": "2026-10-01T00:00:00Z"},
+        headers=ADMIN,
+    )
+    assert resp.status_code == 422
+
+
+def test_reprice_reports_archived_days(authed_client, db):
+    from datetime import timedelta
+
+    from app.models.models import CostEvent, DailyCostRollup
+    from app.timeutils import utcnow
+
+    old = (utcnow() - timedelta(days=5)).replace(microsecond=0)
+    db.add(
+        DailyCostRollup(
+            date=old.date(),
+            agent_name="sdk-bot",
+            model_name="gpt-4o",
+            provider_name="openai",
+            total_cost=0.0,
+            request_count=10,
+            archived=True,
+        )
+    )
+    db.add(
+        CostEvent(
+            agent_name="sdk-bot",
+            model_name="gpt-4o",
+            provider_name="openai",
+            tokens_input=1_000_000,
+            tokens_output=0,
+            cost=0.0,
+            timestamp=old,
+        )
+    )
+    db.commit()
+    res = authed_client.post("/api/v1/admin/reprice", headers=ADMIN).json()
+    assert res["repriced"] == 1
+    assert res["archived_dates_not_recomputed"] == [old.date().isoformat()]
+    assert res["rollup_dates_recomputed"] == []

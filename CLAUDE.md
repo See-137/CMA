@@ -25,11 +25,12 @@
 ```powershell
 cd backend; pip install -r requirements-dev.txt; pytest
 ```
-- 134 backend tests (`backend/tests`) + 14 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
+- 153 backend tests (`backend/tests`) + 14 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
 - `test_events.py` — ingestion, auto-discovery (incl. race), UTC timestamp normalisation
 - `test_pricing.py` — pricing resolution, cost_source, reprice, reset-full reseed
 - `test_scrooge_grounding.py` — Scrooge totals, windows, entity matching, untrusted data block, degradation
-- `test_retention.py` — no spend lost on prune
+- `test_retention.py` — no spend lost on prune (incl. mid-prune inserts)
+- `test_migrations.py` — migration data safety on seeded pre-upgrade data
 - `test_auth.py` — setup + login
 - `test_budgets.py` — enforcement + threshold alerts
 - `test_dashboard.py` — metrics + rollups
@@ -60,8 +61,8 @@ cd backend; pip install -r requirements-dev.txt; pytest
 - **Soft-delete pattern** — providers, agents, channels use `is_active=False`, never hard-deleted from UI
 - **Lazy singletons** — ChromaDB client, embedding model, LLM provider cached per process lifetime
 - **Upsert-safe rollups** — daily aggregation is idempotent, safe to re-run
-- **Retention safety** — before deleting a day's events, a never-pruned day's rollup is recomputed and marked `archived`; for an archived day, late events are *added* to its rollup. `compute_daily_rollups` never recomputes an archived day (its raw events are gone)
-- **Pricing resolution** — provider by case-insensitive name or `provider_type`, model by exact name > alias list > ci name > date-snapshot-stripped; no match = `cost_source='unpriced'` at $0 (repriceable via `/admin/reprice`)
+- **Retention safety** — per day, the rollup is written from exactly the event ids then deleted, in one transaction (rewrite for a never-pruned day, add for an archived one) and the day is marked `archived`; `compute_daily_rollups` never recomputes an archived day (its raw events are gone)
+- **Pricing resolution** — provider by case-insensitive name or `provider_type`, model by exact name > alias list > ci name > date-snapshot-stripped; snapshot-only match = `cost_source='estimated'`; no match = `cost_source='unpriced'` at $0 (repriceable via `/admin/reprice`, batched)
 - **UTC at the boundary** — storage is naive UTC; offset inputs are converted, every API datetime is emitted with `Z`
 - **Scrooge data is untrusted** — retrieved data goes in a user-role `<data>` block; only SQL `total` rows (per explicit window, half-open) are presented as totals
 - **Prometheus over OTel** — single process, no cross-service propagation to buy; RAG stage histograms are span-shaped (1:1 names) so an OTel migration stays mechanical. Metrics carry NO agent/model labels (unbounded cardinality); CMA's own rollups watch the spend, Prometheus watches the service

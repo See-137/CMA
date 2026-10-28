@@ -3,7 +3,7 @@ import os
 from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
@@ -188,6 +188,12 @@ class RepriceRequest(BaseModel):
     @classmethod
     def _utc(cls, v: datetime | None) -> datetime | None:
         return to_naive_utc(v)
+
+    @model_validator(mode="after")
+    def _ordered(self):
+        if self.from_date and self.to_date and self.from_date > self.to_date:
+            raise ValueError("from_date must not be after to_date")
+        return self
 
 
 @router.post("/reprice", dependencies=admin_only)

@@ -26,7 +26,7 @@ from app.services.budget_checker import (
     event_rejection_reason,
     load_enforcement_state,
 )
-from app.services.cost_engine import cost_for, resolve_pricing
+from app.services.cost_engine import cost_for, resolve_pricing_match
 from app.timeutils import to_naive_utc, utcnow
 
 logger = logging.getLogger(__name__)
@@ -37,15 +37,17 @@ def _event_cost(event: EventIn, db: Session) -> tuple[float, str]:
     """Return (cost, cost_source) for an incoming event."""
     if event.cost is not None:
         return event.cost, "client"
-    pricing = resolve_pricing(event.provider, event.model, db)
-    if pricing is None:
+    match = resolve_pricing_match(event.provider, event.model, db)
+    if match is None:
         logger.warning(
             "No pricing for provider=%s model=%s — stored as unpriced",
             event.provider,
             event.model,
         )
         return 0.0, "unpriced"
-    return cost_for(pricing, event.tokens_input, event.tokens_output), "pricing"
+    pricing, exact = match
+    cost = cost_for(pricing, event.tokens_input, event.tokens_output)
+    return cost, "pricing" if exact else "estimated"
 
 
 def _process_event(

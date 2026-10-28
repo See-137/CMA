@@ -15,6 +15,7 @@ Pricing resolution (how an event's provider/model strings find a price row):
       (``gpt-4o-2024-08-06`` -> ``gpt-4o``, ``claude-x-20241022`` -> ``claude-x``)
       compared against names and aliases (case-insensitive)
 
+A match found only by rule (d) is stored with ``cost_source='estimated'``.
 No match prices the event at 0.0 and marks it ``unpriced`` (``cost_source``)
 so it stays visible and can be repriced once pricing exists
 (``reprice_events`` / ``POST /api/v1/admin/reprice``).
@@ -32,6 +33,7 @@ from app.timeutils import utcnow
 
 logger = logging.getLogger(__name__)
 
+_REPRICE_BATCH = 1000
 _DATE_SUFFIX = re.compile(r"-(\d{4}-\d{2}-\d{2}|\d{8})$")
 
 
@@ -45,6 +47,16 @@ def resolve_pricing(
     provider_name: str, model_name: str, db: Session
 ) -> ModelPricing | None:
     """Find the active price row for an event's provider/model strings."""
+    match = resolve_pricing_match(provider_name, model_name, db)
+    return match[0] if match else None
+
+
+def resolve_pricing_match(
+    provider_name: str, model_name: str, db: Session
+) -> tuple[ModelPricing, bool] | None:
+    """(price row, exact) — ``exact`` is False when only the date-snapshot
+    fallback matched: a dated snapshot can be priced differently from its
+    alias (e.g. older snapshots cost more), so such costs are estimates."""
     wanted_provider = provider_name.strip().lower()
     rows = (
         db.query(ModelPricing, Provider)
@@ -81,11 +93,14 @@ def resolve_pricing(
             and (p.model_name.lower() == stripped or stripped in _aliases(p))
         ),
     ]
-    for matches in matchers:
+    for rule, matches in enumerate(matchers):
         hits = [(pricing, prov) for pricing, prov in rows if matches(pricing)]
         if hits:
-            pricing, _ = min(hits, key=lambda h: (provider_rank(h[1]), h[0].id))
-            return pricing
+            # Ties between same-type providers: the earliest-created provider.
+            pricing, _ = min(
+                hits, key=lambda h: (provider_rank(h[1]), h[1].id, h[0].id)
+            )
+            return pricing, rule < 3
     return None
 
 
@@ -148,42 +163,67 @@ def reprice_events(
     if to_date is not None:
         query = query.filter(CostEvent.timestamp <= to_date)
 
-    cache: dict[tuple[str, str], ModelPricing | None] = {}
+    cache: dict[tuple[str, str], tuple[ModelPricing, bool] | None] = {}
     repriced_ids: list[int] = []
     still_unpriced: dict[str, int] = {}
     added_cost = 0.0
     dates: set[date] = set()
 
-    for event in query.all():
-        key = (event.provider_name, event.model_name)
-        if key not in cache:
-            cache[key] = resolve_pricing(event.provider_name, event.model_name, db)
-        pricing = cache[key]
-        if pricing is None:
-            label = f"{event.provider_name}/{event.model_name}"
-            still_unpriced[label] = still_unpriced.get(label, 0) + 1
+    # Keyset batches, committed one at a time: a very large reprice makes
+    # durable progress (re-running continues where it stopped) and never
+    # holds every candidate row in memory.
+    last_id = 0
+    while True:
+        batch = (
+            query.filter(CostEvent.id > last_id)
+            .order_by(CostEvent.id)
+            .limit(_REPRICE_BATCH)
+            .all()
+        )
+        if not batch:
+            break
+        last_id = batch[-1].id
+        for event in batch:
+            key = (event.provider_name, event.model_name)
+            if key not in cache:
+                cache[key] = resolve_pricing_match(
+                    event.provider_name, event.model_name, db
+                )
+            match = cache[key]
+            if match is None:
+                label = f"{event.provider_name}/{event.model_name}"
+                still_unpriced[label] = still_unpriced.get(label, 0) + 1
+                if not dry_run:
+                    event.cost_source = "unpriced"
+                continue
+            pricing, exact = match
+            new_cost = cost_for(pricing, event.tokens_input, event.tokens_output)
+            added_cost += new_cost - (event.cost or 0.0)
+            repriced_ids.append(event.id)
+            dates.add(event.timestamp.date())
             if not dry_run:
-                event.cost_source = "unpriced"
-            continue
-        new_cost = cost_for(pricing, event.tokens_input, event.tokens_output)
-        added_cost += new_cost - (event.cost or 0.0)
-        repriced_ids.append(event.id)
-        dates.add(event.timestamp.date())
+                event.cost = new_cost
+                event.cost_source = "pricing" if exact else "estimated"
         if not dry_run:
-            event.cost = new_cost
-            event.cost_source = "pricing"
+            db.commit()
+        else:
+            db.expunge_all()  # keep memory flat; nothing was changed
 
     rollup_dates: list[date] = []
+    archived_dates: list[date] = []
     if not dry_run:
-        db.commit()
         from app.services.rollup import compute_daily_rollups
 
         today = utcnow().date()
         for d in sorted(dates):
             # Archived days (raw events already pruned) are skipped by
             # compute_daily_rollups; retention adds their late events later.
-            if d < today and compute_daily_rollups(db, d):
+            if d >= today:
+                continue
+            if compute_daily_rollups(db, d):
                 rollup_dates.append(d)
+            else:
+                archived_dates.append(d)
 
     return {
         "dry_run": dry_run,
@@ -191,5 +231,9 @@ def reprice_events(
         "added_cost": round(added_cost, 8),
         "still_unpriced": still_unpriced,
         "rollup_dates_recomputed": [d.isoformat() for d in rollup_dates],
+        # Days whose raw events were already pruned: their archived rollups
+        # keep the old (often \$0) cost; the repriced late events are added
+        # to them at the next retention run.
+        "archived_dates_not_recomputed": [d.isoformat() for d in archived_dates],
         "repriced_ids": repriced_ids,
     }

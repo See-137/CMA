@@ -123,3 +123,6 @@ Open decisions (owner input needed — they change semantics, compatibility or s
   locally). Codex review: two valid findings in this PR's own changes
   (archived-rollup overwrite in retention, overlapping entity names) fixed
   with migration 003 + tests.
+- 2026-10-28 — Independent review of PR #22: REQUEST CHANGES (1 blocker,
+  5 majors, minors). All fixed on the branch with tests (backend 134 → 153);
+  details in FINDINGS REV-22.
