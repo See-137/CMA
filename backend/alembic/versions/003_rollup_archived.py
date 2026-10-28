@@ -29,14 +29,18 @@ def upgrade() -> None:
             )
         )
 
-    # Existing installs: a rollup day with no remaining raw events was already
-    # pruned (rollups are only ever created from events), so it is archived.
+    # Existing installs: decide per rollup day whether its raw events were
+    # already pruned (by the pre-003 retention, which never marked anything).
+    # Rollups are only ever created from events, so a day whose rollups count
+    # MORE requests than the events still stored lost events to pruning —
+    # whether or not late events arrived since. Such a day must be archived,
+    # or the next prune would recompute it from the survivors and silently
+    # drop the pruned spend.
     conn = op.get_bind()
-    days = [
-        r[0]
-        for r in conn.execute(sa.text("SELECT DISTINCT date FROM daily_cost_rollups"))
-    ]
-    for day in days:
+    days = conn.execute(
+        sa.text("SELECT date, SUM(request_count) FROM daily_cost_rollups GROUP BY date")
+    ).all()
+    for day, rolled_up in days:
         if isinstance(day, str):
             day = date.fromisoformat(day)
         start = datetime.combine(day, datetime.min.time())
@@ -47,7 +51,7 @@ def upgrade() -> None:
             ),
             {"start": start, "end": start + timedelta(days=1)},
         ).scalar()
-        if not remaining:
+        if (rolled_up or 0) > (remaining or 0):
             conn.execute(
                 sa.text("UPDATE daily_cost_rollups SET archived = :t WHERE date = :d"),
                 {"t": True, "d": day},

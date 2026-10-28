@@ -80,3 +80,41 @@ def test_old_day_without_rollup_is_rolled_up_then_pruned(authed_client):
         assert roll.total_cost == 3.0
     finally:
         db.close()
+
+
+def test_event_arriving_mid_prune_is_neither_lost_nor_double_counted(
+    authed_client, monkeypatch
+):
+    """Rollup and deletion use the same id set: an event inserted for the day
+    after it was aggregated must survive this run and be folded in next run
+    (independent review M1: it used to be deleted uncounted)."""
+    from app.services import retention
+
+    db = TestSession()
+    try:
+        old = (utcnow() - timedelta(days=200)).replace(hour=12, microsecond=0)
+        db.add(_event(old, 1.0))
+        db.commit()
+
+        real_fold = retention._fold_into_rollups
+
+        def fold_then_concurrent_insert(session, d, ids, replace):
+            real_fold(session, d, ids, replace)
+            session.add(_event(old + timedelta(minutes=5), 5.0))  # late arrival
+            session.flush()
+
+        monkeypatch.setattr(
+            retention, "_fold_into_rollups", fold_then_concurrent_insert
+        )
+        assert prune_old_events(db) == 1
+        monkeypatch.setattr(retention, "_fold_into_rollups", real_fold)
+
+        assert db.query(CostEvent).count() == 1  # the late event survived
+        roll = db.query(DailyCostRollup).filter_by(date=old.date()).one()
+        assert roll.total_cost == 1.0
+
+        assert prune_old_events(db) == 1
+        db.refresh(roll)
+        assert roll.total_cost == 6.0 and roll.request_count == 2
+    finally:
+        db.close()
