@@ -11,7 +11,7 @@
       "id": 1,
       "type": "timeseries",
       "title": "Event ingestion rate (by outcome)",
-      "description": "processed = stored; rejected = budget enforcement; errored = the service itself is broken",
+      "description": "processed = stored; errored = the service itself is broken; rejected = legacy, always 0 (budgets no longer discard spend; see cma_events_over_budget_total)",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "cma-prometheus" },
       "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },

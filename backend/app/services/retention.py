@@ -126,11 +126,15 @@ def _fold_into_rollups(db: Session, d: date, ids: list[int], replace: bool) -> N
             roll.total_tokens_output = (roll.total_tokens_output or 0) + g["tout"]
             roll.failure_count = (roll.failure_count or 0) + g["fail"]
             if g["dur_n"]:
-                # Request-weighted; exact when every event carries a duration.
-                prev = roll.avg_duration_ms or 0.0
-                roll.avg_duration_ms = (prev * old_n + g["dur_sum"]) / (
-                    old_n + g["dur_n"]
-                )
+                if roll.avg_duration_ms is None:
+                    # The archived row had no durations: don't dilute by its
+                    # request count.
+                    roll.avg_duration_ms = g["dur_sum"] / g["dur_n"]
+                else:
+                    # Request-weighted; exact when every event carries a duration.
+                    roll.avg_duration_ms = (
+                        roll.avg_duration_ms * old_n + g["dur_sum"]
+                    ) / (old_n + g["dur_n"])
             roll.request_count = old_n + g["n"]
     db.flush()
     db.query(DailyCostRollup).filter(DailyCostRollup.date == d).update(

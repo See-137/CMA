@@ -87,8 +87,9 @@ def test_batch_size_cap(authed_client, monkeypatch):
 # -- Batch-aware budget enforcement -------------------------------------------
 
 
-def test_batch_enforcement_stops_within_one_request(authed_client):
-    """A single batch must not be able to overshoot a hard budget limit."""
+def test_batch_spend_is_recorded_and_overage_flagged(authed_client):
+    """A batch past a hard limit is stored in full; events that arrived after
+    the running batch total exhausted the budget are flagged over_budget."""
     # gpt-4o input is $2.50/M -> 1M input tokens = $2.50 per event.
     authed_client.post(
         "/api/v1/budgets",
@@ -101,12 +102,11 @@ def test_batch_enforcement_stops_within_one_request(authed_client):
         },
     )
     batch = [_event(agent=f"b{i}", tokens_in=1_000_000, tokens_out=0) for i in range(5)]
-    resp = authed_client.post("/api/v1/events", json={"events": batch})
-    data = resp.json()
-    # ~2 events ($5.00) accepted, the rest rejected by the running batch total.
-    assert data["processed"] <= 2
-    assert data["rejected"] >= 3
-    assert data["rejection_reasons"]
+    data = authed_client.post("/api/v1/events", json={"events": batch}).json()
+    assert data["processed"] == 5
+    assert data["rejected"] == 0
+    assert data["over_budget"] == 3  # $5.00 reached after two events
+    assert data["budget_violations"]
 
 
 # -- Admin scope: destructive ops require the admin password ------------------

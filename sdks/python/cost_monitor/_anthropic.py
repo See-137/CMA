@@ -8,8 +8,10 @@ from typing import Any, AsyncIterator, Iterator
 from cost_monitor._patching import (
     InstrumentedAsyncStream,
     InstrumentedStream,
+    aprecall_enforce,
     get_active_tracker,
     install,
+    precall_enforce,
 )
 
 logger = logging.getLogger("cost_monitor.auto.anthropic")
@@ -239,6 +241,7 @@ def _patch_messages() -> None:
         tracker = get_active_tracker()
         if tracker is None:
             return original_create(self, *args, **kwargs)
+        precall_enforce(tracker, "anthropic", kwargs.get("model"))
 
         start = time.time()
         trace_id = str(uuid.uuid4())
@@ -279,6 +282,7 @@ def _patch_messages() -> None:
             tracker = get_active_tracker()
             if tracker is None:
                 return await original_acreate(self, *args, **kwargs)
+            await aprecall_enforce(tracker, "anthropic", kwargs.get("model"))
 
             start = time.time()
             trace_id = str(uuid.uuid4())
@@ -327,8 +331,10 @@ def _patch_messages_stream() -> None:
     original_stream = msg_mod.Messages.stream
 
     def patched_stream(self, *args, **kwargs):
-        manager = original_stream(self, *args, **kwargs)
         tracker = get_active_tracker()
+        if tracker is not None:
+            precall_enforce(tracker, "anthropic", kwargs.get("model"))
+        manager = original_stream(self, *args, **kwargs)
         if tracker is None:
             return manager
         return _InstrumentedStreamManager(

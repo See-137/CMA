@@ -21,7 +21,7 @@ LLM applications leak money in ways ordinary APM never surfaces: a mis-routed mo
 CMA was built to answer three questions that provider billing pages cannot:
 
 1. **Which agent spent what, on which model, for which workflow?**
-2. **Is anyone about to blow the budget?**
+2. **Is anyone about to blow the budget, and can we stop the next call before it is made?**
 3. **Why did spend change?** In plain language, with cited evidence.
 
 It runs entirely on your own infrastructure. No usage data leaves your network.
@@ -30,7 +30,7 @@ It runs entirely on your own infrastructure. No usage data leaves your network.
 
 - **Auto-instrumenting Python SDK.** One call patches OpenAI, Anthropic and LangChain clients in place, covering chat/messages `create` (sync, async and **streaming**). SDK failures degrade silently, and events are sent from a background worker with retry and bounded backoff. Coverage gaps (Responses API, embeddings, `parse`, prompt-cache tokens) and one behavioural side effect of stream usage injection are tracked in [docs/FINDINGS.md](docs/FINDINGS.md) (SDK-01, SDK-02, ACC-08).
 - **Cost engine and attribution.** Per-agent, per-model and per-provider rollups, agent auto-discovery from incoming events, idempotent daily aggregation, and retention pruning. Provider price tables are editable from the UI; provider/model names match case-insensitively, via aliases, or by stripping a dated snapshot suffix. Events with no matching price are flagged as unpriced (not silently free) and can be repriced after pricing is added.
-- **Budgets, enforcement and alerts.** Threshold alerts at 50, 75, 90 and 100 percent, ingestion-time enforcement for `stop` budgets (the over-limit event is rejected after the LLM call has happened, so it does not prevent spend — see BUD-02 in [docs/FINDINGS.md](docs/FINDINGS.md)), and webhook or Slack delivery behind an **SSRF guard** (private-network targets are rejected unless explicitly allowed).
+- **Budgets, enforcement and alerts.** Threshold alerts at 50, 75, 90 and 100 percent, spend that is always recorded (events past an exhausted blocking budget are flagged *over budget*), opt-in **pre-call enforcement** in the SDK (`enforce_budgets=True` raises `BudgetExceeded` before the provider is contacted; a soft limit, see the [SDK README](sdks/python/README.md#budget-enforcement)), and webhook or Slack delivery behind an **SSRF guard** (private-network targets are rejected unless explicitly allowed).
 - **Scrooge, the RAG assistant.** Hybrid retrieval that combines vector search over events and rollups (ChromaDB + sentence-transformers) with exact SQL aggregations chosen by regex intent detection. "What did we spend last week" hits SQL and returns a real number; "why did the research agent get expensive" hits the vector store and returns cited sources. The LLM is used for answer generation only, streamed token by token.
 - **Dashboards and semantic search.** Recharts visualizations of spend over time, top agents, model mix and budget status, plus meaning-based search across events.
 - **Production observability.** Liveness and readiness endpoints with bounded dependency checks, structured JSON logging with request-ID correlation, and a Prometheus exporter with a bundled Grafana dashboard.
@@ -188,7 +188,7 @@ All routes are under `/api/v1` and require the ingest key as `Authorization: Bea
 |---|---|
 | Ingest | `POST /events`, `GET /events` |
 | Agents, providers, models | CRUD under `/agents`, `/providers`, `/models` |
-| Budgets and alerts | CRUD under `/budgets`, `/alerts`, `/alerts/channels`; `PUT /alerts/{id}/resolve` |
+| Budgets and alerts | CRUD under `/budgets`, `/alerts`, `/alerts/channels`; `GET /budgets/check` (pre-call enforcement); `PUT /alerts/{id}/resolve` |
 | Dashboard | `/dashboard/overview`, `/timeseries`, `/top-agents`, `/model-usage`, `/budget-status` |
 | Scrooge | `POST /chat`, `POST /chat/stream`, `GET /chat/status` |
 | Search | `POST /search/semantic` |
@@ -211,7 +211,7 @@ cd sdks/python && pip install -e ".[dev]" && pytest   # SDK, incl. real openai/a
 cd frontend && npm run build         # tsc + vite build
 ```
 
-The backend suite has 153 tests and the SDK suite 14. The SDK instrumentation tests exercise the real `openai` and `anthropic` client libraries against a local fake HTTP server, so patching is verified against actual SDK internals rather than mocks.
+The backend suite has 181 tests and the SDK suite 26. The SDK instrumentation tests exercise the real `openai` and `anthropic` client libraries against a local fake HTTP server, so patching is verified against actual SDK internals rather than mocks.
 
 CI runs on every push and pull request:
 
@@ -219,6 +219,7 @@ CI runs on every push and pull request:
 |---|---|
 | `backend-lint` | ruff |
 | `backend-test` | pytest |
+| `sdk-test` | SDK pytest against the real `openai`/`anthropic` clients and fake servers |
 | `migrations` | Alembic upgrade on a real PostgreSQL, verifies every migration downgrades cleanly, and checks models and migrations agree (`alembic check`) |
 | `frontend-build` | TypeScript type-check and Vite production build |
 | `docker-build` | Both images build |

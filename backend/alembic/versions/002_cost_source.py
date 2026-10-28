@@ -22,10 +22,15 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Dev databases that ran an earlier draft of this revision have an index
+    # on cost_source; drop it so later batch operations don't try to rebuild
+    # it.
+    op.execute("DROP INDEX IF EXISTS ix_cost_events_cost_source")
     with op.batch_alter_table("cost_events") as batch:
         batch.add_column(sa.Column("cost_source", sa.String(20), nullable=True))
 
 
 def downgrade() -> None:
+    op.execute("DROP INDEX IF EXISTS ix_cost_events_cost_source")
     with op.batch_alter_table("cost_events") as batch:
         batch.drop_column("cost_source")

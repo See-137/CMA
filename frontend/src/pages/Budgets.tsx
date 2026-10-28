@@ -178,7 +178,7 @@ const Budgets: React.FC = () => {
       render: (row) => (
         <Badge
           text={row.control_action}
-          variant={row.control_action === 'block' ? 'danger' : 'warning'}
+          variant={row.control_action === 'alert' ? 'warning' : 'danger'}
         />
       ),
     },
@@ -353,10 +353,19 @@ const Budgets: React.FC = () => {
               value={formData.control_action}
               onChange={(e) => setFormData({ ...formData, control_action: e.target.value })}
             >
-              <option value="alert">Alert Only</option>
-              <option value="block">Block Requests</option>
-              <option value="throttle">Throttle</option>
+              <option value="alert">Alert only</option>
+              <option value="block">Block new calls (SDK pre-call check)</option>
+              {/* Legacy values stay selectable so editing an old budget doesn't silently change it. */}
+              {!['alert', 'block'].includes(formData.control_action) && (
+                <option value={formData.control_action}>
+                  {formData.control_action} (legacy — behaves as block)
+                </option>
+              )}
             </select>
+            <p className="mt-1 text-xs text-muted">
+              Spend is always recorded. With Block, SDK clients using{' '}
+              <code>enforce_budgets=True</code> refuse new LLM calls once this budget is exhausted.
+            </p>
           </div>
           <div className="flex justify-end gap-3 pt-2">
             <button

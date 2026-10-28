@@ -167,7 +167,14 @@ def reprice_events(
     repriced_ids: list[int] = []
     still_unpriced: dict[str, int] = {}
     added_cost = 0.0
-    dates: set[date] = set()
+
+    from app.services.rollup import compute_daily_rollups
+
+    today = utcnow().date()
+    rollup_dates: list[date] = []
+    archived_dates: list[date] = []
+    recomputed: set[date] = set()
+    batch_dates: set[date] = set()
 
     # Keyset batches, committed one at a time: a very large reprice makes
     # durable progress (re-running continues where it stopped) and never
@@ -200,30 +207,32 @@ def reprice_events(
             new_cost = cost_for(pricing, event.tokens_input, event.tokens_output)
             added_cost += new_cost - (event.cost or 0.0)
             repriced_ids.append(event.id)
-            dates.add(event.timestamp.date())
+            batch_dates.add(event.timestamp.date())
             if not dry_run:
                 event.cost = new_cost
                 event.cost_source = "pricing" if exact else "estimated"
         if not dry_run:
             db.commit()
+            # Recompute this batch's completed days right away, so an
+            # interrupted reprice never leaves committed events newer than
+            # their rollups (a re-run only sees the remaining events).
+            # Every batch re-rolls every completed day it touched (idempotent):
+            # a day whose events span several batches must be recomputed
+            # after its LAST batch, not only its first.
+            for d in sorted(batch_dates):
+                if d >= today:
+                    continue
+                if compute_daily_rollups(db, d):
+                    if d not in recomputed:
+                        rollup_dates.append(d)
+                elif d not in recomputed:
+                    # Archived days (raw events already pruned) are skipped;
+                    # retention adds their late events later.
+                    archived_dates.append(d)
+                recomputed.add(d)
         else:
             db.expunge_all()  # keep memory flat; nothing was changed
-
-    rollup_dates: list[date] = []
-    archived_dates: list[date] = []
-    if not dry_run:
-        from app.services.rollup import compute_daily_rollups
-
-        today = utcnow().date()
-        for d in sorted(dates):
-            # Archived days (raw events already pruned) are skipped by
-            # compute_daily_rollups; retention adds their late events later.
-            if d >= today:
-                continue
-            if compute_daily_rollups(db, d):
-                rollup_dates.append(d)
-            else:
-                archived_dates.append(d)
+        batch_dates = set()
 
     return {
         "dry_run": dry_run,

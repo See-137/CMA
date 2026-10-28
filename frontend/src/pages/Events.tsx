@@ -171,7 +171,11 @@ const Events: React.FC = () => {
       header: 'Cost',
       accessor: 'cost',
       render: (row) => (
-        <span className="numeral font-semibold text-gold">{formatCurrency(row.cost)}</span>
+        <span className="inline-flex items-center gap-2">
+          <span className="numeral font-semibold text-gold">{formatCurrency(row.cost)}</span>
+          {row.cost_source === 'unpriced' && <Badge text="unpriced" variant="warning" />}
+          {row.over_budget && <Badge text="over budget" variant="danger" />}
+        </span>
       ),
     },
     {
@@ -180,7 +184,7 @@ const Events: React.FC = () => {
       render: (row) => (
         <Badge
           text={row.status}
-          variant={row.status === 'success' ? 'success' : row.status === 'error' ? 'danger' : 'default'}
+          variant={row.status === 'success' ? 'success' : 'danger'}
         />
       ),
     },

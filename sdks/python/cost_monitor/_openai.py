@@ -9,8 +9,10 @@ from cost_monitor._patching import (
     InstrumentedAsyncStream,
     InstrumentedStream,
     config,
+    aprecall_enforce,
     get_active_tracker,
     install,
+    precall_enforce,
 )
 
 logger = logging.getLogger("cost_monitor.auto.openai")
@@ -148,6 +150,7 @@ def _make_sync_wrapper(original_create):
         tracker = get_active_tracker()
         if tracker is None:
             return original_create(self, *args, **kwargs)
+        precall_enforce(tracker, "openai", kwargs.get("model"))
 
         start = time.time()
         trace_id = str(uuid.uuid4())
@@ -181,6 +184,7 @@ def _make_async_wrapper(original_acreate):
         tracker = get_active_tracker()
         if tracker is None:
             return await original_acreate(self, *args, **kwargs)
+        await aprecall_enforce(tracker, "openai", kwargs.get("model"))
 
         start = time.time()
         trace_id = str(uuid.uuid4())

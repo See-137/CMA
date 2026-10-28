@@ -25,14 +25,15 @@
 ```powershell
 cd backend; pip install -r requirements-dev.txt; pytest
 ```
-- 153 backend tests (`backend/tests`) + 14 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
+- 181 backend tests (`backend/tests`) + 26 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
 - `test_events.py` — ingestion, auto-discovery (incl. race), UTC timestamp normalisation
 - `test_pricing.py` — pricing resolution, cost_source, reprice, reset-full reseed
 - `test_scrooge_grounding.py` — Scrooge totals, windows, entity matching, untrusted data block, degradation
 - `test_retention.py` — no spend lost on prune (incl. mid-prune inserts)
 - `test_migrations.py` — migration data safety on seeded pre-upgrade data
 - `test_auth.py` — setup + login
-- `test_budgets.py` — enforcement + threshold alerts
+- `test_budgets.py` — record-and-flag, pre-call check, validation, threshold alerts
+- `sdks/python/tests/test_budget_enforcement.py` — SDK pre-call enforcement (sync/async/stream, fail-open/closed, caching)
 - `test_dashboard.py` — metrics + rollups
 - `test_setup.py` — initial setup flow
 - `test_regressions.py` — envelope contract, embedder IDs, batch enforcement, admin gating, SSRF, rate limiting
@@ -75,7 +76,7 @@ cd backend; pip install -r requirements-dev.txt; pytest
 | `Provider` | LLM provider definitions | name, provider_type, is_active (soft-delete) |
 | `ModelPricing` | Per-model pricing | input/output price per million tokens, unique on provider+model |
 | `Agent` | Auto-discovered from events | name, environment, swarm, workflow, is_active |
-| `CostEvent` | Individual LLM calls | tokens_in/out, cost, cost_source (pricing/client/unpriced), trace_id, status, metadata_json |
+| `CostEvent` | Individual LLM calls | tokens_in/out, cost, cost_source (pricing/client/unpriced), over_budget, trace_id, status, metadata_json |
 | `Budget` | Cost limits | scope (global/agent/swarm/workflow), period (daily/weekly/monthly) |
 | `Alert` | Triggered notifications | budget_id, severity, is_resolved |
 | `AlertChannel` | Notification destinations | webhook, slack, or in_app |
@@ -103,9 +104,9 @@ Indexes on: `CostEvent.timestamp`, `CostEvent.agent_name`
 | `backend/app/services/vector_store.py` | ChromaDB client + sentence-transformers embedding + clear_vector_store() |
 | `backend/app/services/llm_provider.py` | OpenAI/Ollama abstraction (LLMProvider ABC) with streaming |
 | `backend/app/services/cost_engine.py` | Pricing resolution, cost = (tokens / 1M) * price, unpriced predicate, `reprice_events` |
-| `backend/app/services/budget_checker.py` | Budget enforcement + threshold alerts (50/75/90/100%) with dedup |
+| `backend/app/services/budget_checker.py` | Over-budget flagging at ingestion, `precall_check` for `/budgets/check`, threshold alerts (50/75/90/100%) with dedup |
 | `backend/app/services/rollup.py` | Daily cost aggregation + ChromaDB embedding of rollups |
-| `backend/app/services/retention.py` | Prune events older than retention_days (only if rolled up) |
+| `backend/app/services/retention.py` | Prune events older than retention_days, folding them into archived daily rollups first |
 | `backend/app/api/events.py` | Event ingestion — auto-creates agents, calculates cost, triggers budget checks |
 | `backend/app/api/chat.py` | RAG chat endpoints (non-streaming + SSE) |
 | `backend/app/api/admin.py` | Reset endpoints — clears both SQL AND ChromaDB |
@@ -155,7 +156,7 @@ docker compose --profile observability up -d
 - `gpt-4o-mini` doesn't lean hard into the Scrooge personality — larger models follow the system prompt more faithfully
 - Entity matching in intent detection is whole-token; overlapping spans resolve longest-first ("gpt-4" is not matched inside "gpt-4.1", but "gpt-4 and gpt-4o" keeps both)
 - Budget periods, dashboard days and Scrooge windows are UTC; `SetupConfig.timezone`/`currency` are stored but unused (decision D2/ACC-16)
-- `stop` budget enforcement rejects events at ingestion, after the LLM call — it hides spend rather than preventing it; UI `block`/`throttle` are not enforced (decision D1)
+- Budgets never discard spend: ingestion always stores the event (flagged `over_budget` when a matching blocking budget was already exhausted). Enforcement is pre-call: `GET /budgets/check` + SDK `enforce_budgets=True` → `BudgetExceeded`. Every action except `alert` blocks; `throttle`/`rate_limit`/`model_downgrade` are legacy aliases of block. Response field `rejected` is always 0 (kept for compatibility)
 - `int(row.total_tokens_in)` can throw TypeError if NULL — always use `int(x or 0)` pattern
 - API key stored as plaintext in SetupConfig despite bcrypt being imported — password uses hash, key does not
 - On Windows, npm/npx are .cmd shims — `Start-Process` needs `cmd.exe /c npm`, not `npm` directly

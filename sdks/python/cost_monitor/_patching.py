@@ -29,7 +29,7 @@ logger = logging.getLogger("cost_monitor.patching")
 _active_tracker: CostTracker | None = None
 
 # Behavior toggles set by auto_instrument().
-config: dict[str, Any] = {"inject_stream_usage": True}
+config: dict[str, Any] = {"inject_stream_usage": True, "enforce_budgets": False}
 
 # key -> (owner, attr_name, pristine_original, our_wrapper)
 _originals: dict[str, tuple[Any, str, Any, Any]] = {}
@@ -42,6 +42,29 @@ def set_active_tracker(tracker: CostTracker | None) -> None:
 
 def get_active_tracker() -> CostTracker | None:
     return _active_tracker
+
+
+def precall_enforce(
+    tracker: CostTracker, provider: str | None = None, model: str | None = None
+) -> None:
+    """Pre-call budget enforcement for patched calls (opt-in). Raises
+    BudgetExceeded before the provider is contacted; nothing is logged as a
+    failed call because no call was made."""
+    if config.get("enforce_budgets"):
+        tracker.enforce_budget(provider=provider, model=model)
+
+
+async def aprecall_enforce(
+    tracker: CostTracker, provider: str | None = None, model: str | None = None
+) -> None:
+    """Async variant: the (cached) HTTP check runs in a worker thread so an
+    uncached check never blocks the event loop."""
+    if config.get("enforce_budgets"):
+        if tracker.enforce_budget_if_cached(provider, model):
+            return  # fresh cached answer: no thread hop
+        import asyncio
+
+        await asyncio.to_thread(tracker.enforce_budget, provider=provider, model=model)
 
 
 def install(owner: Any, attr: str, wrapper: Any, key: str) -> bool:

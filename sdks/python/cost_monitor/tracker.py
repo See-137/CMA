@@ -44,6 +44,19 @@ _BACKOFF_BASE = 0.5
 _BACKOFF_CAP = 60.0
 
 
+class BudgetExceeded(Exception):
+    """Raised BEFORE an LLM call when a matching blocking budget is exhausted.
+
+    ``violations`` holds the backend's description of each exhausted budget
+    (name, scope, period, limit_amount, spent, message).
+    """
+
+    def __init__(self, violations: list[dict[str, Any]]) -> None:
+        self.violations = violations
+        message = "; ".join(str(v.get("message", "")) for v in violations)
+        super().__init__(message or "CMA budget exhausted")
+
+
 def _clip(value: str | None, limit: int) -> str | None:
     if isinstance(value, str) and len(value) > limit:
         return value[:limit]
@@ -131,8 +144,20 @@ class CostTracker:
         timeout: float = 10.0,
         connect_timeout: float = 5.0,
         max_buffer_size: int = 10_000,
+        budget_check_ttl: float = 10.0,
+        budget_check_timeout: float = 2.0,
+        budget_fail_closed: bool = False,
     ) -> None:
         self._endpoint = endpoint.rstrip("/")
+        # Pre-call budget checks (check_budget / enforce_budget): results are
+        # cached per attribution for budget_check_ttl seconds so enforcement
+        # adds at most one short HTTP call per TTL to the caller's path.
+        self._budget_ttl = budget_check_ttl
+        self._budget_timeout = budget_check_timeout
+        self._budget_fail_closed = budget_fail_closed
+        self._budget_cache: dict[tuple, tuple[float, dict[str, Any]]] = {}
+        self._budget_lock = threading.Lock()
+        self._budget_key_locks: dict[tuple, threading.Lock] = {}
         self._api_key = api_key
         self._default_agent = default_agent
         self._default_workflow = default_workflow
@@ -271,6 +296,135 @@ class CostTracker:
         # and the periodic flush_interval wake guarantees the retry anyway.
         if should_wake and time.monotonic() >= self._retry_at:
             self._wake.set()
+
+    def check_budget(
+        self,
+        agent: str | None = None,
+        workflow: str | None = None,
+        swarm: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        """Ask the backend whether a new call with this attribution may proceed.
+
+        Returns ``{"allowed": bool, "violations": [...]}``. Attribution falls
+        back to the tracker defaults (agent ``"unknown"``, like log_event). If
+        the backend is unreachable the result is allowed (fail-open,
+        ``"error"`` set) unless the tracker was created with
+        ``budget_fail_closed=True``. Never raises.
+        """
+        # Resolve attribution exactly as log_event() records it (fallbacks and
+        # clipping), so the check sees the same agent/workflow/swarm the spend
+        # accumulated under.
+        key = self._budget_key(agent, workflow, swarm, provider, model)
+        cached = self._cached_budget(key)
+        if cached is not None:
+            return cached
+
+        # Single flight per attribution: on a cold or expired cache, one
+        # caller asks the backend while concurrent callers wait for its answer.
+        with self._budget_lock:
+            key_lock = self._budget_key_locks.setdefault(key, threading.Lock())
+        with key_lock:
+            cached = self._cached_budget(key)
+            if cached is not None:
+                return cached
+            result = self._fetch_budget(*key)
+            with self._budget_lock:
+                self._budget_cache[key] = (time.monotonic(), result)
+            return result
+
+    def _budget_key(
+        self, agent, workflow, swarm, provider=None, model=None
+    ) -> tuple:
+        """Attribution resolved exactly as log_event() records it."""
+        return (
+            _clip(agent or self._default_agent or "unknown", _MAX_FIELD_LEN),
+            _clip(workflow or self._default_workflow, _MAX_FIELD_LEN),
+            _clip(swarm or self._default_swarm, _MAX_FIELD_LEN),
+            _clip(provider, _MAX_FIELD_LEN),
+            _clip(model, _MAX_FIELD_LEN),
+        )
+
+    def _cached_budget(self, key: tuple) -> dict[str, Any] | None:
+        """Unexpired cached result for a resolved attribution key, or None.
+        Errors are cached briefly (1 s at most) so a blip doesn't pin a
+        fail-closed tracker shut for a whole TTL."""
+        now = time.monotonic()
+        with self._budget_lock:
+            entry = self._budget_cache.get(key)
+        if entry is None:
+            return None
+        ttl = self._budget_ttl
+        if "error" in entry[1]:
+            ttl = min(ttl, 1.0)
+        return entry[1] if now - entry[0] < ttl else None
+
+    def _fetch_budget(self, agent, workflow, swarm, provider, model) -> dict[str, Any]:
+        params = {
+            k: v
+            for k, v in (
+                ("agent_name", agent),
+                ("workflow", workflow),
+                ("swarm", swarm),
+                ("provider", provider),
+                ("model", model),
+            )
+            if v
+        }
+        try:
+            resp = self._client.get(
+                "/api/v1/budgets/check", params=params, timeout=self._budget_timeout
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            return {
+                "allowed": bool(body.get("allowed", True)),
+                "violations": list(body.get("violations") or []),
+            }
+        except Exception as exc:
+            logger.warning("CMA budget check failed: %s", exc)
+            if self._budget_fail_closed:
+                return {
+                    "allowed": False,
+                    "violations": [
+                        {"message": "CMA budget check unavailable (fail-closed)"}
+                    ],
+                    "error": str(exc),
+                }
+            return {"allowed": True, "violations": [], "error": str(exc)}
+
+    def enforce_budget(
+        self,
+        agent: str | None = None,
+        workflow: str | None = None,
+        swarm: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        """Raise :class:`BudgetExceeded` if a matching blocking budget is
+        exhausted. Call before an LLM call (auto_instrument(enforce_budgets=
+        True) does this for every patched call)."""
+        result = self.check_budget(
+            agent=agent, workflow=workflow, swarm=swarm, provider=provider, model=model
+        )
+        if not result["allowed"]:
+            raise BudgetExceeded(result["violations"])
+
+    def enforce_budget_if_cached(
+        self, provider: str | None = None, model: str | None = None
+    ) -> bool:
+        """Enforce from cache only (default attribution). Returns False when no
+        fresh cached answer exists and a backend check is needed. Lets async
+        callers skip a thread hop on the hot path."""
+        cached = self._cached_budget(
+            self._budget_key(None, None, None, provider, model)
+        )
+        if cached is None:
+            return False
+        if not cached["allowed"]:
+            raise BudgetExceeded(cached["violations"])
+        return True
 
     @contextmanager
     def trace_request(

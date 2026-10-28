@@ -107,6 +107,7 @@ class EventOut(BaseModel):
     tokens_output: int
     cost: float
     cost_source: str | None = None
+    over_budget: bool = False
     duration_ms: int | None = None
     status: str
     workflow: str | None = None
@@ -121,10 +122,17 @@ class EventOut(BaseModel):
 class EventsIngestionResponse(BaseModel):
     received: int
     processed: int
+    # Always 0 since budgets stopped discarding incurred spend (kept for
+    # client compatibility; enforcement is GET /budgets/check before a call).
     rejected: int = 0
     # Events that failed to persist (server-side error). Non-zero means the
     # caller's data was NOT stored even though the request returned 200.
     errored: int = 0
+    # Stored events that arrived while a matching blocking budget was
+    # already exhausted (flagged over_budget).
+    over_budget: int = 0
+    budget_violations: list[str] = []
+    # Deprecated, always empty (see `rejected`).
     rejection_reasons: list[str] = []
 
 
@@ -258,6 +266,10 @@ BudgetAction = Literal[
 Threshold = Annotated[int, Field(gt=0, le=1000)]
 
 
+def _strip(v: str | None) -> str | None:
+    return v.strip() if isinstance(v, str) else v
+
+
 def _check_scope_ref(scope: str | None, scope_ref: str | None) -> None:
     if scope and scope != "global" and not (scope_ref or "").strip():
         raise ValueError(f"scope '{scope}' requires a non-empty scope_ref")
@@ -271,6 +283,12 @@ class BudgetCreate(BaseModel):
     limit_amount: float = Field(ge=0)
     alert_thresholds: list[Threshold] = [50, 75, 90, 100]
     control_action: BudgetAction = "alert"
+
+    @field_validator("scope_ref", "name", mode="before")
+    @classmethod
+    def _trim(cls, v: str | None) -> str | None:
+        # "OpenAI " would never match the provider "OpenAI".
+        return _strip(v)
 
     @model_validator(mode="after")
     def _scope_ref_required(self):
@@ -287,6 +305,11 @@ class BudgetUpdate(BaseModel):
     alert_thresholds: list[Threshold] | None = None
     control_action: BudgetAction | None = None
     is_active: bool | None = None
+
+    @field_validator("scope_ref", "name", mode="before")
+    @classmethod
+    def _trim(cls, v: str | None) -> str | None:
+        return _strip(v)
 
 
 class BudgetOut(BaseModel):
@@ -310,6 +333,22 @@ class BudgetOut(BaseModel):
         if isinstance(v, str):
             return json.loads(v)
         return v
+
+
+class BudgetViolation(BaseModel):
+    budget_id: int
+    name: str
+    scope: str
+    scope_ref: str | None = None
+    period: str
+    limit_amount: float
+    spent: float
+    message: str
+
+
+class BudgetCheckResponse(BaseModel):
+    allowed: bool
+    violations: list[BudgetViolation] = []
 
 
 class BudgetWithSpend(BudgetOut):

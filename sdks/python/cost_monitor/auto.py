@@ -18,6 +18,10 @@ def auto_instrument(
     default_agent: str = "auto",
     flush_interval: float = 5.0,
     inject_stream_usage: bool = True,
+    enforce_budgets: bool = False,
+    budget_fail_closed: bool = False,
+    budget_check_ttl: float = 10.0,
+    budget_check_timeout: float = 2.0,
 ) -> CostTracker:
     """Instrument all installed LLM libraries (OpenAI, Anthropic, LangChain).
 
@@ -30,6 +34,16 @@ def auto_instrument(
     is emitted. Set False if your endpoint rejects stream_options (some
     Azure OpenAI api-versions) — streaming usage then depends on the caller
     passing the option themselves.
+
+    enforce_budgets: when True, every patched OpenAI/Anthropic call first asks
+    the backend (GET /api/v1/budgets/check, cached for budget_check_ttl
+    seconds) whether a blocking budget matching ``default_agent`` is
+    exhausted, and raises :class:`cost_monitor.BudgetExceeded` before the
+    provider is contacted. Spend is always recorded either way. If CMA is
+    unreachable the call proceeds (fail-open) unless budget_fail_closed=True.
+    Calls made between checks can overshoot a limit by up to one TTL's worth
+    of spend. An uncached check blocks the calling thread for at most
+    budget_check_timeout seconds (async callers wait in a worker thread).
 
     LangChain note: this function registers a :class:`CMACallbackHandler` in
     LangChain's global callback manager when langchain_core (or langchain) is
@@ -49,9 +63,13 @@ def auto_instrument(
         api_key=api_key,
         default_agent=default_agent,
         flush_interval=flush_interval,
+        budget_check_ttl=budget_check_ttl,
+        budget_check_timeout=budget_check_timeout,
+        budget_fail_closed=budget_fail_closed,
     )
     _patching.set_active_tracker(_tracker)
     _patching.config["inject_stream_usage"] = inject_stream_usage
+    _patching.config["enforce_budgets"] = enforce_budgets
 
     # Patch OpenAI if installed
     try:

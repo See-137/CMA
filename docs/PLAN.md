@@ -54,20 +54,20 @@ are ones the answer could use (RAG-09); vector records are time-scoped (RAG-10);
 golden-question context test runs in CI (RAG-14).
 *Met: RAG-01..08. Open: RAG-09, RAG-10, RAG-14.*
 
-**S3 Budget semantics** — Blocked on D1, D2.
+**S3 Budget semantics** — D1 done (`feat/budget-enforcement`); D2 time zone open.
 Accept when: every budget action selectable in the UI has tested behaviour; incurred
 spend is always recorded; the guarantee (soft limit, timing, concurrency) is
 documented; period boundaries follow the chosen time zone and are labelled; one
 alert per threshold per period under concurrency (BUD-06).
 
-**S4 Instrumentation coverage and delivery** — ACC-08/09 blocked on D3; rest open.
+**S4 Instrumentation coverage and delivery** — Open (ACC-08/09 per D3).
 Accept when: every listed OpenAI/Anthropic surface (sync, async, stream, parse, raw)
 yields exactly one event with correct tokens; the SDK never changes what user code
 receives (SDK-02); partial streams keep their tokens; no double counting with
 LangChain; fork-safe; one bad event cannot drop others; exit flush works; duplicate
 sends are idempotent (ACC-10).
 
-**S5 Security hardening** — SEC-01 blocked on D4; rest open.
+**S5 Security hardening** — Open (SEC-01 per D4 proposal, pending confirmation).
 Accept when: credentials and inputs cannot produce 500s; SSRF guard pins resolved
 addresses and blocks non-global ranges; metadata and chat history are size-capped;
 no webhook secrets in logs/responses; proxy deployment rate limiting is per client.
@@ -95,24 +95,37 @@ Recorded design decisions (made during S1/S2):
 - **Budget validation accepts both historical action vocabularies** until D1 decides
   their meaning, so no existing client breaks.
 
-Open decisions (owner input needed — they change semantics, compatibility or schema):
+Owner decisions (2026-10-28):
 
-- **D1 Budget enforcement.** Ingestion-time rejection hides real spend (BUD-02), and
-  the UI's actions are not enforced (BUD-01). Options: (a) always record; enforce via
-  an opt-in SDK pre-call check that raises before the LLM call, with over-budget
-  events flagged; (b) keep ingestion rejection and map UI values to it;
-  (c) alert-only for now, remove block/throttle from the UI.
-- **D2 Time zone of periods.** (a) Use the deployment time zone from setup for budget
-  periods, dashboard days, rollup days and Scrooge windows (rollups recomputed once;
-  DST handled by `zoneinfo`); (b) keep UTC and label it everywhere, removing the
-  setup choice.
-- **D3 Cached-token accounting.** (a) New event fields for cache read/write (and
-  OpenAI cached input) plus per-model cache prices — exact, needs migration and UI;
-  (b) SDK folds cache tokens into billed-equivalent input tokens with fixed
-  multipliers (no schema change, loses detail, multipliers can drift).
-- **D4 Credentials.** (a) Separate revocable ingest keys; management writes (pricing,
-  budgets, channels) require admin — breaks scripts that write with the ingest key;
-  (b) keep one key, add rotation; (c) defer.
+- **D1 Budget enforcement → record + pre-call check** (owner choice). Spend is
+  always stored; events past an exhausted blocking budget are flagged
+  `over_budget`; `GET /budgets/check` and SDK `enforce_budgets=True` raise
+  `BudgetExceeded` before the provider is contacted. Soft limit: checks are
+  cached per TTL and not serialised across callers. Every action except
+  `alert` blocks; `throttle`/`rate_limit`/`model_downgrade` are legacy aliases.
+  *Implemented in `feat/budget-enforcement`.*
+- **D2 Time zone → deployment time zone** (owner delegated the choice). Why:
+  budgets are operator-facing ("daily" should reset at the operator's
+  midnight, not 02:00/03:00 local in UTC+2/+3), the setup wizard already asks
+  for a zone, and storage stays UTC so only boundaries change. Default stays
+  UTC, so unconfigured installs see no change. Cost: rollup keys and
+  dashboard/Scrooge buckets move to local days (rollups recomputed once from
+  raw events); archived days whose events are gone keep their UTC keys —
+  documented, not migrated. Rejected alternative (UTC everywhere, labelled)
+  is simpler but leaves the setup choice meaningless and "today" wrong for
+  every non-UTC operator.
+- **D3 Cached tokens → exact fields + per-model cache prices** (owner choice).
+- **D4 Credentials → proposal (owner asked for the best option)**: split
+  credentials *with a compatibility window* rather than a breaking cut-over.
+  (1) Add hashed, named, revocable **ingest keys** (several; only
+  `POST /events` and `GET /budgets/check`). (2) Management reads/writes
+  (pricing, budgets, channels, events, chat) use an **admin session token**
+  issued at login (short-lived, revocable) instead of returning the master
+  key. (3) The existing master key keeps working for everything during a
+  deprecation window, with a UI banner and a log warning on management use;
+  after the window it becomes an ingest-only key. (4) Rotation for every key.
+  This closes the "one leaked SDK key edits pricing" hole without breaking
+  existing SDK deployments or scripts on upgrade day. To confirm before S5.
 
 ## Progress log
 
@@ -126,3 +139,14 @@ Open decisions (owner input needed — they change semantics, compatibility or s
 - 2026-10-28 — Independent review of PR #22: REQUEST CHANGES (1 blocker,
   5 majors, minors). All fixed on the branch with tests (backend 134 → 153);
   details in FINDINGS REV-22.
+- 2026-10-28 — Owner decisions D1–D4 recorded. PR `feat/budget-enforcement`
+  (stacked on #22): D1 implemented — record-and-flag ingestion (migration
+  004), `GET /budgets/check`, SDK `enforce_budgets` / `BudgetExceeded`,
+  UI budget actions and event badges. Backend tests 134 → 141; SDK 14 → 22.
+- 2026-10-28 — PR #22 merged (squash `106654f`) after independent review,
+  fixes, focused re-review (approve with follow-ups) and green CI. PR #23
+  ported onto master; it also carries the re-review follow-ups and
+  provider/model scopes in the pre-call check. Backend tests → 174; SDK 26.
+- 2026-10-28 — Independent re-review of PR #23: REQUEST CHANGES (multi-batch
+  reprice left partial rollups; four minors). Fixed with regression tests
+  (FINDINGS REV-23). Backend tests → 181.
