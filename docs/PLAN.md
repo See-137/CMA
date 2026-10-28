@@ -54,7 +54,7 @@ are ones the answer could use (RAG-09); vector records are time-scoped (RAG-10);
 golden-question context test runs in CI (RAG-14).
 *Met: RAG-01..08. Open: RAG-09, RAG-10, RAG-14.*
 
-**S3 Budget semantics** — D1 done (#23); D2 time zone done (`feat/deployment-timezone`); BUD-06 open.
+**S3 Budget semantics** — D1 done (#23); D2 time zone done (`feat/deployment-timezone`); BUD-06 done (`feat/alert-dedup`); BUD-05 docs open.
 Accept when: every budget action selectable in the UI has tested behaviour; incurred
 spend is always recorded; the guarantee (soft limit, timing, concurrency) is
 documented; period boundaries follow the chosen time zone and are labelled; one
@@ -178,3 +178,14 @@ Owner decisions (2026-10-28):
   select most zones; 500 on directory names; Cairo midnight-gap days; Postgres
   bucketing untested in CI). All addressed (FINDINGS REV-25); Postgres service
   added to CI backend-test. Backend tests → 210.
+- 2026-10-28 — BUD-06 (`feat/alert-dedup`, stacked on D2): threshold alerts
+  keyed by (budget, threshold, period start), migration 005; verified with 8
+  racing workers on Postgres. Backend tests → 214.
+- 2026-10-28 — Independent review of #26: REQUEST CHANGES (on SQLite the
+  per-alert savepoint committed early and left the database locked: alerts
+  stored but never sent). Now one commit per alert, dispatched after commit;
+  SQLite 8-thread race test added. Backend tests → 215.
+- 2026-10-28 — Second review of #26: APPROVE WITH FOLLOW-UPS; done (rollback
+  after a failed dispatch, tests for re-raise and per-commit dispatch). It also
+  showed OPS-07 is an accounting risk on SQLite (partial batches + SDK retry
+  double-count) — raised to P2, next PR. Backend tests → 217.

@@ -474,3 +474,271 @@ def test_blank_budget_name_is_rejected(authed_client):
         json={"name": "   ", "scope": "global", "period": "daily", "limit_amount": 1},
     )
     assert resp.status_code == 422
+
+
+# -- BUD-06: one alert per budget, threshold and period ----------------------
+
+
+def _alert_budget(db, thresholds="[50, 100]"):
+    from app.models.models import Budget
+
+    b = Budget(
+        name="cap",
+        scope="global",
+        period="daily",
+        limit_amount=1.0,
+        alert_thresholds=thresholds,
+    )
+    db.add(b)
+    db.commit()
+    return b
+
+
+def _spend_now(db, cost):
+    from app.models.models import CostEvent
+    from app.timeutils import utcnow
+
+    db.add(
+        CostEvent(
+            agent_name="a",
+            model_name="m",
+            provider_name="p",
+            tokens_input=0,
+            tokens_output=0,
+            cost=cost,
+            timestamp=utcnow(),
+        )
+    )
+    db.commit()
+
+
+def test_racing_budget_checks_raise_each_alert_once(authed_client, monkeypatch):
+    """Two workers that both saw 'no alert yet' must not both insert one."""
+    from app.models.models import Alert
+    from app.services import budget_checker
+    from tests.conftest import TestSession
+
+    db = TestSession()
+    try:
+        _alert_budget(db)
+        _spend_now(db, 2.0)
+        monkeypatch.setattr(budget_checker, "_alerted_thresholds", lambda *a: set())
+        first = budget_checker.check_budgets(db)
+        second = budget_checker.check_budgets(db)
+        assert sorted(a.threshold for a in first) == [50, 100]
+        assert second == []
+        assert db.query(Alert).count() == 2
+    finally:
+        db.close()
+
+
+def test_legacy_alert_rows_still_deduplicate(authed_client):
+    from app.models.models import Alert
+    from app.services.budget_checker import check_budgets
+    from tests.conftest import TestSession
+
+    db = TestSession()
+    try:
+        b = _alert_budget(db, "[100]")
+        _spend_now(db, 2.0)
+        db.add(
+            Alert(
+                budget_id=b.id,
+                alert_type="budget_exceeded",
+                message="old (threshold: 100%)",
+                severity="critical",
+            )
+        )
+        db.commit()
+        assert check_budgets(db) == []
+    finally:
+        db.close()
+
+
+def test_next_period_alerts_again(authed_client, monkeypatch):
+    from datetime import timedelta
+
+    from app import timeutils
+    from app.models.models import Alert
+    from app.services.budget_checker import check_budgets
+    from tests.conftest import TestSession
+
+    db = TestSession()
+    try:
+        _alert_budget(db, "[100]")
+        _spend_now(db, 2.0)
+        assert len(check_budgets(db)) == 1
+        later = timeutils.utcnow() + timedelta(days=1)
+        monkeypatch.setattr(timeutils, "utcnow", lambda: later)
+        from app.models.models import CostEvent
+
+        db.add(
+            CostEvent(
+                agent_name="a",
+                model_name="m",
+                provider_name="p",
+                tokens_input=0,
+                tokens_output=0,
+                cost=2.0,
+                timestamp=later,
+            )
+        )
+        db.commit()
+        assert len(check_budgets(db)) == 1
+        assert db.query(Alert).count() == 2
+    finally:
+        db.close()
+
+
+def test_concurrent_checks_on_sqlite_store_and_send_each_alert_once(
+    tmp_path, monkeypatch
+):
+    """Review of #26: with per-alert savepoints, pysqlite committed early and
+    left the database locked, so racing workers stored alerts that were never
+    dispatched. Eight threads on a file database, all past the dedup read
+    before any inserts: every alert is stored once and sent once."""
+    import threading
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.database import Base
+    from app.models.models import Alert, Budget, CostEvent
+    from app.services import alert_service, budget_checker
+    from app.timeutils import utcnow
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'race.db'}", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    with Session() as db:
+        for name in ("a", "b"):
+            db.add(
+                Budget(
+                    name=name,
+                    scope="global",
+                    period="daily",
+                    limit_amount=1.0,
+                    alert_thresholds="[50, 75, 90, 100]",
+                    is_active=True,
+                )
+            )
+        db.add(
+            CostEvent(
+                agent_name="x",
+                model_name="m",
+                provider_name="p",
+                tokens_input=0,
+                tokens_output=0,
+                cost=5.0,
+                timestamp=utcnow(),
+            )
+        )
+        db.commit()
+
+    sent, errors, lock = [], [], threading.Lock()
+    workers = 8
+    barrier = threading.Barrier(workers)
+    real_read = budget_checker._alerted_thresholds
+
+    def racing_read(*args):
+        result = real_read(*args)
+        barrier.wait(timeout=10)  # everyone has read "nothing alerted yet"
+        return result
+
+    def record_send(alert, db):
+        with lock:
+            sent.append(alert.id)
+
+    monkeypatch.setattr(budget_checker, "_alerted_thresholds", racing_read)
+    monkeypatch.setattr(alert_service, "dispatch_alert", record_send)
+
+    def worker():
+        try:
+            with Session() as db:
+                budget_checker.check_budgets(db)
+        except Exception as exc:  # noqa: BLE001 - collected for the assertion
+            errors.append(repr(exc))
+
+    threads = [threading.Thread(target=worker) for _ in range(workers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(30)
+
+    assert errors == []
+    with Session() as db:
+        stored = sorted(a.id for a in db.query(Alert).all())
+    assert len(stored) == 8  # 2 budgets x 4 thresholds
+    assert sorted(sent) == stored  # each stored alert sent exactly once
+    engine.dispose()
+
+
+def test_only_the_dedup_key_counts_as_a_duplicate(authed_client, monkeypatch):
+    """Any other integrity error is a bug and must surface, not be skipped."""
+    import pytest
+    from sqlalchemy.exc import IntegrityError
+
+    from app.services import budget_checker
+    from tests.conftest import TestSession
+
+    assert budget_checker._is_duplicate_alert(
+        IntegrityError(
+            "INSERT",
+            {},
+            Exception(
+                "UNIQUE constraint failed: alerts.budget_id, alerts.threshold, alerts.period_start"
+            ),
+        )
+    )
+    assert budget_checker._is_duplicate_alert(
+        IntegrityError(
+            "INSERT",
+            {},
+            Exception(
+                'duplicate key value violates unique constraint "uq_alerts_budget_threshold_period"'
+            ),
+        )
+    )
+    assert not budget_checker._is_duplicate_alert(
+        IntegrityError(
+            "INSERT", {}, Exception("NOT NULL constraint failed: alerts.alert_type")
+        )
+    )
+
+    db = TestSession()
+    try:
+        _alert_budget(db, "[100]")
+        _spend_now(db, 2.0)
+        assert len(budget_checker.check_budgets(db)) == 1
+        monkeypatch.setattr(budget_checker, "_alerted_thresholds", lambda *a: set())
+        monkeypatch.setattr(budget_checker, "_is_duplicate_alert", lambda exc: False)
+        with pytest.raises(IntegrityError):
+            budget_checker.check_budgets(db)
+    finally:
+        db.close()
+
+
+def test_each_alert_is_sent_right_after_its_own_commit(authed_client, monkeypatch):
+    """A later failure must not strand an earlier alert stored but unsent."""
+    from app.models.models import Alert
+    from app.services import alert_service, budget_checker
+    from tests.conftest import TestSession
+
+    stored_at_send = []
+
+    def send(alert, db):
+        with TestSession() as other:
+            stored_at_send.append(other.query(Alert).count())
+        raise RuntimeError("webhook down")  # must not stop later alerts
+
+    monkeypatch.setattr(alert_service, "dispatch_alert", send)
+    db = TestSession()
+    try:
+        _alert_budget(db, "[50, 100]")
+        _spend_now(db, 2.0)
+        assert len(budget_checker.check_budgets(db)) == 2
+    finally:
+        db.close()
+    assert stored_at_send == [1, 2]

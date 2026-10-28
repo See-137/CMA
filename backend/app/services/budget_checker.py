@@ -1,9 +1,11 @@
 import json
 import logging
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.models import Alert, Budget, CostEvent
@@ -58,22 +60,37 @@ def _current_spend(
     return float(result) if result else 0.0
 
 
-def _alert_exists_for_period(
-    budget_id: int, threshold: int, period_start: datetime, db: Session
-) -> bool:
-    """Check if an alert for this budget+threshold already exists in this period."""
-    return (
-        db.query(Alert)
+_LEGACY_THRESHOLD_RE = re.compile(r"\(threshold: (\d+)%\)")
+
+
+def _alerted_thresholds(
+    budget_id: int, period_start: datetime, db: Session
+) -> set[int]:
+    """Thresholds already alerted for this budget in this period.
+
+    Alerts carry (threshold, period_start) since migration 005; older rows
+    have NULLs and are matched by their message marker and creation time.
+    """
+    done: set[int] = set()
+    rows = (
+        db.query(Alert.threshold, Alert.period_start, Alert.message)
         .filter(
             Alert.budget_id == budget_id,
-            Alert.created_at >= period_start,
-            # Match the unambiguous marker emitted in the message, not a bare
-            # "{n}%" substring which collides across thresholds.
-            Alert.message.contains(f"(threshold: {threshold}%)"),
+            or_(
+                Alert.period_start == period_start,
+                and_(Alert.period_start.is_(None), Alert.created_at >= period_start),
+            ),
         )
-        .first()
-        is not None
+        .all()
     )
+    for threshold, start, message in rows:
+        if start is not None and threshold is not None:
+            done.add(threshold)
+        elif start is None:
+            match = _LEGACY_THRESHOLD_RE.search(message or "")
+            if match:
+                done.add(int(match.group(1)))
+    return done
 
 
 def _scope_matches(
@@ -232,9 +249,42 @@ def precall_check(
     return violations
 
 
+def _is_duplicate_alert(exc: IntegrityError) -> bool:
+    """True only for the threshold-alert unique key (Postgres names the
+    constraint; SQLite names its columns)."""
+    text = str(getattr(exc, "orig", exc))
+    return "uq_alerts_budget_threshold_period" in text or (
+        "UNIQUE constraint failed" in text and "alerts.threshold" in text
+    )
+
+
+def _dispatch(alert: Alert, db: Session) -> None:
+    try:
+        from app.services.alert_service import dispatch_alert
+
+        dispatch_alert(alert, db)
+    except Exception:
+        logger.exception("Failed to dispatch alert %s", alert.id)
+        # The alert is already committed; clear any failed transaction so a
+        # database error here cannot stop the remaining budgets (Postgres
+        # refuses further statements in an aborted transaction).
+        db.rollback()
+
+
 def check_budgets(db: Session) -> list[Alert]:
-    """Evaluate all active budgets and create alerts for threshold breaches."""
-    budgets = db.query(Budget).filter(Budget.is_active.is_(True)).all()
+    """Evaluate all active budgets and create alerts for threshold breaches.
+
+    Each alert is committed on its own and dispatched right after its commit,
+    so concurrent runs (one per ingestion request) neither duplicate an alert
+    (unique key, BUD-06) nor leave one stored but never sent. Budgets are
+    visited in id order so concurrent runs take row locks in the same order.
+
+    The returned alerts are expired by later commits: read them while the
+    session is open (the background caller ignores them).
+    """
+    budgets = (
+        db.query(Budget).filter(Budget.is_active.is_(True)).order_by(Budget.id).all()
+    )
     new_alerts: list[Alert] = []
     tz = deployment_tz(db)
 
@@ -251,9 +301,10 @@ def check_budgets(db: Session) -> list[Alert]:
         except (json.JSONDecodeError, TypeError):
             thresholds = [50, 75, 90, 100]
 
+        already = _alerted_thresholds(budget.id, period_start, db)
         for threshold in sorted(thresholds):
             if percentage >= threshold:
-                if _alert_exists_for_period(budget.id, threshold, period_start, db):
+                if threshold in already:
                     continue
 
                 severity = "info"
@@ -278,19 +329,28 @@ def check_budgets(db: Session) -> list[Alert]:
                     alert_type=alert_type,
                     message=message,
                     severity=severity,
+                    threshold=threshold,
+                    period_start=period_start,
                 )
+                # Commit per alert (no savepoint: under pysqlite a SAVEPOINT
+                # opened outside a transaction commits on RELEASE and a
+                # ROLLBACK TO leaves the database locked). Another worker may
+                # have inserted the same alert first: the unique key rejects
+                # ours and it is skipped.
                 db.add(alert)
+                try:
+                    db.commit()
+                except IntegrityError as exc:
+                    db.rollback()
+                    if _is_duplicate_alert(exc):
+                        logger.debug(
+                            "Alert for budget %s at %s%% already raised by another worker",
+                            budget.id,
+                            threshold,
+                        )
+                        continue
+                    raise
                 new_alerts.append(alert)
-
-    if new_alerts:
-        db.commit()
-        for alert in new_alerts:
-            db.refresh(alert)
-            try:
-                from app.services.alert_service import dispatch_alert
-
-                dispatch_alert(alert, db)
-            except Exception:
-                logger.exception("Failed to dispatch alert %s", alert.id)
+                _dispatch(alert, db)
 
     return new_alerts
