@@ -252,25 +252,31 @@ def _unpack_chroma_results(results: dict) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+_EMBED_CHUNK = 500  # well under Chroma's max batch (5461 in 1.5.x)
+
+
 def embed_and_upsert_events(db: Session, event_ids: list[int]) -> int:
-    """Embed a batch of CostEvent rows by ID. Returns count embedded."""
+    """Embed CostEvent rows by ID, in chunks (a single upsert above Chroma's
+    max batch size is rejected outright — e.g. re-embedding after a large
+    reprice). Returns count embedded."""
     from app.models.models import CostEvent
 
-    events = db.query(CostEvent).filter(CostEvent.id.in_(event_ids)).all()
-    if not events:
-        return 0
-
-    texts = [_event_to_text(e) for e in events]
-    embeddings = embed_texts(texts)
-
     col = get_events_collection()
-    col.upsert(
-        ids=[str(e.id) for e in events],
-        documents=texts,
-        embeddings=embeddings,
-        metadatas=[_event_metadata(e) for e in events],
-    )
-    return len(events)
+    total = 0
+    for i in range(0, len(event_ids), _EMBED_CHUNK):
+        chunk = event_ids[i : i + _EMBED_CHUNK]
+        events = db.query(CostEvent).filter(CostEvent.id.in_(chunk)).all()
+        if not events:
+            continue
+        texts = [_event_to_text(e) for e in events]
+        col.upsert(
+            ids=[str(e.id) for e in events],
+            documents=texts,
+            embeddings=embed_texts(texts),
+            metadatas=[_event_metadata(e) for e in events],
+        )
+        total += len(events)
+    return total
 
 
 def backfill_event_embeddings(db: Session, batch_size: int = 500) -> int:

@@ -232,3 +232,36 @@ def test_full_reset_restores_default_pricing(authed_client, db):
     db.expire_all()
     assert db.query(Provider).count() > 0
     assert calculate_cost("openai", "gpt-4o", 1_000_000, 0, db) == 2.5
+
+
+def test_reembedding_is_chunked(monkeypatch, db):
+    """Review M5: one upsert per call failed above Chroma's batch limit."""
+    from app.models.models import CostEvent
+    from app.services import vector_store
+    from app.timeutils import utcnow
+
+    for _ in range(1200):
+        db.add(
+            CostEvent(
+                agent_name="a",
+                model_name="m",
+                provider_name="p",
+                tokens_input=1,
+                tokens_output=1,
+                cost=0.0,
+                timestamp=utcnow(),
+            )
+        )
+    db.commit()
+    ids = [e.id for e in db.query(CostEvent.id)]
+
+    batches = []
+
+    class FakeCol:
+        def upsert(self, ids, **kwargs):
+            batches.append(len(ids))
+
+    monkeypatch.setattr(vector_store, "get_events_collection", lambda: FakeCol())
+    monkeypatch.setattr(vector_store, "embed_texts", lambda texts: [[0.0]] * len(texts))
+    assert vector_store.embed_and_upsert_events(db, ids) == 1200
+    assert max(batches) <= 500 and sum(batches) == 1200

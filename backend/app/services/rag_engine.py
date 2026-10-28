@@ -1,5 +1,6 @@
 """Hybrid RAG retrieval engine — vector search + intent-based SQL queries."""
 
+import dataclasses
 import logging
 import re
 from dataclasses import dataclass, field
@@ -65,8 +66,9 @@ class QueryIntent:
 
 
 _AGG_PATTERNS = re.compile(
-    r"\b(total|sum|how much|spend|spent|cost|expensive|cheapest|average|avg"
-    r"|latest|overview|summary|breakdown|report|usage)\b",
+    r"\b(total|sum|how much|spend(s|ing)?|spent|costs?|costly|expensive|cheapest"
+    r"|average|avg|latest|overview|summary|breakdown|report|usage|money|bill"
+    r"|burn(s|ing|ed)?|most|top|biggest|largest|price[sy]?|budgets?)\b",
     re.IGNORECASE,
 )
 _CMP_PATTERNS = re.compile(
@@ -74,11 +76,13 @@ _CMP_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 _TIME_PATTERNS = re.compile(
-    r"\b(trend|over time|spike|spik|increase|decrease|change|when did|timeline|history)\b",
+    r"\b(trends?|over time|spiked?|spikes|spiking|increased?|decreased?|changed?"
+    r"|when did|timeline|history|recently)\b",
     re.IGNORECASE,
 )
 _FAIL_PATTERNS = re.compile(
-    r"\b(fail|failed|failure|error|broken|timeout|timed out|issue|problem)\b",
+    r"\b(fail(s|ed|ing|ures?)?|errors?|broke|broken|timeouts?|timed out|issues?"
+    r"|problems?|incomplete)\b",
     re.IGNORECASE,
 )
 
@@ -134,13 +138,22 @@ _DAYS = {
 }
 
 
-# Words that signal the user named a time period. If one is present but no
-# window was parsed, the answer must say the period wasn't understood.
+# Phrases that name a time period this parser does not handle. When one is
+# present and no window was parsed, the answer must say the period wasn't
+# understood instead of presenting all-time numbers. Each pattern needs a
+# time noun, so ordinary words ("from OpenAI", "may be cheaper", "past the
+# limit") do not trigger it.
+_MONTHS = r"(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)"
 _TIME_HINT_RE = re.compile(
-    r"\b(january|february|march|april|may|june|july|august|september|october"
-    r"|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec"
-    r"|q[1-4]|quarter|year|weekend|since|between|from|until|ago|past"
-    r"|20\d\d)\b",
+    r"\b(?:in|during|since|from|for|before|after|until|through)\s+" + _MONTHS + r"\b"
+    r"|\b" + _MONTHS + r"\s+(?:\d{1,2}(?:st|nd|rd|th)?|(?:19|20)\d\d)\b"
+    r"|\b(?:january|february|march|april|june|july|august|september|october"
+    r"|november|december)\b"
+    r"|\bq[1-4]\b|\b(?:19|20)\d\d\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}/\d{1,2}\b"
+    r"|\b(?:this|last|past|previous|next)\s+(?:year|quarter|weekend|fortnight)\b"
+    r"|\b(?:past|previous|over the)\s+\d+\s+(?:hour|day|week|month|year)s?\b"
+    r"|\b\d+\s+(?:hour|day|week|month|year)s?\s+ago\b"
+    r"|\bsince\s+(?:yesterday|last\b|the\b|\d)",
     re.IGNORECASE,
 )
 
@@ -190,10 +203,19 @@ def _find_windows(q_lower: str) -> list[tuple[int, str, tuple[datetime, datetime
             target = (now - timedelta(days=days_back)).replace(
                 hour=0, minute=0, second=0, microsecond=0
             )
-            found.append(
-                (m.start(), f"last {day_name}", (target, target + timedelta(days=1)))
-            )
-            taken.append(m.span())
+            since = re.search(r"\bsince\s+$", q_lower[: m.start()])
+            if since:  # "since monday" = from that day until now
+                found.append((since.start(), f"since {day_name}", (target, now)))
+                taken.append((since.start(), m.end()))
+            else:
+                found.append(
+                    (
+                        m.start(),
+                        f"last {day_name}",
+                        (target, target + timedelta(days=1)),
+                    )
+                )
+                taken.append(m.span())
 
     found.sort(key=lambda f: f[0])
     return found
@@ -395,7 +417,9 @@ def _run_comparison_query(intent: QueryIntent, db: Session) -> list[dict]:
         func.sum(CostEvent.tokens_output).label("tokens_out"),
         func.count(CostEvent.id).label("requests"),
     )
-    query = _filtered(query, intent)
+    # Comparisons are ACROSS models: naming a model ("GPT-4 vs Claude") must
+    # not filter the comparison down to that model alone.
+    query = _filtered(query, dataclasses.replace(intent, models=[]))
 
     rows = query.group_by(CostEvent.model_name, CostEvent.provider_name).all()
 

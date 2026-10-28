@@ -180,3 +180,60 @@ def test_chat_endpoint_survives_vector_failure(authed_client, monkeypatch):
     monkeypatch.setattr(chat_api, "get_llm_provider", lambda: _Provider())
     resp = authed_client.post("/api/v1/chat", json={"message": "total spend today"})
     assert resp.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Show me costs from OpenAI",
+        "Which model may be cheaper?",
+        "What is the cost breakdown from each provider?",
+        "total spend past the limit?",
+    ],
+)
+def test_ordinary_words_are_not_mistaken_for_time_periods(db, question):
+    """Review M3: 'from', 'may', 'past' alone must not flag the question."""
+    assert rag.detect_query_intent(question, db).unparsed_time is False
+
+
+def test_since_weekday_runs_until_now(db):
+    intent = rag.detect_query_intent("total spend since monday", db)
+    start, end = intent.time_range
+    assert intent.time_label == "since monday"
+    assert end - start >= timedelta(days=1) or start.weekday() == 0
+
+
+def _starters():
+    import pathlib
+    import re
+
+    tsx = (
+        pathlib.Path(__file__).resolve().parents[2] / "frontend/src/pages/Chat.tsx"
+    ).read_text()
+    block = tsx[tsx.index("starterQuestions") :].split("];", 1)[0]
+    return [m.replace("\\'", "'") for m in re.findall(r"text: [\"'](.+?)[\"'],", block)]
+
+
+def test_ui_starter_questions_are_grounded(db):
+    """Every shipped starter question gets real SQL data and is never told
+    its (non-existent) time period wasn't understood."""
+    _add(db, "a", 2.0, model="gpt-4", provider="OpenAI")
+    _add(db, "b", 3.0, model="claude-sonnet-4-6", provider="Anthropic")
+    starters = _starters()
+    assert len(starters) >= 4
+    for question in starters:
+        ctx = rag.retrieve(question, db)
+        assert ctx.sql_results, question
+        assert not any("NOT understood" in line for line in ctx.scope), question
+
+
+def test_model_comparison_keeps_every_model(db):
+    """Review M4: 'GPT-4 vs Claude' matched model gpt-4 and filtered the
+    comparison down to it, hiding real Claude spend."""
+    _add(db, "a", 2.0, model="gpt-4", provider="OpenAI")
+    _add(db, "b", 3.0, model="claude-sonnet-4-6", provider="Anthropic")
+    ctx = rag.retrieve("GPT-4 vs Claude — who's robbing me blind?", db)
+    current = {
+        r["model_name"] for r in ctx.sql_results if r["type"] == "comparison_current"
+    }
+    assert current == {"gpt-4", "claude-sonnet-4-6"}
