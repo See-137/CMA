@@ -43,8 +43,25 @@ def test_list_budgets_with_spend(authed_client):
     assert budgets[0]["current_spend"] >= 0
 
 
-def test_budget_enforcement_stop(authed_client):
-    # Create a very low budget with stop action
+def _spend(client, cost=1.0, agent="bot", **extra):
+    return client.post(
+        "/api/v1/events",
+        json={
+            "agent_name": agent,
+            "model": "gpt-4o",
+            "provider": "OpenAI",
+            "tokens_input": 1000,
+            "tokens_output": 500,
+            "cost": cost,
+            **extra,
+        },
+    ).json()
+
+
+@pytest.mark.parametrize("action", ["block", "stop", "throttle"])
+def test_exhausted_blocking_budget_records_and_flags_spend(authed_client, action):
+    """Incurred spend is never discarded (it used to be rejected for 'stop',
+    and 'block'/'throttle' from the UI did nothing at all)."""
     authed_client.post(
         "/api/v1/budgets",
         json={
@@ -52,37 +69,91 @@ def test_budget_enforcement_stop(authed_client):
             "scope": "global",
             "period": "daily",
             "limit_amount": 0.001,
-            "control_action": "stop",
+            "control_action": action,
         },
     )
-    # First event should process (spend starts at 0)
-    resp1 = authed_client.post(
-        "/api/v1/events",
-        json={
-            "agent_name": "bot",
-            "model": "gpt-4o",
-            "provider": "OpenAI",
-            "tokens_input": 1000,
-            "tokens_output": 500,
-            "cost": 1.00,
-        },
-    )
-    assert resp1.json()["processed"] == 1
+    first = _spend(authed_client)
+    assert first["processed"] == 1 and first["over_budget"] == 0
 
-    # Second event should be rejected (budget exceeded)
-    resp2 = authed_client.post(
-        "/api/v1/events",
+    second = _spend(authed_client)
+    assert second["processed"] == 1
+    assert second["rejected"] == 0
+    assert second["over_budget"] == 1
+    assert "Tiny Budget" in second["budget_violations"][0]
+
+    items = authed_client.get("/api/v1/events").json()["items"]
+    assert sorted(i["over_budget"] for i in items) == [False, True]
+    budget = authed_client.get("/api/v1/budgets").json()[0]
+    assert budget["current_spend"] == pytest.approx(2.0)  # both calls counted
+
+
+@pytest.mark.parametrize("action", ["block", "stop", "throttle"])
+def test_precall_check_blocks_once_exhausted(authed_client, action):
+    authed_client.post(
+        "/api/v1/budgets",
         json={
-            "agent_name": "bot",
-            "model": "gpt-4o",
-            "provider": "OpenAI",
-            "tokens_input": 1000,
-            "tokens_output": 500,
-            "cost": 1.00,
+            "name": "cap",
+            "scope": "global",
+            "period": "daily",
+            "limit_amount": 1.5,
+            "control_action": action,
         },
     )
-    assert resp2.json()["rejected"] == 1
-    assert len(resp2.json()["rejection_reasons"]) > 0
+    assert authed_client.get("/api/v1/budgets/check").json()["allowed"] is True
+    _spend(authed_client, cost=1.0)
+    assert authed_client.get("/api/v1/budgets/check").json()["allowed"] is True
+    _spend(authed_client, cost=1.0)
+    body = authed_client.get("/api/v1/budgets/check").json()
+    assert body["allowed"] is False
+    assert body["violations"][0]["name"] == "cap"
+    assert body["violations"][0]["spent"] == pytest.approx(2.0)
+
+
+def test_precall_check_respects_scope(authed_client):
+    authed_client.post(
+        "/api/v1/budgets",
+        json={
+            "name": "research cap",
+            "scope": "agent",
+            "scope_ref": "research",
+            "period": "daily",
+            "limit_amount": 1.0,
+            "control_action": "block",
+        },
+    )
+    _spend(authed_client, cost=5.0, agent="research")
+    check = authed_client.get
+
+    assert (
+        check("/api/v1/budgets/check", params={"agent_name": "research"}).json()[
+            "allowed"
+        ]
+        is False
+    )
+    assert (
+        check("/api/v1/budgets/check", params={"agent_name": "writer"}).json()[
+            "allowed"
+        ]
+        is True
+    )
+    # No attribution supplied: an agent-scoped budget cannot apply.
+    assert check("/api/v1/budgets/check").json()["allowed"] is True
+
+
+def test_alert_only_budget_never_blocks(authed_client):
+    authed_client.post(
+        "/api/v1/budgets",
+        json={
+            "name": "watch",
+            "scope": "global",
+            "period": "daily",
+            "limit_amount": 0.001,
+            "control_action": "alert",
+        },
+    )
+    _spend(authed_client)
+    assert _spend(authed_client)["over_budget"] == 0
+    assert authed_client.get("/api/v1/budgets/check").json()["allowed"] is True
 
 
 def test_budget_alert_only_does_not_block(authed_client):
@@ -121,6 +192,7 @@ def test_budget_alert_only_does_not_block(authed_client):
     )
     assert resp.json()["processed"] == 1
     assert resp.json()["rejected"] == 0
+    assert resp.json()["over_budget"] == 0
 
 
 @pytest.mark.parametrize(
@@ -243,3 +315,154 @@ def test_provider_and_model_scoped_budgets_count_matching_spend(
     )
     spend = authed_client.get("/api/v1/budgets").json()[0]["current_spend"]
     assert spend == (3.0 if matches else 0.0)
+
+
+def _cap(client, limit=1.0, action="block", **extra):
+    body = {
+        "name": "cap",
+        "scope": "global",
+        "period": "daily",
+        "limit_amount": limit,
+        "control_action": action,
+        **extra,
+    }
+    assert client.post("/api/v1/budgets", json=body).status_code == 201
+
+
+def test_backdated_event_is_not_flagged_against_todays_budget(authed_client):
+    """A replayed event from an earlier period never saw today's exhausted
+    budget; flagging it would contradict /budgets/check."""
+    from datetime import timedelta
+
+    from app.timeutils import utcnow
+
+    _cap(authed_client)
+    _spend(authed_client, cost=5.0)  # today: exhausted
+    old = (utcnow() - timedelta(days=3)).isoformat() + "Z"
+    assert _spend(authed_client, cost=1.0, timestamp=old)["over_budget"] == 0
+    assert _spend(authed_client, cost=1.0)["over_budget"] == 1
+
+
+def test_backdated_cost_does_not_exhaust_todays_budget_within_a_batch(
+    authed_client,
+):
+    from datetime import timedelta
+
+    from app.timeutils import utcnow
+
+    _cap(authed_client)
+    old = (utcnow() - timedelta(days=3)).isoformat() + "Z"
+    base = {"agent_name": "bot", "model": "gpt-4o", "provider": "OpenAI"}
+    batch = [
+        {**base, "tokens_input": 1, "tokens_output": 1, "cost": 5.0, "timestamp": old},
+        {**base, "tokens_input": 1, "tokens_output": 1, "cost": 0.1},
+    ]
+    data = authed_client.post("/api/v1/events", json=batch).json()
+    assert data["processed"] == 2 and data["over_budget"] == 0
+    assert authed_client.get("/api/v1/budgets/check").json()["allowed"] is True
+
+
+def test_event_that_fails_to_store_does_not_count_toward_the_batch(
+    authed_client, monkeypatch
+):
+    import app.api.events as events_api
+
+    real = events_api._process_event
+
+    def flaky(event, db, cost, cost_source=None):
+        if cost >= 5.0:
+            raise RuntimeError("storage failed")
+        return real(event, db, cost, cost_source)
+
+    monkeypatch.setattr(events_api, "_process_event", flaky)
+    _cap(authed_client)
+    base = {"agent_name": "bot", "model": "gpt-4o", "provider": "OpenAI"}
+    batch = [
+        {**base, "tokens_input": 1, "tokens_output": 1, "cost": 5.0},
+        {**base, "tokens_input": 1, "tokens_output": 1, "cost": 0.1},
+    ]
+    data = authed_client.post("/api/v1/events", json=batch).json()
+    assert data["errored"] == 1 and data["processed"] == 1
+    assert data["over_budget"] == 0
+    assert data["budget_violations"] == []
+
+
+def test_legacy_scoped_budget_without_ref_is_consistent(authed_client):
+    """Rows created before validation (scope='agent', scope_ref NULL) count
+    global spend; ingestion and the pre-call check must agree on them."""
+    from app.models.models import Budget
+    from tests.conftest import TestSession
+
+    db = TestSession()
+    db.add(
+        Budget(
+            name="legacy",
+            scope="agent",
+            scope_ref=None,
+            period="daily",
+            limit_amount=1.0,
+            control_action="stop",
+        )
+    )
+    db.commit()
+    db.close()
+    _spend(authed_client, cost=2.0, agent="anyone")
+    flagged = _spend(authed_client, cost=1.0, agent="anyone")["over_budget"] == 1
+    blocked = (
+        authed_client.get(
+            "/api/v1/budgets/check", params={"agent_name": "anyone"}
+        ).json()["allowed"]
+        is False
+    )
+    assert flagged and blocked
+
+
+def test_budget_stops_blocking_when_raised(authed_client):
+    _cap(authed_client, limit=1.0)
+    _spend(authed_client, cost=2.0)
+    assert authed_client.get("/api/v1/budgets/check").json()["allowed"] is False
+    bid = authed_client.get("/api/v1/budgets").json()[0]["id"]
+    authed_client.put(f"/api/v1/budgets/{bid}", json={"limit_amount": 10.0})
+    assert authed_client.get("/api/v1/budgets/check").json()["allowed"] is True
+
+
+def test_precall_check_matches_model_and_provider_scopes(authed_client):
+    authed_client.post(
+        "/api/v1/budgets",
+        json={
+            "name": "gpt-4o cap",
+            "scope": "model",
+            "scope_ref": "gpt-4o",
+            "period": "daily",
+            "limit_amount": 1.0,
+            "control_action": "block",
+        },
+    )
+    _spend(authed_client, cost=2.0)  # model gpt-4o
+    check = authed_client.get
+    assert (
+        check("/api/v1/budgets/check", params={"model": "GPT-4o"}).json()["allowed"]
+        is False
+    )
+    assert (
+        check("/api/v1/budgets/check", params={"model": "gpt-4o-mini"}).json()[
+            "allowed"
+        ]
+        is True
+    )
+    assert check("/api/v1/budgets/check").json()["allowed"] is True
+
+
+def test_scope_ref_is_trimmed(authed_client):
+    resp = authed_client.post(
+        "/api/v1/budgets",
+        json={
+            "name": " cap ",
+            "scope": "provider",
+            "scope_ref": "OpenAI ",
+            "period": "daily",
+            "limit_amount": 10,
+        },
+    )
+    assert resp.json()["scope_ref"] == "OpenAI"
+    assert resp.json()["name"] == "cap"

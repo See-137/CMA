@@ -195,37 +195,34 @@ def test_ingestion_increments_processed_batch_and_budget_timer(authed_client):
     ) == budget_before + 1
 
 
-def test_rejection_increments_rejected_counter(authed_client, monkeypatch):
-    """Wiring test for the rejected path — budget logic itself is owned by
-    test_budgets.py, so the rejection decision is stubbed."""
+def test_over_budget_increments_counter(authed_client, monkeypatch):
+    """Wiring test for the over_budget path — budget logic itself is owned by
+    test_budgets.py, so the violation decision is stubbed."""
     import app.api.events as events_api
 
     monkeypatch.setattr(
         events_api,
-        "event_rejection_reason",
-        lambda *args, **kwargs: "budget stop (test)",
+        "event_budget_violations",
+        lambda *args, **kwargs: ["budget exhausted (test)"],
     )
 
     text = _scrape(authed_client)
-    rejected_before = (
-        _sample(text, "cma_events_ingested_total", {"status": "rejected"}) or 0
-    )
+    over_before = _sample(text, "cma_events_over_budget_total") or 0
     processed_before = (
         _sample(text, "cma_events_ingested_total", {"status": "processed"}) or 0
     )
 
     resp = authed_client.post("/api/v1/events", json=_events_payload(2))
     assert resp.status_code == 200
-    assert resp.json()["rejected"] == 2
+    assert resp.json()["over_budget"] == 2
 
     text = _scrape(authed_client)
+    assert _sample(text, "cma_events_over_budget_total") == over_before + 2
+    # Over-budget events are still stored.
     assert (
-        _sample(text, "cma_events_ingested_total", {"status": "rejected"})
-        == rejected_before + 2
+        _sample(text, "cma_events_ingested_total", {"status": "processed"})
+        == processed_before + 2
     )
-    assert (
-        _sample(text, "cma_events_ingested_total", {"status": "processed"}) or 0
-    ) == processed_before
 
 
 def test_savepoint_failure_counts_as_errored(authed_client, monkeypatch):
@@ -234,7 +231,7 @@ def test_savepoint_failure_counts_as_errored(authed_client, monkeypatch):
     processed and rejected."""
     import app.api.events as events_api
 
-    def _boom(event, db, cost):
+    def _boom(event, db, *args):
         raise RuntimeError("processing exploded")
 
     monkeypatch.setattr(events_api, "_process_event", _boom)

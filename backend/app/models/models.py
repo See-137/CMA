@@ -103,6 +103,9 @@ class CostEvent(Base):
     # 'pricing' | 'estimated' | 'client' | 'unpriced' (NULL = recorded before
     # this existed). Unindexed: low cardinality and queried via OR/NULL.
     cost_source = Column(String(20), nullable=True)
+    # Recorded while a matching blocking budget was already exhausted (the
+    # call got past, or bypassed, the pre-call check).
+    over_budget = Column(Boolean, nullable=False, default=False, server_default=false())
     duration_ms = Column(Integer, nullable=True)
     status = Column(String(50), default="success")
     workflow = Column(String(255), nullable=True)

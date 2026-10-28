@@ -98,53 +98,125 @@ def _scope_matches(
     return True  # scope == "global" matches everything
 
 
+# Budget control actions (D1, docs/PLAN.md). Spend is ALWAYS recorded —
+# rejecting an event at ingestion cannot undo a call that already happened,
+# it only hides the cost. Enforcement is a pre-call check
+# (GET /budgets/check, SDK ``enforce_budgets``): every action other than
+# "alert" blocks further calls once the budget is exhausted. "throttle",
+# "rate_limit" and "model_downgrade" have no throttling/downgrade behaviour
+# and are treated as "block" (kept for compatibility).
+ALERT_ONLY = "alert"
+
+
+def is_blocking(budget: Budget) -> bool:
+    return (budget.control_action or ALERT_ONLY) != ALERT_ONLY
+
+
+def _violation(budget: Budget, spend: float) -> dict:
+    return {
+        "budget_id": budget.id,
+        "name": budget.name,
+        "scope": budget.scope,
+        "scope_ref": budget.scope_ref,
+        "period": budget.period,
+        "limit_amount": budget.limit_amount,
+        "spent": round(spend, 6),
+        "message": (
+            f"Budget '{budget.name}' exhausted: ${spend:.2f} / "
+            f"${budget.limit_amount:.2f} ({budget.period})"
+        ),
+    }
+
+
 def load_enforcement_state(db: Session) -> list[dict]:
-    """Prefetch active enforcement budgets with their current-period spend.
+    """Prefetch active blocking budgets with their current-period spend.
 
     Called once per ingestion request so we don't re-run a SUM(cost) query for
     every budget for every event in a batch.
     """
-    budgets = (
-        db.query(Budget)
-        .filter(
-            Budget.is_active.is_(True),
-            Budget.control_action.in_(["stop", "rate_limit", "model_downgrade"]),
-        )
-        .all()
-    )
-    return [{"budget": b, "spend": _current_spend(b, db)} for b in budgets]
+    budgets = db.query(Budget).filter(Budget.is_active.is_(True)).all()
+    return [
+        {"budget": b, "spend": _current_spend(b, db)} for b in budgets if is_blocking(b)
+    ]
 
 
-def event_rejection_reason(
+def _in_current_period(budget: Budget, timestamp: datetime | None) -> bool:
+    """Only spend timestamped inside the budget's current period counts toward
+    it (a back-dated/replayed event belongs to an earlier period)."""
+    return timestamp is None or timestamp >= _period_start(budget.period)
+
+
+def event_budget_violations(
     state: list[dict],
     agent_name: str,
     workflow: str | None,
     swarm: str | None,
-    cost: float,
+    timestamp: datetime | None = None,
     provider: str | None = None,
     model: str | None = None,
-) -> str | None:
-    """Check one event against prefetched enforcement state.
+) -> list[str]:
+    """Blocking budgets that were already exhausted when this (already
+    incurred) event arrived — the call should have been blocked pre-call.
 
-    Returns a rejection reason if a matching budget is already at/over its limit,
-    otherwise accumulates `cost` into matching budgets (so a single batch can't
-    overshoot) and returns None.
+    Pure check: the caller adds the event's cost with
+    :func:`accumulate_event` only once the event is actually stored.
     """
-    matched = []
+    violations = []
     for entry in state:
         budget = entry["budget"]
         if not _scope_matches(budget, agent_name, workflow, swarm, provider, model):
             continue
+        if not _in_current_period(budget, timestamp):
+            continue
         if budget.limit_amount > 0 and entry["spend"] >= budget.limit_amount:
-            return (
-                f"Budget '{budget.name}' exceeded: ${entry['spend']:.2f} / "
-                f"${budget.limit_amount:.2f} ({budget.period})"
-            )
-        matched.append(entry)
+            violations.append(_violation(budget, entry["spend"])["message"])
+    return violations
 
-    for entry in matched:
-        entry["spend"] += cost
-    return None
+
+def accumulate_event(
+    state: list[dict],
+    agent_name: str,
+    workflow: str | None,
+    swarm: str | None,
+    timestamp: datetime | None,
+    cost: float,
+    provider: str | None = None,
+    model: str | None = None,
+) -> None:
+    """Add a stored event's cost to the running spend of matching budgets, so
+    later events in the same batch see it."""
+    for entry in state:
+        budget = entry["budget"]
+        if _scope_matches(
+            budget, agent_name, workflow, swarm, provider, model
+        ) and _in_current_period(budget, timestamp):
+            entry["spend"] += cost
+
+
+def precall_check(
+    db: Session,
+    agent_name: str | None,
+    workflow: str | None,
+    swarm: str | None,
+    provider: str | None = None,
+    model: str | None = None,
+) -> list[dict]:
+    """Blocking budgets that would be violated by a new call with this
+    attribution. Scope matching is the same function ingestion uses, so a
+    budget flags ingested events exactly when it blocks calls: global always
+    matches; agent/swarm/workflow/provider/model budgets match only when that
+    attribute is supplied (a legacy scoped row with no scope_ref counts as
+    global, as its spend does)."""
+    violations = []
+    for budget in db.query(Budget).filter(Budget.is_active.is_(True)).all():
+        if not is_blocking(budget) or budget.limit_amount <= 0:
+            continue
+        if not _scope_matches(budget, agent_name, workflow, swarm, provider, model):
+            continue
+        spend = _current_spend(budget, db)
+        if spend >= budget.limit_amount:
+            violations.append(_violation(budget, spend))
+    return violations
 
 
 def check_budgets(db: Session) -> list[Alert]:

@@ -319,3 +319,45 @@ def test_reprice_reports_archived_days(authed_client, db):
     assert res["repriced"] == 1
     assert res["archived_dates_not_recomputed"] == [old.date().isoformat()]
     assert res["rollup_dates_recomputed"] == []
+
+
+def test_interrupted_reprice_leaves_no_stale_rollups(authed_client, db, monkeypatch):
+    """Re-review MINOR-1: batches commit as they go, so each batch's days are
+    re-rolled immediately; an interruption can't leave a committed day stale."""
+    from datetime import timedelta
+
+    from app.models.models import CostEvent, DailyCostRollup
+    from app.services import cost_engine
+    from app.timeutils import utcnow
+
+    day1 = (utcnow() - timedelta(days=3)).replace(microsecond=0)
+    day2 = (utcnow() - timedelta(days=2)).replace(microsecond=0)
+    for ts in (day1, day1, day2, day2):
+        db.add(
+            CostEvent(
+                agent_name="a",
+                model_name="gpt-4o",
+                provider_name="openai",
+                tokens_input=1_000_000,
+                tokens_output=0,
+                cost=0.0,
+                timestamp=ts,
+            )
+        )
+    db.commit()
+    monkeypatch.setattr(cost_engine, "_REPRICE_BATCH", 2)
+    real = cost_engine.cost_for
+    calls = {"n": 0}
+
+    def dies_in_second_batch(*a, **k):
+        calls["n"] += 1
+        if calls["n"] > 2:  # first batch (2 events) completes, then the kill
+            raise RuntimeError("worker killed")
+        return real(*a, **k)
+
+    monkeypatch.setattr(cost_engine, "cost_for", dies_in_second_batch)
+    with pytest.raises(RuntimeError):
+        cost_engine.reprice_events(db)
+    db.rollback()
+    roll = db.query(DailyCostRollup).filter_by(date=day1.date()).one()
+    assert roll.total_cost == pytest.approx(5.0)  # first batch's day is current

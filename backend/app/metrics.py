@@ -25,7 +25,13 @@ logger = logging.getLogger(__name__)
 EVENTS_INGESTED = Counter(
     "cma_events_ingested_total",
     "Cost events ingested, by outcome",
-    ["status"],  # processed | rejected | errored
+    ["status"],  # processed | errored (rejected: legacy, always 0) — disjoint
+)
+
+EVENTS_OVER_BUDGET = Counter(
+    "cma_events_over_budget_total",
+    "Stored events that arrived while a matching blocking budget was already "
+    "exhausted (a subset of cma_events_ingested_total{status=processed})",
 )
 
 # Buckets sit BELOW the backend cap (CMA_MAX_EVENTS_PER_REQUEST, default

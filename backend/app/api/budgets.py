@@ -6,13 +6,14 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.models.models import Budget
 from app.schemas.schemas import (
+    BudgetCheckResponse,
     BudgetCreate,
     BudgetOut,
     BudgetUpdate,
     BudgetWithSpend,
     _check_scope_ref,
 )
-from app.services.budget_checker import _current_spend
+from app.services.budget_checker import _current_spend, precall_check
 
 router = APIRouter(prefix="/budgets", tags=["budgets"])
 
@@ -29,6 +30,27 @@ def list_budgets(db: Session = Depends(get_db)):
         item.percentage = round(pct, 2)
         result.append(item)
     return result
+
+
+@router.get("/check", response_model=BudgetCheckResponse)
+def check_budget(
+    agent_name: str | None = None,
+    workflow: str | None = None,
+    swarm: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Pre-call enforcement: may a call with this attribution proceed?
+
+    Returns allowed=false with the exhausted blocking budgets (any
+    control_action other than "alert") whose scope matches. Global budgets
+    always match; agent/swarm/workflow/provider/model budgets match only when
+    that attribute is supplied. The SDK calls this before each LLM call when
+    enforce_budgets=True.
+    """
+    violations = precall_check(db, agent_name, workflow, swarm, provider, model)
+    return BudgetCheckResponse(allowed=not violations, violations=violations)
 
 
 @router.post("", response_model=BudgetOut, status_code=201)

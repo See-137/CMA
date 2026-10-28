@@ -11,6 +11,7 @@ from app.config import settings
 from app.metrics import (
     BUDGET_STATE_LOAD_SECONDS,
     EVENTS_INGESTED,
+    EVENTS_OVER_BUDGET,
     INGEST_BATCH_SIZE,
 )
 from app.models.models import Agent, CostEvent
@@ -22,8 +23,9 @@ from app.schemas.schemas import (
     PaginatedEvents,
 )
 from app.services.budget_checker import (
+    accumulate_event,
     check_budgets,
-    event_rejection_reason,
+    event_budget_violations,
     load_enforcement_state,
 )
 from app.services.cost_engine import cost_for, resolve_pricing_match
@@ -122,9 +124,9 @@ def ingest_events(
     INGEST_BATCH_SIZE.observe(len(events))
 
     processed = 0
-    rejected = 0
     errored = 0
-    rejection_reasons: list[str] = []
+    over_budget = 0
+    budget_violations: list[str] = []
     created: list[CostEvent] = []
 
     # Prefetch enforcement budgets + baseline spend once for the whole batch.
@@ -134,28 +136,41 @@ def ingest_events(
     for event in events:
         cost, cost_source = _event_cost(event, db)
 
-        reason = event_rejection_reason(
+        # The call already happened: always record it. If a blocking budget
+        # was already exhausted, flag the event (enforcement is pre-call).
+        violations = event_budget_violations(
             enforcement,
             event.agent_name,
             event.workflow,
             event.swarm,
-            cost,
+            event.timestamp,
             provider=event.provider,
             model=event.model,
         )
-        if reason:
-            rejected += 1
-            if reason not in rejection_reasons:
-                rejection_reasons.append(reason)
-            continue
 
         # Isolate each event in a savepoint so one failure can't poison the batch.
         try:
             with db.begin_nested():
                 cost_event = _process_event(event, db, cost, cost_source)
+                cost_event.over_budget = bool(violations)
                 db.flush()  # materialise the INSERT so cost_event.id is populated
             created.append(cost_event)
             processed += 1
+            over_budget += bool(violations)
+            for v in violations:
+                if v not in budget_violations:
+                    budget_violations.append(v)
+            # Only stored spend counts toward later events in this batch.
+            accumulate_event(
+                enforcement,
+                event.agent_name,
+                event.workflow,
+                event.swarm,
+                event.timestamp,
+                cost,
+                provider=event.provider,
+                model=event.model,
+            )
         except Exception:
             errored += 1
             logger.exception("Failed to process event")
@@ -196,7 +211,10 @@ def ingest_events(
         background_tasks.add_task(_bg_embed, event_ids)
 
     EVENTS_INGESTED.labels(status="processed").inc(processed)
-    EVENTS_INGESTED.labels(status="rejected").inc(rejected)
+    # "rejected" is no longer produced (spend is always recorded); the series
+    # stays at 0 for dashboard compatibility. Over-budget events are a SUBSET
+    # of processed, so they get their own counter rather than an outcome label.
+    EVENTS_OVER_BUDGET.inc(over_budget)
     # Savepoint failures are the outcome that signals the SERVICE is broken —
     # invisible in processed/rejected, so they get their own bounded label.
     EVENTS_INGESTED.labels(status="errored").inc(errored)
@@ -204,9 +222,10 @@ def ingest_events(
     return EventsIngestionResponse(
         received=len(events),
         processed=processed,
-        rejected=rejected,
+        rejected=0,
         errored=errored,
-        rejection_reasons=rejection_reasons,
+        over_budget=over_budget,
+        budget_violations=budget_violations,
     )
 
 

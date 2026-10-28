@@ -118,3 +118,22 @@ def test_event_arriving_mid_prune_is_neither_lost_nor_double_counted(
         assert roll.total_cost == 6.0 and roll.request_count == 2
     finally:
         db.close()
+
+
+def test_late_duration_does_not_get_diluted_by_durationless_archive(authed_client):
+    db = TestSession()
+    try:
+        old = (utcnow() - timedelta(days=200)).replace(hour=12, microsecond=0)
+        for _ in range(50):
+            db.add(_event(old, 1.0))  # no duration_ms
+        db.commit()
+        prune_old_events(db)
+        late = _event(old + timedelta(hours=1), 1.0)
+        late.duration_ms = 500
+        db.add(late)
+        db.commit()
+        prune_old_events(db)
+        roll = db.query(DailyCostRollup).filter_by(date=old.date()).one()
+        assert roll.avg_duration_ms == 500
+    finally:
+        db.close()

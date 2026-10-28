@@ -42,6 +42,13 @@ class FakeBackend:
     script: list[Any] = field(default_factory=list)
     requests: list[RecordedRequest] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    # GET /api/v1/budgets/check: response body + status, and recorded queries.
+    budget_response: dict[str, Any] = field(
+        default_factory=lambda: {"allowed": True, "violations": []}
+    )
+    budget_status: int = 200
+    budget_delay: float = 0.0
+    budget_queries: list[str] = field(default_factory=list)
 
     @property
     def url(self) -> str:
@@ -123,6 +130,26 @@ def _invalid_indices(events: list[dict[str, Any]]) -> list[tuple[int, str]]:
 
 class _Handler(BaseHTTPRequestHandler):
     backend: FakeBackend  # injected per-server subclass
+
+    def do_GET(self) -> None:  # noqa: N802 (http.server API)
+        path, _, query = self.path.partition("?")
+        if path != "/api/v1/budgets/check":
+            self.send_response(404)
+            self.end_headers()
+            return
+        with self.backend.lock:
+            self.backend.budget_queries.append(query)
+            delay = self.backend.budget_delay
+        if delay:
+            time.sleep(delay)
+        with self.backend.lock:
+            status = self.backend.budget_status
+            body = json.dumps(self.backend.budget_response).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_POST(self) -> None:  # noqa: N802 (http.server API)
         length = int(self.headers.get("Content-Length") or 0)

@@ -40,6 +40,8 @@ export interface Event {
   cost: number;
   /** 'pricing' | 'client' | 'unpriced'; null for events recorded before tracking. */
   cost_source?: string | null;
+  /** Recorded while a matching blocking budget was already exhausted. */
+  over_budget?: boolean;
   duration_ms: number | null;
   status: string;
   workflow: string | null;

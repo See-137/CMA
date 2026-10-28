@@ -247,3 +247,20 @@ def test_stored_names_cannot_close_the_data_block(db):
     )[-1]["content"]
     assert prompt.count("</data>") == 1  # only the real closing tag
     assert prompt.rstrip().endswith("Question: total spend today")
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["over the past week", "spend in the past month", "a week ago", "year to date"],
+)
+def test_unsupported_relative_phrases_are_flagged(db, question):
+    assert rag.detect_query_intent(question, db).unparsed_time is True
+
+
+def test_past_n_days_and_since_relative_parse(db):
+    intent = rag.detect_query_intent("spend over the past 7 days", db)
+    assert intent.time_label == "last 7 days"
+    intent = rag.detect_query_intent("total since yesterday", db)
+    start, end = intent.time_range
+    assert intent.time_label == "since yesterday"
+    assert (end - start) > timedelta(days=1) - timedelta(seconds=1)

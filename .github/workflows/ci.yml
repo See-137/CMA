@@ -34,6 +34,16 @@ jobs:
       - run: pip install -r backend/requirements-dev.txt
       - run: cd backend && pytest --tb=short -q
 
+  sdk-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e "sdks/python[dev,all]"
+      - run: cd sdks/python && pytest --tb=short -q tests
+
   migrations:
     runs-on: ubuntu-latest
     needs: backend-lint
@@ -79,7 +89,7 @@ jobs:
 
   docker-build:
     runs-on: ubuntu-latest
-    needs: [backend-test, migrations, frontend-build]
+    needs: [backend-test, sdk-test, migrations, frontend-build]
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t cma-backend ./backend

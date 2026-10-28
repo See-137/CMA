@@ -124,7 +124,9 @@ _RELATIVE_TIME = {
 }
 
 # Match "last N days/hours"
-_LAST_N_RE = re.compile(r"last\s+(\d+)\s+(day|hour|week|month)s?", re.IGNORECASE)
+_LAST_N_RE = re.compile(
+    r"(?:last|past|previous)\s+(\d+)\s+(day|hour|week|month)s?", re.IGNORECASE
+)
 
 # Day names
 _DAYS = {
@@ -153,7 +155,12 @@ _TIME_HINT_RE = re.compile(
     r"|\b(?:this|last|past|previous|next)\s+(?:year|quarter|weekend|fortnight)\b"
     r"|\b(?:past|previous|over the)\s+\d+\s+(?:hour|day|week|month|year)s?\b"
     r"|\b\d+\s+(?:hour|day|week|month|year)s?\s+ago\b"
-    r"|\bsince\s+(?:yesterday|last\b|the\b|\d)",
+    r"|\b(?:past|previous|last)\s+(?:few|couple(?:\s+of)?|several)\s+\w+"
+    r"|\b(?:in|over)\s+the\s+(?:past|last)\s+(?:week|month|year|quarter)\b"
+    r"|\b(?:a|an|one|two|three|four|five|six|several|few)\s+"
+    r"(?:hour|day|week|month|year)s?\s+ago\b"
+    r"|\byear[\s-]to[\s-]date\b|\bytd\b|\bmonth[\s-]to[\s-]date\b|\bmtd\b"
+    r"|\bsince\s+(?:the\b|\d)",
     re.IGNORECASE,
 )
 
@@ -190,8 +197,15 @@ def _find_windows(q_lower: str) -> list[tuple[int, str, tuple[datetime, datetime
 
     for phrase in sorted(_RELATIVE_TIME, key=len, reverse=True):
         for m in _phrase_re(phrase).finditer(q_lower):
-            if free(*m.span()):
-                found.append((m.start(), phrase, _RELATIVE_TIME[phrase]()))
+            if not free(*m.span()):
+                continue
+            start, end = _RELATIVE_TIME[phrase]()
+            since = re.search(r"\bsince\s+$", q_lower[: m.start()])
+            if since:  # "since yesterday" = from that period's start until now
+                found.append((since.start(), f"since {phrase}", (start, utcnow())))
+                taken.append((since.start(), m.end()))
+            else:
+                found.append((m.start(), phrase, (start, end)))
                 taken.append(m.span())
 
     for day_name, weekday in _DAYS.items():
