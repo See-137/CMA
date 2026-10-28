@@ -3,6 +3,7 @@ import logging
 from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -101,6 +102,21 @@ def _process_event(
     return cost_event
 
 
+def _begin_batch_transaction(db: Session) -> None:
+    """Make the batch one transaction on SQLite too (OPS-07).
+
+    pysqlite opens a transaction only at the first INSERT, so the per-event
+    SAVEPOINT below started a transaction of its own and its RELEASE
+    committed it: a batch that failed half-way kept its first events, and the
+    SDK (which retries 5xx) then sent the whole batch again. Opening the
+    write transaction up front makes the savepoints nest inside it, as on
+    Postgres. IMMEDIATE takes the write lock now (waiting up to the busy
+    timeout) instead of failing on a read-to-write upgrade under concurrency.
+    """
+    if db.get_bind().dialect.name == "sqlite":
+        db.execute(text("BEGIN IMMEDIATE"))
+
+
 @router.post("", response_model=EventsIngestionResponse)
 def ingest_events(
     body: EventsEnvelope | list[EventIn] | EventIn,
@@ -122,6 +138,7 @@ def ingest_events(
         )
 
     INGEST_BATCH_SIZE.observe(len(events))
+    _begin_batch_transaction(db)
 
     processed = 0
     errored = 0

@@ -25,7 +25,7 @@
 ```powershell
 cd backend; pip install -r requirements-dev.txt; pytest
 ```
-- 217 backend tests (1 needs `CMA_TEST_PG_URL`, set in CI) (`backend/tests`) + 78 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
+- 219 backend tests (1 needs `CMA_TEST_PG_URL`, set in CI) (`backend/tests`) + 78 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
 - `test_events.py` — ingestion, auto-discovery (incl. race), UTC timestamp normalisation
 - `test_pricing.py` — pricing resolution, cost_source, reprice, reset-full reseed
 - `test_scrooge_grounding.py` — Scrooge totals, windows, entity matching, untrusted data block, degradation
@@ -165,6 +165,7 @@ docker compose --profile observability up -d
 - Entity matching in intent detection is whole-token; overlapping spans resolve longest-first ("gpt-4" is not matched inside "gpt-4.1", but "gpt-4 and gpt-4o" keeps both)
 - Budget periods, dashboard days/buckets and Scrooge's named periods follow the deployment time zone (`SetupConfig.timezone`, IANA, default UTC; decision D2). Storage and API instants stay UTC; daily rollups are still keyed by UTC day (ACC-18). Use `app.timeutils` (`deployment_tz`, `local_floor`, `shift_day_start`) and `app.services.buckets.local_bucket_expr` — never `.replace(hour=0)` on a UTC time. `currency` is stored but unused (ACC-16)
 - Budgets never discard spend: ingestion always stores the event (flagged `over_budget` when a matching blocking budget was already exhausted). Enforcement is pre-call: `GET /budgets/check` + SDK `enforce_budgets=True` → `BudgetExceeded`. Every action except `alert` blocks; `throttle`/`rate_limit`/`model_downgrade` are legacy aliases of block. Response field `rejected` is always 0 (kept for compatibility)
+- SQLite savepoints: pysqlite opens a transaction only at the first write, so a `begin_nested()` before any write commits on RELEASE. Ingestion opens `BEGIN IMMEDIATE` up front on SQLite for this reason (OPS-07); any new savepoint use on SQLite needs the same (or a commit-per-row design, as in `check_budgets`)
 - `int(row.total_tokens_in)` can throw TypeError if NULL — always use `int(x or 0)` pattern
 - API key stored as plaintext in SetupConfig despite bcrypt being imported — password uses hash, key does not
 - On Windows, npm/npx are .cmd shims — `Start-Process` needs `cmd.exe /c npm`, not `npm` directly

@@ -189,3 +189,6 @@ Owner decisions (2026-10-28):
   after a failed dispatch, tests for re-raise and per-commit dispatch). It also
   showed OPS-07 is an accounting risk on SQLite (partial batches + SDK retry
   double-count) — raised to P2, next PR. Backend tests → 217.
+- 2026-10-28 — OPS-07 (`fix/sqlite-transactions`, stacked on #26): ingestion
+  is one transaction on SQLite too, so a failing batch stores nothing and the
+  SDK's retry cannot double-count. Backend tests → 219.
