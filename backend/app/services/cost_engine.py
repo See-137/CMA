@@ -15,16 +15,20 @@ Pricing resolution (how an event's provider/model strings find a price row):
       (``gpt-4o-2024-08-06`` -> ``gpt-4o``, ``claude-x-20241022`` -> ``claude-x``)
       compared against names and aliases (case-insensitive)
 
-No match prices the event at 0.0 (logged as a warning).
+No match prices the event at 0.0 and marks it ``unpriced`` (``cost_source``)
+so it stays visible and can be repriced once pricing exists
+(``reprice_events`` / ``POST /api/v1/admin/reprice``).
 """
 
 import logging
 import re
+from datetime import date, datetime
 
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
-from app.models.models import ModelPricing, Provider
+from app.models.models import CostEvent, ModelPricing, Provider
+from app.timeutils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -109,3 +113,82 @@ def calculate_cost(
         )
         return 0.0
     return cost_for(pricing, tokens_input, tokens_output)
+
+
+def unpriced_clause():
+    """SQL predicate for events stored without a price: marked ``unpriced``,
+    or legacy rows (no ``cost_source``) at 0.0 with non-zero tokens."""
+    return or_(
+        CostEvent.cost_source == "unpriced",
+        and_(
+            CostEvent.cost_source.is_(None),
+            CostEvent.cost == 0,
+            (CostEvent.tokens_input + CostEvent.tokens_output) > 0,
+        ),
+    )
+
+
+def reprice_events(
+    db: Session,
+    from_date: datetime | None = None,
+    to_date: datetime | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Recompute cost for events stored without a price.
+
+    Candidates are events marked ``unpriced`` plus legacy rows (``cost_source``
+    NULL) stored at 0.0 with non-zero tokens — exactly what the old exact-match
+    lookup produced. Client-supplied costs are never touched. Daily rollups for
+    affected *completed* days are recomputed so dashboards and Scrooge agree
+    with the corrected events.
+    """
+    query = db.query(CostEvent).filter(unpriced_clause())
+    if from_date is not None:
+        query = query.filter(CostEvent.timestamp >= from_date)
+    if to_date is not None:
+        query = query.filter(CostEvent.timestamp <= to_date)
+
+    cache: dict[tuple[str, str], ModelPricing | None] = {}
+    repriced_ids: list[int] = []
+    still_unpriced: dict[str, int] = {}
+    added_cost = 0.0
+    dates: set[date] = set()
+
+    for event in query.all():
+        key = (event.provider_name, event.model_name)
+        if key not in cache:
+            cache[key] = resolve_pricing(event.provider_name, event.model_name, db)
+        pricing = cache[key]
+        if pricing is None:
+            label = f"{event.provider_name}/{event.model_name}"
+            still_unpriced[label] = still_unpriced.get(label, 0) + 1
+            if not dry_run:
+                event.cost_source = "unpriced"
+            continue
+        new_cost = cost_for(pricing, event.tokens_input, event.tokens_output)
+        added_cost += new_cost - (event.cost or 0.0)
+        repriced_ids.append(event.id)
+        dates.add(event.timestamp.date())
+        if not dry_run:
+            event.cost = new_cost
+            event.cost_source = "pricing"
+
+    rollup_dates: list[date] = []
+    if not dry_run:
+        db.commit()
+        from app.services.rollup import compute_daily_rollups
+
+        today = utcnow().date()
+        for d in sorted(dates):
+            if d < today:
+                compute_daily_rollups(db, d)
+                rollup_dates.append(d)
+
+    return {
+        "dry_run": dry_run,
+        "repriced": len(repriced_ids),
+        "added_cost": round(added_cost, 8),
+        "still_unpriced": still_unpriced,
+        "rollup_dates_recomputed": [d.isoformat() for d in rollup_dates],
+        "repriced_ids": repriced_ids,
+    }

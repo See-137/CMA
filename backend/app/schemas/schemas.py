@@ -81,6 +81,7 @@ class EventOut(BaseModel):
     tokens_input: int
     tokens_output: int
     cost: float
+    cost_source: str | None = None
     duration_ms: int | None = None
     status: str
     workflow: str | None = None
@@ -311,6 +312,9 @@ class DashboardOverview(BaseModel):
     total_tokens: int
     cost_change_pct: float
     request_change_pct: float
+    # Events in the period stored at $0 because no price matched — the
+    # total_cost understates spend while this is non-zero.
+    unpriced_events: int = 0
 
 
 class TimeseriesPoint(BaseModel):

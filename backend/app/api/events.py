@@ -26,14 +26,31 @@ from app.services.budget_checker import (
     event_rejection_reason,
     load_enforcement_state,
 )
-from app.services.cost_engine import calculate_cost
+from app.services.cost_engine import cost_for, resolve_pricing
 from app.timeutils import to_naive_utc, utcnow
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/events", tags=["events"])
 
 
-def _process_event(event: EventIn, db: Session, cost: float) -> CostEvent:
+def _event_cost(event: EventIn, db: Session) -> tuple[float, str]:
+    """Return (cost, cost_source) for an incoming event."""
+    if event.cost is not None:
+        return event.cost, "client"
+    pricing = resolve_pricing(event.provider, event.model, db)
+    if pricing is None:
+        logger.warning(
+            "No pricing for provider=%s model=%s — stored as unpriced",
+            event.provider,
+            event.model,
+        )
+        return 0.0, "unpriced"
+    return cost_for(pricing, event.tokens_input, event.tokens_output), "pricing"
+
+
+def _process_event(
+    event: EventIn, db: Session, cost: float, cost_source: str | None = None
+) -> CostEvent:
     """Create a CostEvent from incoming data, auto-creating agent if needed."""
     # Auto-discover: create agent if it doesn't exist
     agent = db.query(Agent).filter(Agent.name == event.agent_name).first()
@@ -68,6 +85,7 @@ def _process_event(event: EventIn, db: Session, cost: float) -> CostEvent:
         tokens_input=event.tokens_input,
         tokens_output=event.tokens_output,
         cost=cost,
+        cost_source=cost_source,
         duration_ms=event.duration_ms,
         status=event.status,
         workflow=event.workflow,
@@ -112,15 +130,7 @@ def ingest_events(
         enforcement = load_enforcement_state(db)
 
     for event in events:
-        cost = event.cost
-        if cost is None:
-            cost = calculate_cost(
-                event.provider,
-                event.model,
-                event.tokens_input,
-                event.tokens_output,
-                db,
-            )
+        cost, cost_source = _event_cost(event, db)
 
         reason = event_rejection_reason(
             enforcement, event.agent_name, event.workflow, event.swarm, cost
@@ -134,7 +144,7 @@ def ingest_events(
         # Isolate each event in a savepoint so one failure can't poison the batch.
         try:
             with db.begin_nested():
-                cost_event = _process_event(event, db, cost)
+                cost_event = _process_event(event, db, cost, cost_source)
                 db.flush()  # materialise the INSERT so cost_event.id is populated
             created.append(cost_event)
             processed += 1

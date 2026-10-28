@@ -99,6 +99,8 @@ class CostEvent(Base):
     tokens_input = Column(Integer, nullable=False)
     tokens_output = Column(Integer, nullable=False)
     cost = Column(Float, nullable=False)
+    # 'pricing' | 'client' | 'unpriced' (NULL = recorded before this existed)
+    cost_source = Column(String(20), nullable=True, index=True)
     duration_ms = Column(Integer, nullable=True)
     status = Column(String(50), default="success")
     workflow = Column(String(255), nullable=True)

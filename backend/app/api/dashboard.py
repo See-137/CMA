@@ -19,6 +19,7 @@ from app.schemas.schemas import (
     TopAgentsResponse,
 )
 from app.services.budget_checker import _current_spend
+from app.services.cost_engine import unpriced_clause
 from app.timeutils import utcnow
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -124,8 +125,19 @@ def dashboard_overview(period: str = Query("today"), db: Session = Depends(get_d
         .scalar()
     ) or 0
 
+    unpriced_events = (
+        db.query(func.count(CostEvent.id))
+        .filter(
+            CostEvent.timestamp >= start,
+            CostEvent.timestamp <= end,
+            unpriced_clause(),
+        )
+        .scalar()
+    ) or 0
+
     return DashboardOverview(
         total_cost=round(float(current.total_cost), 6),
+        unpriced_events=int(unpriced_events),
         total_requests=int(current.total_requests),
         active_agents=int(active_agents),
         total_tokens=int(current.total_tokens),
