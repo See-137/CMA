@@ -124,6 +124,11 @@ def full_reset(db: Session = Depends(get_db)):
     db.execute(text("DELETE FROM providers"))
     db.execute(text("DELETE FROM setup_config"))
     db.commit()
+    # Seeding only runs at startup; without re-seeding here, every event
+    # ingested after a full reset (until the next restart) is priced at $0.
+    from app.seed import seed_providers
+
+    seed_providers(db)
 
     # Clear vector store so RAG doesn't answer from stale embeddings
     try:
@@ -134,7 +139,8 @@ def full_reset(db: Session = Depends(get_db)):
         logger.warning("Failed to clear vector store during full reset", exc_info=True)
 
     return {
-        "message": "Full reset complete. Please restart the application to re-run setup."
+        "message": "Full reset complete. Default provider pricing restored; "
+        "re-run the setup wizard."
     }
 
 

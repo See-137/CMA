@@ -224,3 +224,11 @@ def test_reprice_fixes_unpriced_and_legacy_rows(authed_client, db):
     # Idempotent: nothing left to reprice.
     again = authed_client.post("/api/v1/admin/reprice", headers=ADMIN).json()
     assert again["repriced"] == 0
+
+
+def test_full_reset_restores_default_pricing(authed_client, db):
+    resp = authed_client.post("/api/v1/admin/reset-full", headers=ADMIN)
+    assert resp.status_code == 200
+    db.expire_all()
+    assert db.query(Provider).count() > 0
+    assert calculate_cost("openai", "gpt-4o", 1_000_000, 0, db) == 2.5
