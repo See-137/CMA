@@ -3,6 +3,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.timeutils import to_naive_utc
+
 # -- Setup --------------------------------------------------------------------
 
 
@@ -57,6 +59,11 @@ class EventIn(BaseModel):
     swarm: str | None = Field(default=None, max_length=255)
     metadata: dict | None = None
     timestamp: datetime | None = None
+
+    @field_validator("timestamp")
+    @classmethod
+    def _timestamp_to_utc(cls, v: datetime | None) -> datetime | None:
+        return to_naive_utc(v)
 
 
 class EventsEnvelope(BaseModel):

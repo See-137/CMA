@@ -26,7 +26,7 @@ from app.services.budget_checker import (
     load_enforcement_state,
 )
 from app.services.cost_engine import calculate_cost
-from app.timeutils import utcnow
+from app.timeutils import to_naive_utc, utcnow
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/events", tags=["events"])
@@ -196,6 +196,8 @@ def list_events(
     db: Session = Depends(get_db),
 ):
     query = db.query(CostEvent)
+    from_date = to_naive_utc(from_date)
+    to_date = to_naive_utc(to_date)
 
     if agent_name:
         query = query.filter(CostEvent.agent_name == agent_name)

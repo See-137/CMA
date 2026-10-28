@@ -100,3 +100,50 @@ def test_list_events_with_filters(authed_client):
     resp = authed_client.get("/api/v1/events", params={"status": "failure"})
     assert resp.json()["total"] == 1
     assert resp.json()["items"][0]["agent_name"] == "a2"
+
+
+def test_tz_aware_timestamp_is_stored_as_utc(authed_client):
+    """An offset timestamp must be converted to UTC, not stored as wall-clock.
+
+    Regression: SQLite dropped the offset and PostgreSQL converted to the
+    server's session time zone, mis-dating events (and their budget period).
+    """
+    resp = authed_client.post(
+        "/api/v1/events",
+        json={
+            "agent_name": "tz-bot",
+            "model": "gpt-4o",
+            "provider": "OpenAI",
+            "tokens_input": 1,
+            "tokens_output": 1,
+            "timestamp": "2026-10-28T23:30:00-05:00",
+        },
+    )
+    assert resp.json()["processed"] == 1
+    items = authed_client.get("/api/v1/events").json()["items"]
+    assert items[0]["timestamp"].startswith("2026-10-29T04:30:00")
+
+
+def test_event_list_date_filter_accepts_offsets(authed_client):
+    authed_client.post(
+        "/api/v1/events",
+        json={
+            "agent_name": "tz-bot",
+            "model": "gpt-4o",
+            "provider": "OpenAI",
+            "tokens_input": 1,
+            "tokens_output": 1,
+            "timestamp": "2026-10-29T04:30:00Z",
+        },
+    )
+    # 06:00+02:00 == 04:00Z, so the event (04:30Z) is after the bound.
+    resp = authed_client.get(
+        "/api/v1/events",
+        params={"from_date": "2026-10-29T06:00:00+02:00"},
+    )
+    assert resp.json()["total"] == 1
+    resp = authed_client.get(
+        "/api/v1/events",
+        params={"from_date": "2026-10-29T07:00:00+02:00"},
+    )
+    assert resp.json()["total"] == 0
