@@ -1,3 +1,6 @@
+import pytest
+
+
 def test_create_budget(authed_client):
     resp = authed_client.post(
         "/api/v1/budgets",
@@ -118,3 +121,55 @@ def test_budget_alert_only_does_not_block(authed_client):
     )
     assert resp.json()["processed"] == 1
     assert resp.json()["rejected"] == 0
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"scope": "agnet"},  # typo used to silently become a global budget
+        {"period": "fortnightly"},  # unknown period silently became daily
+        {"limit_amount": -5},
+        {"control_action": "nuke"},
+        {"scope": "agent", "scope_ref": None},  # agent budget with no agent
+        {"alert_thresholds": [0, 50]},
+    ],
+)
+def test_invalid_budget_rejected(authed_client, override):
+    body = {
+        "name": "b",
+        "scope": "agent",
+        "scope_ref": "bot",
+        "period": "daily",
+        "limit_amount": 10,
+    }
+    body.update(override)
+    assert authed_client.post("/api/v1/budgets", json=body).status_code == 422
+
+
+def test_update_cannot_strip_scope_ref(authed_client):
+    created = authed_client.post(
+        "/api/v1/budgets",
+        json={
+            "name": "b",
+            "scope": "agent",
+            "scope_ref": "bot",
+            "period": "daily",
+            "limit_amount": 10,
+        },
+    ).json()
+    resp = authed_client.put(f"/api/v1/budgets/{created['id']}", json={"scope_ref": ""})
+    assert resp.status_code == 422
+
+
+def test_negative_model_price_rejected(authed_client):
+    providers = authed_client.get("/api/v1/providers").json()
+    pid = providers[0]["id"]
+    resp = authed_client.post(
+        f"/api/v1/providers/{pid}/models",
+        json={
+            "model_name": "neg",
+            "input_price_per_million": -1,
+            "output_price_per_million": 1,
+        },
+    )
+    assert resp.status_code == 422

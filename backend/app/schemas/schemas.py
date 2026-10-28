@@ -1,7 +1,8 @@
 import json
 from datetime import datetime
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.timeutils import to_naive_utc
 
@@ -163,9 +164,9 @@ class AgentDetail(AgentOut):
 
 
 class ModelPricingIn(BaseModel):
-    model_name: str
-    input_price_per_million: float
-    output_price_per_million: float
+    model_name: str = Field(min_length=1, max_length=255)
+    input_price_per_million: float = Field(ge=0)
+    output_price_per_million: float = Field(ge=0)
     model_alias: str | None = None
 
 
@@ -186,8 +187,8 @@ class ModelPricingOut(BaseModel):
 class ModelPricingUpdate(BaseModel):
     model_name: str | None = None
     model_alias: str | None = None
-    input_price_per_million: float | None = None
-    output_price_per_million: float | None = None
+    input_price_per_million: float | None = Field(default=None, ge=0)
+    output_price_per_million: float | None = Field(default=None, ge=0)
     is_active: bool | None = None
 
 
@@ -218,24 +219,46 @@ class ProviderOut(BaseModel):
 # -- Budgets ------------------------------------------------------------------
 
 
+BudgetScope = Literal["global", "agent", "swarm", "workflow"]
+BudgetPeriod = Literal["daily", "weekly", "monthly"]
+# "block"/"throttle" are what the UI has always sent; "stop"/"rate_limit"/
+# "model_downgrade" are what enforcement historically recognised. All are
+# accepted so existing clients keep working; see docs/FINDINGS.md (budget
+# enforcement semantics) for how they are interpreted.
+BudgetAction = Literal[
+    "alert", "block", "throttle", "stop", "rate_limit", "model_downgrade"
+]
+Threshold = Annotated[int, Field(gt=0, le=1000)]
+
+
+def _check_scope_ref(scope: str | None, scope_ref: str | None) -> None:
+    if scope and scope != "global" and not (scope_ref or "").strip():
+        raise ValueError(f"scope '{scope}' requires a non-empty scope_ref")
+
+
 class BudgetCreate(BaseModel):
-    name: str
-    scope: str
-    scope_ref: str | None = None
-    period: str
-    limit_amount: float
-    alert_thresholds: list[int] = [50, 75, 90, 100]
-    control_action: str = "alert"
+    name: str = Field(min_length=1, max_length=255)
+    scope: BudgetScope
+    scope_ref: str | None = Field(default=None, max_length=255)
+    period: BudgetPeriod
+    limit_amount: float = Field(ge=0)
+    alert_thresholds: list[Threshold] = [50, 75, 90, 100]
+    control_action: BudgetAction = "alert"
+
+    @model_validator(mode="after")
+    def _scope_ref_required(self):
+        _check_scope_ref(self.scope, self.scope_ref)
+        return self
 
 
 class BudgetUpdate(BaseModel):
-    name: str | None = None
-    scope: str | None = None
-    scope_ref: str | None = None
-    period: str | None = None
-    limit_amount: float | None = None
-    alert_thresholds: list[int] | None = None
-    control_action: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    scope: BudgetScope | None = None
+    scope_ref: str | None = Field(default=None, max_length=255)
+    period: BudgetPeriod | None = None
+    limit_amount: float | None = Field(default=None, ge=0)
+    alert_thresholds: list[Threshold] | None = None
+    control_action: BudgetAction | None = None
     is_active: bool | None = None
 
 
