@@ -200,15 +200,27 @@ def _find_windows(q_lower: str) -> list[tuple[int, str, tuple[datetime, datetime
 
 
 def _match_names(names: list[str], q_lower: str) -> list[str]:
-    """Names that appear in the question as whole tokens; when one match is
-    contained in another ("gpt-4" inside "gpt-4o", "bot" inside "chatbot"),
-    only the longer one is kept."""
-    hits = {n for n in names if n and _phrase_re(n.lower()).search(q_lower)}
-    return sorted(
-        n
-        for n in hits
-        if not any(o.lower() != n.lower() and n.lower() in o.lower() for o in hits)
-    )
+    """Names that occur in the question as whole tokens.
+
+    Overlapping occurrences are resolved by span, longest first: in "gpt-4.1"
+    only "gpt-4.1" matches (not "gpt-4"), but "gpt-4 and gpt-4o" keeps both
+    because each name has its own occurrence.
+    """
+    candidates = []
+    for name in names:
+        if not name:
+            continue
+        for m in _phrase_re(name.lower()).finditer(q_lower):
+            candidates.append((m.end() - m.start(), m.start(), m.end(), name))
+    taken: list[tuple[int, int]] = []
+    kept: set[str] = set()
+    for _, start, end, name in sorted(candidates, key=lambda c: (-c[0], c[1])):
+        if all(end <= a or start >= b for a, b in taken):
+            taken.append((start, end))
+            kept.add(name)
+        elif any(start == a and end == b for a, b in taken):
+            kept.add(name)  # same text, another spelling (OpenAI / openai)
+    return sorted(kept)
 
 
 def detect_query_intent(query: str, db: Session) -> QueryIntent:

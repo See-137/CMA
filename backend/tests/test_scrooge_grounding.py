@@ -121,6 +121,17 @@ def test_entity_matching_is_whole_token_longest_wins(db):
     assert rag.detect_query_intent("robot nonexistent", db).agents == []
 
 
+def test_independently_named_overlapping_entities_are_all_kept(db):
+    _add(db, "bot", 1.0, model="gpt-4")
+    _add(db, "chatbot", 2.0, model="gpt-4o")
+    _add(db, "x", 1.0, model="gpt-4.1")
+    intent = rag.detect_query_intent("compare bot and chatbot on gpt-4 and gpt-4o", db)
+    assert intent.agents == ["bot", "chatbot"]
+    assert intent.models == ["gpt-4", "gpt-4o"]
+    # "gpt-4" is not a separate token inside "gpt-4.1".
+    assert rag.detect_query_intent("gpt-4.1 spend", db).models == ["gpt-4.1"]
+
+
 def test_unpriced_model_is_filterable_and_provider_spellings_merge(db):
     _add(db, "a", 0.0, model="shiny-new-model", provider="openai")
     intent = rag.detect_query_intent("cost of shiny-new-model on openai", db)
