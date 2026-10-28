@@ -11,7 +11,8 @@ import {
   ResponsiveContainer,
   Legend,
 } from 'recharts';
-import { Coins, Zap, Bot, Hash, MessageSquare } from 'lucide-react';
+import { Coins, Zap, Bot, Hash, MessageSquare, AlertTriangle } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import ChatDrawer from '../components/ChatDrawer';
 import { api } from '../api/client';
 import StatsCard from '../components/StatsCard';
@@ -103,7 +104,13 @@ export default function Dashboard() {
     label:
       period === 'today'
         ? new Date(d.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        : new Date(d.timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' }),
+        : // Day buckets are UTC days — label them as such, or viewers west of
+          // UTC see each bucket under the previous calendar day.
+          new Date(d.timestamp).toLocaleDateString([], {
+            month: 'short',
+            day: 'numeric',
+            timeZone: 'UTC',
+          }),
   }));
 
   const agentData = (topAgents?.data ?? []).slice(0, 8);
@@ -148,6 +155,26 @@ export default function Dashboard() {
           ))}
         </div>
       </header>
+
+      {/* Unpriced spend makes Total Cost an understatement — say so. */}
+      {overview && (overview.unpriced_events ?? 0) > 0 && (
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-primary"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" aria-hidden />
+          <p>
+            {overview.unpriced_events === 1
+              ? '1 event in this period had no matching model price and was'
+              : `${formatNumber(overview.unpriced_events)} events in this period had no matching model price and were`}{' '}
+            recorded at $0, so Total Cost is understated.{' '}
+            <Link to="/providers" className="font-medium underline">
+              Add pricing
+            </Link>
+            , then reprice {overview.unpriced_events === 1 ? 'it' : 'them'} from Settings.
+          </p>
+        </div>
+      )}
 
       {/* Stats */}
       {overview && (

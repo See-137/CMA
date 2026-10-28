@@ -3,6 +3,7 @@ import logging
 from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
@@ -25,25 +26,51 @@ from app.services.budget_checker import (
     event_rejection_reason,
     load_enforcement_state,
 )
-from app.services.cost_engine import calculate_cost
-from app.timeutils import utcnow
+from app.services.cost_engine import cost_for, resolve_pricing_match
+from app.timeutils import to_naive_utc, utcnow
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/events", tags=["events"])
 
 
-def _process_event(event: EventIn, db: Session, cost: float) -> CostEvent:
+def _event_cost(event: EventIn, db: Session) -> tuple[float, str]:
+    """Return (cost, cost_source) for an incoming event."""
+    if event.cost is not None:
+        return event.cost, "client"
+    match = resolve_pricing_match(event.provider, event.model, db)
+    if match is None:
+        logger.warning(
+            "No pricing for provider=%s model=%s — stored as unpriced",
+            event.provider,
+            event.model,
+        )
+        return 0.0, "unpriced"
+    pricing, exact = match
+    cost = cost_for(pricing, event.tokens_input, event.tokens_output)
+    return cost, "pricing" if exact else "estimated"
+
+
+def _process_event(
+    event: EventIn, db: Session, cost: float, cost_source: str | None = None
+) -> CostEvent:
     """Create a CostEvent from incoming data, auto-creating agent if needed."""
     # Auto-discover: create agent if it doesn't exist
     agent = db.query(Agent).filter(Agent.name == event.agent_name).first()
     if agent is None:
-        agent = Agent(
-            name=event.agent_name,
-            swarm=event.swarm,
-            workflow=event.workflow,
-        )
-        db.add(agent)
-        db.flush()
+        # Concurrent requests can both see "no agent" and race the INSERT. The
+        # loser must reuse the winner's row, not fail (and silently drop) the
+        # event — so the INSERT gets its own savepoint and a re-read on conflict.
+        try:
+            with db.begin_nested():
+                agent = Agent(
+                    name=event.agent_name,
+                    swarm=event.swarm,
+                    workflow=event.workflow,
+                )
+                db.add(agent)
+                db.flush()
+        except IntegrityError:
+            agent = db.query(Agent).filter(Agent.name == event.agent_name).one()
 
     metadata_str = None
     if event.metadata is not None:
@@ -60,6 +87,7 @@ def _process_event(event: EventIn, db: Session, cost: float) -> CostEvent:
         tokens_input=event.tokens_input,
         tokens_output=event.tokens_output,
         cost=cost,
+        cost_source=cost_source,
         duration_ms=event.duration_ms,
         status=event.status,
         workflow=event.workflow,
@@ -104,18 +132,16 @@ def ingest_events(
         enforcement = load_enforcement_state(db)
 
     for event in events:
-        cost = event.cost
-        if cost is None:
-            cost = calculate_cost(
-                event.provider,
-                event.model,
-                event.tokens_input,
-                event.tokens_output,
-                db,
-            )
+        cost, cost_source = _event_cost(event, db)
 
         reason = event_rejection_reason(
-            enforcement, event.agent_name, event.workflow, event.swarm, cost
+            enforcement,
+            event.agent_name,
+            event.workflow,
+            event.swarm,
+            cost,
+            provider=event.provider,
+            model=event.model,
         )
         if reason:
             rejected += 1
@@ -126,7 +152,7 @@ def ingest_events(
         # Isolate each event in a savepoint so one failure can't poison the batch.
         try:
             with db.begin_nested():
-                cost_event = _process_event(event, db, cost)
+                cost_event = _process_event(event, db, cost, cost_source)
                 db.flush()  # materialise the INSERT so cost_event.id is populated
             created.append(cost_event)
             processed += 1
@@ -179,6 +205,7 @@ def ingest_events(
         received=len(events),
         processed=processed,
         rejected=rejected,
+        errored=errored,
         rejection_reasons=rejection_reasons,
     )
 
@@ -196,6 +223,8 @@ def list_events(
     db: Session = Depends(get_db),
 ):
     query = db.query(CostEvent)
+    from_date = to_naive_utc(from_date)
+    to_date = to_naive_utc(to_date)
 
     if agent_name:
         query = query.filter(CostEvent.agent_name == agent_name)

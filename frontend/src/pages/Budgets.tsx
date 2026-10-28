@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
-import { api, ApiError } from '../api/client';
+import { api, ApiError, apiErrorMessage } from '../api/client';
 import DataTable, { Column } from '../components/DataTable';
 import Badge from '../components/Badge';
 import Modal from '../components/Modal';
@@ -83,11 +83,7 @@ const Budgets: React.FC = () => {
       refetch();
     } catch (err) {
       const msg =
-        err instanceof ApiError
-          ? (err.body as { detail?: string })?.detail ?? err.message
-          : err instanceof Error
-            ? err.message
-            : 'Failed to save budget';
+        apiErrorMessage(err, 'Failed to save budget');
       setSaveError(msg);
     }
   };
@@ -102,11 +98,7 @@ const Budgets: React.FC = () => {
       setConfirmId(null);
     } catch (err) {
       const msg =
-        err instanceof ApiError
-          ? (err.body as { detail?: string })?.detail ?? err.message
-          : err instanceof Error
-            ? err.message
-            : 'Failed to delete budget';
+        apiErrorMessage(err, 'Failed to delete budget');
       setDeleteError(msg);
     } finally {
       setDeleting(false);

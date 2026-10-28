@@ -24,7 +24,7 @@ import {
 } from '@icons-pack/react-simple-icons';
 import Badge from '../components/Badge';
 import Drawer from '../components/Drawer';
-import { api, ApiError } from '../api/client';
+import { api, ApiError, apiErrorMessage } from '../api/client';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { timeAgo, formatNumber } from '../utils/format';
 import type { PaginatedEvents } from '../types';
@@ -128,9 +128,7 @@ export default function Integrations() {
     } catch (err) {
       setTestState('err');
       setTestMsg(
-        err instanceof ApiError
-          ? (err.body as { detail?: string })?.detail ?? err.message
-          : 'Failed to send test event.',
+        apiErrorMessage(err, 'Failed to send test event.'),
       );
     }
   };

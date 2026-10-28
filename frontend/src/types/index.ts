@@ -38,6 +38,8 @@ export interface Event {
   tokens_input: number;
   tokens_output: number;
   cost: number;
+  /** 'pricing' | 'client' | 'unpriced'; null for events recorded before tracking. */
+  cost_source?: string | null;
   duration_ms: number | null;
   status: string;
   workflow: string | null;
@@ -133,6 +135,8 @@ export interface DashboardOverview {
   total_tokens: number;
   cost_change_pct: number;
   request_change_pct: number;
+  /** Events in the period stored at $0 because no model price matched. */
+  unpriced_events?: number;
 }
 
 export interface TimeseriesPoint {

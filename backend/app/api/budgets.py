@@ -5,7 +5,13 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.models.models import Budget
-from app.schemas.schemas import BudgetCreate, BudgetOut, BudgetUpdate, BudgetWithSpend
+from app.schemas.schemas import (
+    BudgetCreate,
+    BudgetOut,
+    BudgetUpdate,
+    BudgetWithSpend,
+    _check_scope_ref,
+)
 from app.services.budget_checker import _current_spend
 
 router = APIRouter(prefix="/budgets", tags=["budgets"])
@@ -54,6 +60,14 @@ def update_budget(budget_id: int, body: BudgetUpdate, db: Session = Depends(get_
         and update_data["alert_thresholds"] is not None
     ):
         update_data["alert_thresholds"] = json.dumps(update_data["alert_thresholds"])
+
+    try:
+        _check_scope_ref(
+            update_data.get("scope", budget.scope),
+            update_data.get("scope_ref", budget.scope_ref),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     for field, value in update_data.items():
         setattr(budget, field, value)

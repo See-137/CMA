@@ -64,6 +64,8 @@ jobs:
         run: cd backend && alembic upgrade head
       - name: Verify migrations are reversible
         run: cd backend && alembic downgrade base && alembic upgrade head
+      - name: Verify models and migrations agree (no drift)
+        run: cd backend && alembic check
 
   frontend-build:
     runs-on: ubuntu-latest

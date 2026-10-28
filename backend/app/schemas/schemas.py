@@ -1,7 +1,34 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    PlainSerializer,
+    field_validator,
+    model_validator,
+)
+
+from app.timeutils import to_naive_utc
+
+
+def _utc_iso(value: datetime) -> str:
+    """Serialise stored naive-UTC datetimes with an explicit "Z".
+
+    Without a designator, browsers parse ISO strings as *local* time, shifting
+    every displayed timestamp by the viewer's UTC offset.
+    """
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return value.isoformat().replace("+00:00", "Z")
+
+
+# Output datetimes are always UTC with "Z"; inputs accept any ISO-8601.
+UTCDateTime = Annotated[datetime, PlainSerializer(_utc_iso, when_used="json")]
+
 
 # -- Setup --------------------------------------------------------------------
 
@@ -56,7 +83,12 @@ class EventIn(BaseModel):
     workflow: str | None = Field(default=None, max_length=255)
     swarm: str | None = Field(default=None, max_length=255)
     metadata: dict | None = None
-    timestamp: datetime | None = None
+    timestamp: UTCDateTime | None = None
+
+    @field_validator("timestamp")
+    @classmethod
+    def _timestamp_to_utc(cls, v: datetime | None) -> datetime | None:
+        return to_naive_utc(v)
 
 
 class EventsEnvelope(BaseModel):
@@ -74,13 +106,14 @@ class EventOut(BaseModel):
     tokens_input: int
     tokens_output: int
     cost: float
+    cost_source: str | None = None
     duration_ms: int | None = None
     status: str
     workflow: str | None = None
     swarm: str | None = None
     metadata_json: str | None = None
-    timestamp: datetime
-    created_at: datetime | None = None
+    timestamp: UTCDateTime
+    created_at: UTCDateTime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -89,6 +122,9 @@ class EventsIngestionResponse(BaseModel):
     received: int
     processed: int
     rejected: int = 0
+    # Events that failed to persist (server-side error). Non-zero means the
+    # caller's data was NOT stored even though the request returned 200.
+    errored: int = 0
     rejection_reasons: list[str] = []
 
 
@@ -127,8 +163,8 @@ class AgentOut(BaseModel):
     swarm: str | None = None
     workflow: str | None = None
     is_active: bool
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
+    created_at: UTCDateTime | None = None
+    updated_at: UTCDateTime | None = None
     total_cost: float = 0.0
     request_count: int = 0
 
@@ -152,9 +188,9 @@ class AgentDetail(AgentOut):
 
 
 class ModelPricingIn(BaseModel):
-    model_name: str
-    input_price_per_million: float
-    output_price_per_million: float
+    model_name: str = Field(min_length=1, max_length=255)
+    input_price_per_million: float = Field(ge=0)
+    output_price_per_million: float = Field(ge=0)
     model_alias: str | None = None
 
 
@@ -166,8 +202,8 @@ class ModelPricingOut(BaseModel):
     input_price_per_million: float
     output_price_per_million: float
     is_active: bool
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
+    created_at: UTCDateTime | None = None
+    updated_at: UTCDateTime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -175,8 +211,8 @@ class ModelPricingOut(BaseModel):
 class ModelPricingUpdate(BaseModel):
     model_name: str | None = None
     model_alias: str | None = None
-    input_price_per_million: float | None = None
-    output_price_per_million: float | None = None
+    input_price_per_million: float | None = Field(default=None, ge=0)
+    output_price_per_million: float | None = Field(default=None, ge=0)
     is_active: bool | None = None
 
 
@@ -197,8 +233,8 @@ class ProviderOut(BaseModel):
     name: str
     provider_type: str
     is_active: bool
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
+    created_at: UTCDateTime | None = None
+    updated_at: UTCDateTime | None = None
     models: list[ModelPricingOut] = []
 
     model_config = {"from_attributes": True}
@@ -207,24 +243,49 @@ class ProviderOut(BaseModel):
 # -- Budgets ------------------------------------------------------------------
 
 
+# Every value the UI offers must be accepted AND enforced (provider/model
+# scopes and hourly periods were offered by the UI long before they were
+# enforced; see FINDINGS BUD-03).
+BudgetScope = Literal["global", "agent", "swarm", "workflow", "provider", "model"]
+BudgetPeriod = Literal["hourly", "daily", "weekly", "monthly"]
+# "block"/"throttle" are what the UI has always sent; "stop"/"rate_limit"/
+# "model_downgrade" are what enforcement historically recognised. All are
+# accepted so existing clients keep working; see docs/FINDINGS.md (budget
+# enforcement semantics) for how they are interpreted.
+BudgetAction = Literal[
+    "alert", "block", "throttle", "stop", "rate_limit", "model_downgrade"
+]
+Threshold = Annotated[int, Field(gt=0, le=1000)]
+
+
+def _check_scope_ref(scope: str | None, scope_ref: str | None) -> None:
+    if scope and scope != "global" and not (scope_ref or "").strip():
+        raise ValueError(f"scope '{scope}' requires a non-empty scope_ref")
+
+
 class BudgetCreate(BaseModel):
-    name: str
-    scope: str
-    scope_ref: str | None = None
-    period: str
-    limit_amount: float
-    alert_thresholds: list[int] = [50, 75, 90, 100]
-    control_action: str = "alert"
+    name: str = Field(min_length=1, max_length=255)
+    scope: BudgetScope
+    scope_ref: str | None = Field(default=None, max_length=255)
+    period: BudgetPeriod
+    limit_amount: float = Field(ge=0)
+    alert_thresholds: list[Threshold] = [50, 75, 90, 100]
+    control_action: BudgetAction = "alert"
+
+    @model_validator(mode="after")
+    def _scope_ref_required(self):
+        _check_scope_ref(self.scope, self.scope_ref)
+        return self
 
 
 class BudgetUpdate(BaseModel):
-    name: str | None = None
-    scope: str | None = None
-    scope_ref: str | None = None
-    period: str | None = None
-    limit_amount: float | None = None
-    alert_thresholds: list[int] | None = None
-    control_action: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    scope: BudgetScope | None = None
+    scope_ref: str | None = Field(default=None, max_length=255)
+    period: BudgetPeriod | None = None
+    limit_amount: float | None = Field(default=None, ge=0)
+    alert_thresholds: list[Threshold] | None = None
+    control_action: BudgetAction | None = None
     is_active: bool | None = None
 
 
@@ -238,8 +299,8 @@ class BudgetOut(BaseModel):
     alert_thresholds: list[int]
     control_action: str
     is_active: bool
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
+    created_at: UTCDateTime | None = None
+    updated_at: UTCDateTime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -267,8 +328,8 @@ class AlertOut(BaseModel):
     message: str
     severity: str
     is_resolved: bool
-    created_at: datetime | None = None
-    resolved_at: datetime | None = None
+    created_at: UTCDateTime | None = None
+    resolved_at: UTCDateTime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -285,8 +346,8 @@ class AlertChannelOut(BaseModel):
     channel_type: str
     config_json: str
     is_active: bool
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
+    created_at: UTCDateTime | None = None
+    updated_at: UTCDateTime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -301,6 +362,9 @@ class DashboardOverview(BaseModel):
     total_tokens: int
     cost_change_pct: float
     request_change_pct: float
+    # Events in the period stored at $0 because no price matched — the
+    # total_cost understates spend while this is non-zero.
+    unpriced_events: int = 0
 
 
 class TimeseriesPoint(BaseModel):
@@ -387,8 +451,13 @@ class SemanticSearchRequest(BaseModel):
     provider: str | None = None
     model: str | None = None
     status: str | None = None
-    from_date: datetime | None = None
-    to_date: datetime | None = None
+    from_date: UTCDateTime | None = None
+    to_date: UTCDateTime | None = None
+
+    @field_validator("from_date", "to_date")
+    @classmethod
+    def _dates_to_utc(cls, v: datetime | None) -> datetime | None:
+        return to_naive_utc(v)
 
 
 class SemanticSearchResult(BaseModel):

@@ -12,6 +12,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
+from sqlalchemy.sql import false
 
 from app.database import Base
 from app.timeutils import utcnow
@@ -99,6 +100,9 @@ class CostEvent(Base):
     tokens_input = Column(Integer, nullable=False)
     tokens_output = Column(Integer, nullable=False)
     cost = Column(Float, nullable=False)
+    # 'pricing' | 'estimated' | 'client' | 'unpriced' (NULL = recorded before
+    # this existed). Unindexed: low cardinality and queried via OR/NULL.
+    cost_source = Column(String(20), nullable=True)
     duration_ms = Column(Integer, nullable=True)
     status = Column(String(50), default="success")
     workflow = Column(String(255), nullable=True)
@@ -178,6 +182,9 @@ class DailyCostRollup(Base):
     request_count = Column(Integer, default=0)
     failure_count = Column(Integer, default=0)
     avg_duration_ms = Column(Float, nullable=True)
+    # True once the day's raw events were pruned: this row is then the only
+    # record of that spend and must not be recomputed from surviving events.
+    archived = Column(Boolean, nullable=False, default=False, server_default=false())
 
     __table_args__ = (
         UniqueConstraint(

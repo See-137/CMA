@@ -177,3 +177,29 @@ export async function streamChat(
 }
 
 export { ApiError };
+
+/**
+ * Human-readable message for a failed request. FastAPI returns `detail` as a
+ * string for HTTPException but as an ARRAY of {loc, msg} objects for 422
+ * validation errors — rendering that array as a React child crashes the page.
+ */
+export function apiErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof ApiError) {
+    const detail = (err.body as { detail?: unknown } | undefined)?.detail;
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) {
+      const parts = detail.map((d) => {
+        if (d && typeof d === 'object' && 'msg' in d) {
+          const loc = Array.isArray((d as { loc?: unknown }).loc)
+            ? ((d as { loc: unknown[] }).loc.filter((x) => x !== 'body').join('.') as string)
+            : '';
+          return loc ? `${loc}: ${String((d as { msg: unknown }).msg)}` : String((d as { msg: unknown }).msg);
+        }
+        return String(d);
+      });
+      if (parts.length) return parts.join('; ');
+    }
+    return err.message || fallback;
+  }
+  return err instanceof Error ? err.message : fallback;
+}

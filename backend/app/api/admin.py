@@ -1,7 +1,9 @@
 import logging
 import os
+from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends
+from pydantic import BaseModel, field_validator, model_validator
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
@@ -9,7 +11,8 @@ from app.api.deps import get_db, require_admin
 from app.config import settings
 from app.logging_config import LOG_FILE
 from app.models.models import Agent, Alert, Budget, CostEvent, SetupConfig
-from app.timeutils import utcnow
+from app.services.cost_engine import reprice_events
+from app.timeutils import to_naive_utc, utcnow
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 logger = logging.getLogger(__name__)
@@ -121,6 +124,11 @@ def full_reset(db: Session = Depends(get_db)):
     db.execute(text("DELETE FROM providers"))
     db.execute(text("DELETE FROM setup_config"))
     db.commit()
+    # Seeding only runs at startup; without re-seeding here, every event
+    # ingested after a full reset (until the next restart) is priced at $0.
+    from app.seed import seed_providers
+
+    seed_providers(db)
 
     # Clear vector store so RAG doesn't answer from stale embeddings
     try:
@@ -131,7 +139,8 @@ def full_reset(db: Session = Depends(get_db)):
         logger.warning("Failed to clear vector store during full reset", exc_info=True)
 
     return {
-        "message": "Full reset complete. Please restart the application to re-run setup."
+        "message": "Full reset complete. Default provider pricing restored; "
+        "re-run the setup wizard."
     }
 
 
@@ -168,3 +177,60 @@ def export_summary(db: Session = Depends(get_db)):
         ],
         "total_events_in_db": db.query(func.count(CostEvent.id)).scalar() or 0,
     }
+
+
+class RepriceRequest(BaseModel):
+    from_date: datetime | None = None
+    to_date: datetime | None = None
+    dry_run: bool = False
+
+    @field_validator("from_date", "to_date")
+    @classmethod
+    def _utc(cls, v: datetime | None) -> datetime | None:
+        return to_naive_utc(v)
+
+    @model_validator(mode="after")
+    def _ordered(self):
+        if self.from_date and self.to_date and self.from_date > self.to_date:
+            raise ValueError("from_date must not be after to_date")
+        return self
+
+
+@router.post("/reprice", dependencies=admin_only)
+def reprice(
+    background_tasks: BackgroundTasks,
+    body: RepriceRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    """Recompute cost for events stored without a price (cost_source
+    'unpriced', or legacy rows at $0 with tokens) using current pricing, and
+    recompute the daily rollups of the affected completed days.
+
+    Use after adding/fixing model pricing. ``dry_run`` reports what would
+    change without writing.
+    """
+    body = body or RepriceRequest()
+    result = reprice_events(db, body.from_date, body.to_date, body.dry_run)
+    ids = result.pop("repriced_ids")
+    if ids and not body.dry_run:
+        # Embedded event text includes the cost — refresh the cache.
+        def _reembed(event_ids: list[int]) -> None:
+            from app.database import SessionLocal
+            from app.services.vector_store import embed_and_upsert_events
+
+            bg_db = SessionLocal()
+            try:
+                embed_and_upsert_events(bg_db, event_ids)
+            except Exception:
+                logger.warning("Re-embedding repriced events failed", exc_info=True)
+            finally:
+                bg_db.close()
+
+        background_tasks.add_task(_reembed, ids)
+    logger.info(
+        "Reprice: %d events, +%.6f cost (dry_run=%s)",
+        result["repriced"],
+        result["added_cost"],
+        body.dry_run,
+    )
+    return result

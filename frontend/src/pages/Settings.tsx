@@ -9,7 +9,9 @@ import {
   CheckCircle,
   Lock,
   KeyRound,
+  Coins,
 } from 'lucide-react';
+import { formatCurrency } from '../utils/format';
 import { api, ApiError } from '../api/client';
 import Modal from '../components/Modal';
 
@@ -145,7 +147,7 @@ const Settings: React.FC = () => {
   );
 
   // Admin password modal
-  type PendingAction = 'reset' | 'full-reset' | 'export' | 'logs';
+  type PendingAction = 'reset' | 'full-reset' | 'export' | 'logs' | 'reprice';
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [pwdError, setPwdError] = useState<string | null>(null);
 
@@ -231,6 +233,22 @@ const Settings: React.FC = () => {
         setFullResetInput('');
         setPendingAction(null);
         fetchStatus();
+      } else if (pendingAction === 'reprice') {
+        const result = await api.post<{
+          repriced: number;
+          added_cost: number;
+          still_unpriced: Record<string, number>;
+        }>('/api/v1/admin/reprice', {}, adminHeader);
+        const missing = Object.entries(result.still_unpriced);
+        const tail = missing.length
+          ? ` Still no price for: ${missing.map(([k, n]) => `${k} (${n})`).join(', ')}.`
+          : '';
+        setActionMessage({
+          text: `Repriced ${result.repriced} event${result.repriced === 1 ? '' : 's'} (+${formatCurrency(result.added_cost, 4)}).${tail}`,
+          tone: missing.length ? 'err' : 'ok',
+        });
+        setPendingAction(null);
+        fetchStatus();
       } else if (pendingAction === 'export') {
         const data = await api.get<Record<string, unknown>>(
           '/api/v1/admin/export',
@@ -286,6 +304,12 @@ const Settings: React.FC = () => {
       description:
         'This destroys everything — events, agents, budgets, and your setup configuration. You will need to run the setup wizard again. There is no undo. Enter your admin password to proceed.',
       submitLabel: 'Full Reset',
+    },
+    reprice: {
+      title: 'Reprice Unpriced Events',
+      description:
+        'Recompute the cost of events recorded at $0 because no model price matched, using current pricing. Costs sent by your own client are not changed — except events recorded before cost tracking existed, where a client-sent $0 with tokens cannot be told apart from an unpriced event. Days already pruned keep their archived totals. Enter your admin password to proceed.',
+      submitLabel: 'Reprice',
     },
     export: {
       title: 'Export Ledger',
@@ -396,6 +420,23 @@ const Settings: React.FC = () => {
               </button>
               <p className="mt-1.5 text-xs text-muted">
                 Download all agents and recent events as JSON.
+              </p>
+            </div>
+
+            <div className="hairline" />
+
+            {/* Reprice */}
+            <div>
+              <button
+                onClick={() => openAction('reprice')}
+                disabled={actionLoading === 'reprice'}
+                className="btn-secondary gap-2"
+              >
+                <Coins className="h-4 w-4" />
+                {actionLoading === 'reprice' ? 'Repricing…' : 'Reprice Unpriced Events'}
+              </button>
+              <p className="mt-1.5 text-xs text-muted">
+                After adding model pricing, apply it to events stored at $0.
               </p>
             </div>
 

@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 def _period_start(period: str) -> datetime:
     """Return the start-of-period datetime for the given budget period."""
     now = utcnow()
+    if period == "hourly":
+        return now.replace(minute=0, second=0, microsecond=0)
     if period == "daily":
         return now.replace(hour=0, minute=0, second=0, microsecond=0)
     elif period == "weekly":
@@ -38,6 +40,15 @@ def _current_spend(budget: Budget, db: Session) -> float:
         query = query.filter(CostEvent.swarm == budget.scope_ref)
     elif budget.scope == "workflow" and budget.scope_ref:
         query = query.filter(CostEvent.workflow == budget.scope_ref)
+    elif budget.scope == "provider" and budget.scope_ref:
+        # Provider spellings differ between SDK ("openai") and UI ("OpenAI").
+        query = query.filter(
+            func.lower(CostEvent.provider_name) == budget.scope_ref.lower()
+        )
+    elif budget.scope == "model" and budget.scope_ref:
+        query = query.filter(
+            func.lower(CostEvent.model_name) == budget.scope_ref.lower()
+        )
     # scope == "global" -> no extra filter
 
     result = query.scalar()
@@ -63,14 +74,27 @@ def _alert_exists_for_period(
 
 
 def _scope_matches(
-    budget: Budget, agent_name: str, workflow: str | None, swarm: str | None
+    budget: Budget,
+    agent_name: str | None,
+    workflow: str | None,
+    swarm: str | None,
+    provider: str | None = None,
+    model: str | None = None,
 ) -> bool:
-    if budget.scope == "agent" and budget.scope_ref:
-        return budget.scope_ref == agent_name
-    if budget.scope == "swarm" and budget.scope_ref:
-        return budget.scope_ref == swarm
-    if budget.scope == "workflow" and budget.scope_ref:
-        return budget.scope_ref == workflow
+    """Same matching rules as _current_spend uses to sum the budget's spend."""
+    ref = budget.scope_ref
+    if not ref:
+        return True  # global (or a legacy scoped row without a ref)
+    if budget.scope == "agent":
+        return ref == agent_name
+    if budget.scope == "swarm":
+        return ref == swarm
+    if budget.scope == "workflow":
+        return ref == workflow
+    if budget.scope == "provider":
+        return provider is not None and ref.lower() == provider.lower()
+    if budget.scope == "model":
+        return model is not None and ref.lower() == model.lower()
     return True  # scope == "global" matches everything
 
 
@@ -97,6 +121,8 @@ def event_rejection_reason(
     workflow: str | None,
     swarm: str | None,
     cost: float,
+    provider: str | None = None,
+    model: str | None = None,
 ) -> str | None:
     """Check one event against prefetched enforcement state.
 
@@ -107,7 +133,7 @@ def event_rejection_reason(
     matched = []
     for entry in state:
         budget = entry["budget"]
-        if not _scope_matches(budget, agent_name, workflow, swarm):
+        if not _scope_matches(budget, agent_name, workflow, swarm, provider, model):
             continue
         if budget.limit_amount > 0 and entry["spend"] >= budget.limit_amount:
             return (

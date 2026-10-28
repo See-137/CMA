@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func
@@ -19,6 +19,7 @@ from app.schemas.schemas import (
     TopAgentsResponse,
 )
 from app.services.budget_checker import _current_spend
+from app.services.cost_engine import unpriced_clause
 from app.timeutils import utcnow
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -36,6 +37,14 @@ def _format_timestamp(granularity: str):
             return func.strftime("%Y-%m-%d", CostEvent.timestamp)
         else:
             return func.date_trunc("day", CostEvent.timestamp)
+
+
+def _bucket_iso(value) -> str:
+    """Bucket start as UTC ISO-8601 with "Z", identical on SQLite and Postgres
+    (SQLite returns a strftime string, Postgres a naive datetime)."""
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value if len(value) > 10 else value + " 00:00")
+    return value.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _period_bounds(period: str) -> tuple[datetime, datetime]:
@@ -59,29 +68,29 @@ def _period_bounds(period: str) -> tuple[datetime, datetime]:
     return start, now
 
 
+def _months_back(start: datetime, months: int) -> datetime:
+    month_index = start.year * 12 + (start.month - 1) - months
+    return start.replace(year=month_index // 12, month=month_index % 12 + 1)
+
+
 def _prev_period_bounds(period: str) -> tuple[datetime, datetime]:
-    """Return bounds for the previous equivalent period (for change %)."""
-    now = utcnow()
-    if period == "today":
-        end = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        start = end - timedelta(days=1)
-    elif period == "week":
-        current_start = (now - timedelta(days=now.weekday())).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-        end = current_start
-        start = end - timedelta(weeks=1)
+    """Like-for-like previous window for change %: the previous period's
+    start plus the same elapsed time (clamped to that period's end).
+
+    Comparing today-so-far against *all* of yesterday made every morning
+    look like a large drop; 'quarter' used to compare against yesterday.
+    """
+    start, now = _period_bounds(period)
+    if period == "week":
+        prev_start = start - timedelta(weeks=1)
     elif period == "month":
-        current_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        end = current_start
-        if current_start.month == 1:
-            start = current_start.replace(year=current_start.year - 1, month=12)
-        else:
-            start = current_start.replace(month=current_start.month - 1)
-    else:
-        end = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        start = end - timedelta(days=1)
-    return start, end
+        prev_start = _months_back(start, 1)
+    elif period == "quarter":
+        prev_start = _months_back(start, 3)
+    else:  # today / default
+        prev_start = start - timedelta(days=1)
+    prev_end = min(prev_start + (now - start), start)
+    return prev_start, prev_end
 
 
 def _pct_change(current: float, previous: float) -> float:
@@ -114,7 +123,7 @@ def dashboard_overview(period: str = Query("today"), db: Session = Depends(get_d
             func.coalesce(func.sum(CostEvent.cost), 0.0).label("total_cost"),
             func.count(CostEvent.id).label("total_requests"),
         )
-        .filter(CostEvent.timestamp >= prev_start, CostEvent.timestamp <= prev_end)
+        .filter(CostEvent.timestamp >= prev_start, CostEvent.timestamp < prev_end)
         .first()
     )
 
@@ -124,8 +133,19 @@ def dashboard_overview(period: str = Query("today"), db: Session = Depends(get_d
         .scalar()
     ) or 0
 
+    unpriced_events = (
+        db.query(func.count(CostEvent.id))
+        .filter(
+            CostEvent.timestamp >= start,
+            CostEvent.timestamp <= end,
+            unpriced_clause(),
+        )
+        .scalar()
+    ) or 0
+
     return DashboardOverview(
         total_cost=round(float(current.total_cost), 6),
+        unpriced_events=int(unpriced_events),
         total_requests=int(current.total_requests),
         active_agents=int(active_agents),
         total_tokens=int(current.total_tokens),
@@ -160,7 +180,7 @@ def dashboard_timeseries(
 
     data = [
         TimeseriesPoint(
-            timestamp=str(row.ts),
+            timestamp=_bucket_iso(row.ts),
             cost=round(float(row.cost), 6),
             requests=int(row.requests),
         )
