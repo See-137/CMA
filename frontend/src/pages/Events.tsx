@@ -168,9 +168,14 @@ const Events: React.FC = () => {
                   row.tokens_cache_write ?? 0
                 )} written`}
               >
-                {formatNumber(row.tokens_cache_read ?? 0)} cache read
-                {(row.tokens_cache_write ?? 0) > 0 &&
-                  ` · ${formatNumber(row.tokens_cache_write ?? 0)} written`}
+                {[
+                  (row.tokens_cache_read ?? 0) > 0 &&
+                    `${formatNumber(row.tokens_cache_read ?? 0)} cache read`,
+                  (row.tokens_cache_write ?? 0) > 0 &&
+                    `${formatNumber(row.tokens_cache_write ?? 0)} cache written`,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
               </span>
             )}
           </span>

@@ -117,7 +117,12 @@ writes (5-minute and 1-hour) are added to `tokens_input` and sent as
 `cached_tokens` is sent as `tokens_cache_read`. The backend prices them at the
 model's cache prices. `log_event`, `log_completion` and the LangChain handler take
 the same fields; `log_event` clamps cache counts that exceed `tokens_input` (the
-backend would reject the whole batch). Needs a CMA server with migration 006. `responses.stream()`
+backend would reject the whole batch).
+
+**Upgrade the CMA server first.** This SDK needs a server with migration 006. An
+older server ignores the cache fields but receives the larger `tokens_input`, so it
+bills cache reads at the full input price (up to 10× too much for Anthropic cache
+hits). The SDK cannot detect the server version. `responses.stream()`
 for a new request is recorded: it goes through `responses.create`.
 
 Streams are passed through unchanged. If CMA injects

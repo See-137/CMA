@@ -17,7 +17,7 @@ from cost_monitor._patching import (
     is_cancellation,
     precall_enforce,
 )
-from cost_monitor._usage import anthropic_delta_input, cache_kwargs, usage_fields
+from cost_monitor._usage import cache_kwargs, merge_anthropic_delta, usage_fields
 
 logger = logging.getLogger("cost_monitor.auto.anthropic")
 
@@ -140,6 +140,7 @@ def _wrap_sync_stream(
     """
     tokens_in = 0
     tokens_out = 0
+    fields = usage_fields(None)
     cache: dict = {}
     error: BaseException | None = None
     closed_early = False
@@ -156,9 +157,9 @@ def _wrap_sync_stream(
             elif etype == "message_delta":
                 usage = getattr(event, "usage", None)
                 tokens_out = getattr(usage, "output_tokens", 0) if usage else 0
-                delta_in = anthropic_delta_input(usage)
-                if delta_in is not None:
-                    tokens_in, cache = delta_in["tokens_input"], cache_kwargs(delta_in)
+                if usage is not None:
+                    fields = merge_anthropic_delta(fields, usage)
+                    tokens_in, cache = fields["tokens_input"], cache_kwargs(fields)
             elif etype == "message_stop":
                 finished = True
             yield event
@@ -222,6 +223,7 @@ async def _wrap_async_stream(
     """Async counterpart of _wrap_sync_stream."""
     tokens_in = 0
     tokens_out = 0
+    fields = usage_fields(None)
     cache: dict = {}
     error: BaseException | None = None
     closed_early = False
@@ -238,9 +240,9 @@ async def _wrap_async_stream(
             elif etype == "message_delta":
                 usage = getattr(event, "usage", None)
                 tokens_out = getattr(usage, "output_tokens", 0) if usage else 0
-                delta_in = anthropic_delta_input(usage)
-                if delta_in is not None:
-                    tokens_in, cache = delta_in["tokens_input"], cache_kwargs(delta_in)
+                if usage is not None:
+                    fields = merge_anthropic_delta(fields, usage)
+                    tokens_in, cache = fields["tokens_input"], cache_kwargs(fields)
             elif etype == "message_stop":
                 finished = True
             yield event

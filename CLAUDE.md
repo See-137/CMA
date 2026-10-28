@@ -25,7 +25,7 @@
 ```powershell
 cd backend; pip install -r requirements-dev.txt; pytest
 ```
-- 231 backend tests (1 needs `CMA_TEST_PG_URL`, set in CI) (`backend/tests`) + 88 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
+- 235 backend tests (1 needs `CMA_TEST_PG_URL`, set in CI) (`backend/tests`) + 101 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
 - `test_events.py` — ingestion, auto-discovery (incl. race), UTC timestamp normalisation
 - `test_pricing.py` — pricing resolution, cost_source, reprice, reset-full reseed
 - `test_cache_pricing.py` — prompt-cache tokens: validation, cache prices, fallback to `estimated`, reprice, Scrooge what-if

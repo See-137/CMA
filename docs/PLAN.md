@@ -209,3 +209,7 @@ Owner decisions (2026-10-28):
   and LangChain, Providers page edits cache prices, Events page shows them,
   Scrooge what-if prices alternatives with cache usage. New ACC-20/21.
   Backend tests → 231, SDK → 88.
+- 2026-10-29 — Independent review of #28: REQUEST CHANGES (1-hour cache writes
+  lost on `stream=True` when the delta carries cumulative counts). Fixed with
+  a field-by-field delta merge plus all minors (FINDINGS REV-28). Backend
+  tests → 235, SDK → 101.

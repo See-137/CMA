@@ -152,12 +152,16 @@ def cache_prices_exact(
     cache_write_1h: int = 0,
 ) -> bool:
     """False when the call used cache tokens whose price is not set on the
-    model, so ``cost_for`` fell back to another price (cost is an estimate)."""
+    model, so ``cost_for`` fell back to another price (cost is an estimate).
+    Counts are clamped exactly as ``cost_for`` clamps them."""
+    cache_read = max(cache_read or 0, 0)
+    cache_write = max(cache_write or 0, 0)
+    cache_write_1h = min(max(cache_write_1h or 0, 0), cache_write)
     if cache_read and pricing.cache_read_price_per_million is None:
         return False
     if cache_write_1h and pricing.cache_write_1h_price_per_million is None:
         return False
-    writes_5m = (cache_write or 0) - (cache_write_1h or 0)
+    writes_5m = cache_write - cache_write_1h
     return not (writes_5m > 0 and pricing.cache_write_price_per_million is None)
 
 

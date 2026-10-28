@@ -14,6 +14,7 @@ from typing import Any, Generator
 
 import httpx
 
+from cost_monitor._usage import _int as _count
 from cost_monitor._usage import usage_fields
 
 logger = logging.getLogger("cost_monitor")
@@ -278,12 +279,14 @@ class CostTracker:
         # Clamp so one inconsistent event cannot 422 the whole envelope:
         # the backend rejects cache counts larger than the input they are
         # part of. Sent only when non-zero (older backends ignore them).
-        cache_read = max(int(tokens_cache_read or 0), 0)
-        cache_write = max(int(tokens_cache_write or 0), 0)
-        if cache_read + cache_write > tokens_input:
-            cache_read = min(cache_read, tokens_input)
-            cache_write = tokens_input - cache_read
-        cache_write_1h = min(max(int(tokens_cache_write_1h or 0), 0), cache_write)
+        # Never raises: odd values (None, "10", 10.0) count as best they can.
+        total = _count(tokens_input)
+        cache_read = _count(tokens_cache_read)
+        cache_write = _count(tokens_cache_write)
+        if cache_read + cache_write > total:
+            cache_read = min(cache_read, total)
+            cache_write = total - cache_read
+        cache_write_1h = min(_count(tokens_cache_write_1h), cache_write)
         for key, value in (
             ("tokens_cache_read", cache_read),
             ("tokens_cache_write", cache_write),

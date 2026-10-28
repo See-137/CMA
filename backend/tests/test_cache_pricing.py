@@ -232,3 +232,88 @@ def test_scrooge_what_if_uses_alternative_cache_prices(db):
     alts = {a["model"]: a for a in rows[0]["alternatives"]}
     # Sonnet 5's cache read is $0.20/M: 1M cached tokens cost $0.20, not $2.
     assert alts["claude-sonnet-5"]["estimated_cost"] == pytest.approx(0.20)
+
+
+def test_five_minute_writes_without_a_write_price_are_estimated():
+    m = ModelPricing(
+        input_price_per_million=4.0,
+        output_price_per_million=0.0,
+        cache_read_price_per_million=0.4,
+        cache_write_1h_price_per_million=8.0,
+    )
+    assert not cache_prices_exact(m, 0, 200, 50)  # 150 five-minute writes
+    assert cache_prices_exact(m, 0, 200, 200)  # all 1-hour: exact
+    # A stored row with 1h > write is clamped the same way cost_for clamps it.
+    assert cache_prices_exact(m, 0, 100, 300)
+
+
+def test_reprice_applies_one_hour_write_price(authed_client, db):
+    _post(
+        authed_client,
+        model="claude-new",
+        provider="anthropic",
+        tokens_input=1_000,
+        tokens_cache_write=1_000,
+        tokens_cache_write_1h=1_000,
+    )
+    anthropic = db.query(Provider).filter(Provider.name == "Anthropic").one()
+    authed_client.post(
+        f"/api/v1/providers/{anthropic.id}/models",
+        json={
+            "model_name": "claude-new",
+            "input_price_per_million": 2.0,
+            "output_price_per_million": 10.0,
+            "cache_write_price_per_million": 2.5,
+            "cache_write_1h_price_per_million": 4.0,
+        },
+    )
+    authed_client.post("/api/v1/admin/reprice", json={}, headers=ADMIN)
+    ev = _only_event(authed_client)
+    assert ev["cost"] == pytest.approx(1_000 * 4.0 / 1e6)
+    assert ev["cost_source"] == "pricing"
+
+
+def test_create_provider_keeps_nested_cache_prices(authed_client):
+    r = authed_client.post(
+        "/api/v1/providers",
+        json={
+            "name": "Proxy",
+            "provider_type": "anthropic",
+            "models": [
+                {
+                    "model_name": "m",
+                    "input_price_per_million": 1.0,
+                    "output_price_per_million": 2.0,
+                    "cache_read_price_per_million": 0.1,
+                    "cache_write_price_per_million": 1.25,
+                    "cache_write_1h_price_per_million": 2.0,
+                }
+            ],
+        },
+    )
+    assert r.status_code == 201, r.text
+    (model,) = r.json()["models"]
+    assert (
+        model["cache_read_price_per_million"],
+        model["cache_write_price_per_million"],
+        model["cache_write_1h_price_per_million"],
+    ) == (0.1, 1.25, 2.0)
+
+
+def test_admin_export_includes_cache_tokens(authed_client):
+    _post(
+        authed_client,
+        model="claude-sonnet-4-6",
+        provider="anthropic",
+        tokens_input=600,
+        tokens_cache_read=400,
+        tokens_cache_write=100,
+        tokens_cache_write_1h=40,
+    )
+    body = authed_client.get("/api/v1/admin/export", headers=ADMIN).json()
+    (ev,) = body["recent_events"]
+    assert (
+        ev["tokens_cache_read"],
+        ev["tokens_cache_write"],
+        ev["tokens_cache_write_1h"],
+    ) == (400, 100, 40)

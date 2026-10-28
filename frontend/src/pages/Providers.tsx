@@ -10,8 +10,11 @@ import EmptyState from '../components/EmptyState';
 import type { Provider, Model } from '../types';
 
 /** Format a per-million price to 2 dp */
+// At least 2 decimals, up to 4 when the price needs them ($0.125, $0.0375).
 const formatPrice = (v: number | null | undefined) =>
-  v === null || v === undefined ? '—' : `$${v.toFixed(v !== 0 && v < 0.1 ? 3 : 2)}`;
+  v === null || v === undefined
+    ? '—'
+    : `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
 
 type PriceField =
   | 'input_price_per_million'
