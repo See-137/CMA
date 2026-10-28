@@ -1,10 +1,34 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    PlainSerializer,
+    field_validator,
+    model_validator,
+)
 
 from app.timeutils import to_naive_utc
+
+
+def _utc_iso(value: datetime) -> str:
+    """Serialise stored naive-UTC datetimes with an explicit "Z".
+
+    Without a designator, browsers parse ISO strings as *local* time, shifting
+    every displayed timestamp by the viewer's UTC offset.
+    """
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return value.isoformat().replace("+00:00", "Z")
+
+
+# Output datetimes are always UTC with "Z"; inputs accept any ISO-8601.
+UTCDateTime = Annotated[datetime, PlainSerializer(_utc_iso, when_used="json")]
+
 
 # -- Setup --------------------------------------------------------------------
 
@@ -59,7 +83,7 @@ class EventIn(BaseModel):
     workflow: str | None = Field(default=None, max_length=255)
     swarm: str | None = Field(default=None, max_length=255)
     metadata: dict | None = None
-    timestamp: datetime | None = None
+    timestamp: UTCDateTime | None = None
 
     @field_validator("timestamp")
     @classmethod
@@ -88,8 +112,8 @@ class EventOut(BaseModel):
     workflow: str | None = None
     swarm: str | None = None
     metadata_json: str | None = None
-    timestamp: datetime
-    created_at: datetime | None = None
+    timestamp: UTCDateTime
+    created_at: UTCDateTime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -139,8 +163,8 @@ class AgentOut(BaseModel):
     swarm: str | None = None
     workflow: str | None = None
     is_active: bool
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
+    created_at: UTCDateTime | None = None
+    updated_at: UTCDateTime | None = None
     total_cost: float = 0.0
     request_count: int = 0
 
@@ -178,8 +202,8 @@ class ModelPricingOut(BaseModel):
     input_price_per_million: float
     output_price_per_million: float
     is_active: bool
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
+    created_at: UTCDateTime | None = None
+    updated_at: UTCDateTime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -209,8 +233,8 @@ class ProviderOut(BaseModel):
     name: str
     provider_type: str
     is_active: bool
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
+    created_at: UTCDateTime | None = None
+    updated_at: UTCDateTime | None = None
     models: list[ModelPricingOut] = []
 
     model_config = {"from_attributes": True}
@@ -272,8 +296,8 @@ class BudgetOut(BaseModel):
     alert_thresholds: list[int]
     control_action: str
     is_active: bool
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
+    created_at: UTCDateTime | None = None
+    updated_at: UTCDateTime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -301,8 +325,8 @@ class AlertOut(BaseModel):
     message: str
     severity: str
     is_resolved: bool
-    created_at: datetime | None = None
-    resolved_at: datetime | None = None
+    created_at: UTCDateTime | None = None
+    resolved_at: UTCDateTime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -319,8 +343,8 @@ class AlertChannelOut(BaseModel):
     channel_type: str
     config_json: str
     is_active: bool
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
+    created_at: UTCDateTime | None = None
+    updated_at: UTCDateTime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -424,8 +448,13 @@ class SemanticSearchRequest(BaseModel):
     provider: str | None = None
     model: str | None = None
     status: str | None = None
-    from_date: datetime | None = None
-    to_date: datetime | None = None
+    from_date: UTCDateTime | None = None
+    to_date: UTCDateTime | None = None
+
+    @field_validator("from_date", "to_date")
+    @classmethod
+    def _dates_to_utc(cls, v: datetime | None) -> datetime | None:
+        return to_naive_utc(v)
 
 
 class SemanticSearchResult(BaseModel):

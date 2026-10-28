@@ -103,7 +103,13 @@ export default function Dashboard() {
     label:
       period === 'today'
         ? new Date(d.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        : new Date(d.timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' }),
+        : // Day buckets are UTC days — label them as such, or viewers west of
+          // UTC see each bucket under the previous calendar day.
+          new Date(d.timestamp).toLocaleDateString([], {
+            month: 'short',
+            day: 'numeric',
+            timeZone: 'UTC',
+          }),
   }));
 
   const agentData = (topAgents?.data ?? []).slice(0, 8);

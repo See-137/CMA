@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func
@@ -37,6 +37,14 @@ def _format_timestamp(granularity: str):
             return func.strftime("%Y-%m-%d", CostEvent.timestamp)
         else:
             return func.date_trunc("day", CostEvent.timestamp)
+
+
+def _bucket_iso(value) -> str:
+    """Bucket start as UTC ISO-8601 with "Z", identical on SQLite and Postgres
+    (SQLite returns a strftime string, Postgres a naive datetime)."""
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value if len(value) > 10 else value + " 00:00")
+    return value.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _period_bounds(period: str) -> tuple[datetime, datetime]:
@@ -172,7 +180,7 @@ def dashboard_timeseries(
 
     data = [
         TimeseriesPoint(
-            timestamp=str(row.ts),
+            timestamp=_bucket_iso(row.ts),
             cost=round(float(row.cost), 6),
             requests=int(row.requests),
         )

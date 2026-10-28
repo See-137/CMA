@@ -64,3 +64,29 @@ def test_dashboard_budget_status(authed_client):
     resp = authed_client.get("/api/v1/dashboard/budget-status")
     assert resp.status_code == 200
     assert len(resp.json()["data"]) >= 1
+
+
+def test_api_datetimes_are_explicit_utc(authed_client):
+    """Naive ISO strings are parsed as *local* time by browsers; every API
+    datetime must carry an explicit UTC designator."""
+    authed_client.post(
+        "/api/v1/events",
+        json={
+            "agent_name": "z-bot",
+            "model": "gpt-4o",
+            "provider": "OpenAI",
+            "tokens_input": 1,
+            "tokens_output": 1,
+        },
+    )
+    item = authed_client.get("/api/v1/events").json()["items"][0]
+    assert item["timestamp"].endswith("Z")
+    assert item["created_at"].endswith("Z")
+    agent = authed_client.get("/api/v1/agents").json()[0]
+    assert agent["created_at"].endswith("Z")
+    for granularity in ("day", "hour"):
+        points = authed_client.get(
+            "/api/v1/dashboard/timeseries",
+            params={"period": "today", "granularity": granularity},
+        ).json()["data"]
+        assert points and all(p["timestamp"].endswith("Z") for p in points)
