@@ -107,3 +107,10 @@ def test_005_keeps_existing_alerts_and_rejects_duplicates(tmp_path):
         c.execute(insert)
     eng.dispose()
     _alembic(url, "downgrade", "004")
+    eng = create_engine(url)
+    with eng.connect() as c:
+        cols = {r[1] for r in c.execute(text("PRAGMA table_info(alerts)"))}
+        assert {"threshold", "period_start"}.isdisjoint(cols)
+        assert c.execute(text("SELECT COUNT(*) FROM alerts")).scalar() == 3
+    eng.dispose()
+    _alembic(url, "upgrade", "head")

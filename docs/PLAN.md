@@ -181,3 +181,7 @@ Owner decisions (2026-10-28):
 - 2026-10-28 — BUD-06 (`feat/alert-dedup`, stacked on D2): threshold alerts
   keyed by (budget, threshold, period start), migration 005; verified with 8
   racing workers on Postgres. Backend tests → 214.
+- 2026-10-28 — Independent review of #26: REQUEST CHANGES (on SQLite the
+  per-alert savepoint committed early and left the database locked: alerts
+  stored but never sent). Now one commit per alert, dispatched after commit;
+  SQLite 8-thread race test added. Backend tests → 215.

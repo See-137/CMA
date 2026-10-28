@@ -588,3 +588,88 @@ def test_next_period_alerts_again(authed_client, monkeypatch):
         assert db.query(Alert).count() == 2
     finally:
         db.close()
+
+
+def test_concurrent_checks_on_sqlite_store_and_send_each_alert_once(
+    tmp_path, monkeypatch
+):
+    """Review of #26: with per-alert savepoints, pysqlite committed early and
+    left the database locked, so racing workers stored alerts that were never
+    dispatched. Eight threads on a file database, all past the dedup read
+    before any inserts: every alert is stored once and sent once."""
+    import threading
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.database import Base
+    from app.models.models import Alert, Budget, CostEvent
+    from app.services import alert_service, budget_checker
+    from app.timeutils import utcnow
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'race.db'}", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    with Session() as db:
+        for name in ("a", "b"):
+            db.add(
+                Budget(
+                    name=name,
+                    scope="global",
+                    period="daily",
+                    limit_amount=1.0,
+                    alert_thresholds="[50, 75, 90, 100]",
+                    is_active=True,
+                )
+            )
+        db.add(
+            CostEvent(
+                agent_name="x",
+                model_name="m",
+                provider_name="p",
+                tokens_input=0,
+                tokens_output=0,
+                cost=5.0,
+                timestamp=utcnow(),
+            )
+        )
+        db.commit()
+
+    sent, errors, lock = [], [], threading.Lock()
+    workers = 8
+    barrier = threading.Barrier(workers)
+    real_read = budget_checker._alerted_thresholds
+
+    def racing_read(*args):
+        result = real_read(*args)
+        barrier.wait(timeout=10)  # everyone has read "nothing alerted yet"
+        return result
+
+    def record_send(alert, db):
+        with lock:
+            sent.append(alert.id)
+
+    monkeypatch.setattr(budget_checker, "_alerted_thresholds", racing_read)
+    monkeypatch.setattr(alert_service, "dispatch_alert", record_send)
+
+    def worker():
+        try:
+            with Session() as db:
+                budget_checker.check_budgets(db)
+        except Exception as exc:  # noqa: BLE001 - collected for the assertion
+            errors.append(repr(exc))
+
+    threads = [threading.Thread(target=worker) for _ in range(workers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(30)
+
+    assert errors == []
+    with Session() as db:
+        stored = sorted(a.id for a in db.query(Alert).all())
+    assert len(stored) == 8  # 2 budgets x 4 thresholds
+    assert sorted(sent) == stored  # each stored alert sent exactly once
+    engine.dispose()

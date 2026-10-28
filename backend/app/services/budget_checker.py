@@ -249,9 +249,35 @@ def precall_check(
     return violations
 
 
+def _is_duplicate_alert(exc: IntegrityError) -> bool:
+    """True only for the threshold-alert unique key (Postgres names the
+    constraint; SQLite names its columns)."""
+    text = str(getattr(exc, "orig", exc))
+    return "uq_alerts_budget_threshold_period" in text or (
+        "UNIQUE constraint failed" in text and "alerts.threshold" in text
+    )
+
+
+def _dispatch(alert: Alert, db: Session) -> None:
+    try:
+        from app.services.alert_service import dispatch_alert
+
+        dispatch_alert(alert, db)
+    except Exception:
+        logger.exception("Failed to dispatch alert %s", alert.id)
+
+
 def check_budgets(db: Session) -> list[Alert]:
-    """Evaluate all active budgets and create alerts for threshold breaches."""
-    budgets = db.query(Budget).filter(Budget.is_active.is_(True)).all()
+    """Evaluate all active budgets and create alerts for threshold breaches.
+
+    Each alert is committed on its own and dispatched right after its commit,
+    so concurrent runs (one per ingestion request) neither duplicate an alert
+    (unique key, BUD-06) nor leave one stored but never sent. Budgets are
+    visited in id order so concurrent runs take row locks in the same order.
+    """
+    budgets = (
+        db.query(Budget).filter(Budget.is_active.is_(True)).order_by(Budget.id).all()
+    )
     new_alerts: list[Alert] = []
     tz = deployment_tz(db)
 
@@ -299,24 +325,25 @@ def check_budgets(db: Session) -> list[Alert]:
                     threshold=threshold,
                     period_start=period_start,
                 )
-                # Another worker evaluating the same budget may insert the
-                # same alert first; the unique key rejects ours (BUD-06).
+                # Commit per alert (no savepoint: under pysqlite a SAVEPOINT
+                # opened outside a transaction commits on RELEASE and a
+                # ROLLBACK TO leaves the database locked). Another worker may
+                # have inserted the same alert first: the unique key rejects
+                # ours and it is skipped.
+                db.add(alert)
                 try:
-                    with db.begin_nested():
-                        db.add(alert)
-                except IntegrityError:
-                    continue
+                    db.commit()
+                except IntegrityError as exc:
+                    db.rollback()
+                    if _is_duplicate_alert(exc):
+                        logger.debug(
+                            "Alert for budget %s at %s%% already raised by another worker",
+                            budget.id,
+                            threshold,
+                        )
+                        continue
+                    raise
                 new_alerts.append(alert)
-
-    if new_alerts:
-        db.commit()
-        for alert in new_alerts:
-            db.refresh(alert)
-            try:
-                from app.services.alert_service import dispatch_alert
-
-                dispatch_alert(alert, db)
-            except Exception:
-                logger.exception("Failed to dispatch alert %s", alert.id)
+                _dispatch(alert, db)
 
     return new_alerts
