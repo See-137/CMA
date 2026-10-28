@@ -19,7 +19,7 @@ Design notes:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Iterator
 
 if TYPE_CHECKING:
     from cost_monitor.tracker import CostTracker
@@ -104,18 +104,58 @@ def uninstall_all() -> None:
     _originals.clear()
 
 
+def is_cancellation(exc: BaseException) -> bool:
+    """Task cancellation or Ctrl-C: the caller stopped the call, which is an
+    incomplete call (tokens already reported stay billed), not a failure."""
+    import asyncio
+
+    return isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt))
+
+
+class StreamState:
+    """Shared between an instrumented stream generator and its proxy.
+
+    ``started``: the generator body has begun (set on the first item).
+    ``closed_by_caller``: the caller closed the stream; an error the reading
+    side then sees is the close, so it is recorded as incomplete, not failure.
+    ``on_unread``: records a stream that was closed without ever being read
+    (closing a never-started generator does not run its ``finally``).
+    """
+
+    __slots__ = ("closed_by_caller", "on_unread", "started")
+
+    def __init__(self, on_unread: Callable[[], None] | None = None) -> None:
+        self.started = False
+        self.closed_by_caller = False
+        self.on_unread = on_unread
+
+    def finish_unread(self) -> bool:
+        """Record a never-read stream once; True if this call did."""
+        if self.started or self.on_unread is None:
+            return False
+        callback, self.on_unread = self.on_unread, None
+        callback()
+        return True
+
+
 class InstrumentedStream:
     """Delegating proxy over an SDK Stream object.
 
     Iteration goes through the instrumented generator (which records usage
-    in its finally block); everything else — close(), .response, context
-    manager protocol, isinstance-adjacent attribute access — forwards to
-    the underlying SDK stream, preserving its public contract.
+    in its finally block); everything else — .response, attribute access —
+    forwards to the underlying SDK stream, preserving its public contract.
+    close()/__exit__ record the call before closing the SDK stream.
     """
 
-    def __init__(self, stream: Any, instrumented_iter: Iterator[Any]) -> None:
+    def __init__(
+        self,
+        stream: Any,
+        instrumented_iter: Iterator[Any],
+        state: StreamState | None = None,
+    ) -> None:
         self._cma_stream = stream
         self._cma_iter = instrumented_iter
+        self._cma_state = state or StreamState()
 
     def __iter__(self) -> Iterator[Any]:
         return self._cma_iter
@@ -129,7 +169,34 @@ class InstrumentedStream:
             enter()
         return self
 
+    def _cma_finish(self) -> None:
+        """Record the call now, not whenever the proxy is garbage-collected.
+
+        Never raises, so the SDK close that follows always runs. If another
+        thread is inside next(), the generator cannot be closed from here;
+        the SDK close below ends that read and the reading thread records it.
+        """
+        state = self._cma_state
+        state.closed_by_caller = True
+        try:
+            # Running check first: a reader that has just entered next() may
+            # not have marked the stream started yet (would record twice).
+            if getattr(self._cma_iter, "gi_running", False):
+                return
+            state.finish_unread()
+            close = getattr(self._cma_iter, "close", None)
+            if close is not None:
+                close()
+        except Exception:
+            logger.exception("cost_monitor: failed to record a closed stream")
+
+    def close(self) -> Any:
+        self._cma_finish()
+        close = getattr(self._cma_stream, "close", None)
+        return close() if close is not None else None
+
     def __exit__(self, *exc: Any) -> Any:
+        self._cma_finish()
         exit_ = getattr(self._cma_stream, "__exit__", None)
         if exit_ is not None:
             return exit_(*exc)
@@ -142,9 +209,15 @@ class InstrumentedStream:
 class InstrumentedAsyncStream:
     """Async counterpart of InstrumentedStream."""
 
-    def __init__(self, stream: Any, instrumented_iter: AsyncIterator[Any]) -> None:
+    def __init__(
+        self,
+        stream: Any,
+        instrumented_iter: AsyncIterator[Any],
+        state: StreamState | None = None,
+    ) -> None:
         self._cma_stream = stream
         self._cma_iter = instrumented_iter
+        self._cma_state = state or StreamState()
 
     def __aiter__(self) -> AsyncIterator[Any]:
         return self._cma_iter
@@ -158,7 +231,30 @@ class InstrumentedAsyncStream:
             await enter()
         return self
 
+    async def _cma_finish(self) -> None:
+        """See InstrumentedStream._cma_finish. ``ag_running`` is true while
+        another task is suspended inside ``__anext__``."""
+        state = self._cma_state
+        state.closed_by_caller = True
+        try:
+            # Running check first: a reader that has just entered next() may
+            # not have marked the stream started yet (would record twice).
+            if getattr(self._cma_iter, "ag_running", False):
+                return
+            state.finish_unread()
+            aclose = getattr(self._cma_iter, "aclose", None)
+            if aclose is not None:
+                await aclose()
+        except Exception:
+            logger.exception("cost_monitor: failed to record a closed stream")
+
+    async def close(self) -> Any:
+        await self._cma_finish()
+        close = getattr(self._cma_stream, "close", None)
+        return await close() if close is not None else None
+
     async def __aexit__(self, *exc: Any) -> Any:
+        await self._cma_finish()
         exit_ = getattr(self._cma_stream, "__aexit__", None)
         if exit_ is not None:
             return await exit_(*exc)

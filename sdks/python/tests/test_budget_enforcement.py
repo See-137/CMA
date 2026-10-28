@@ -219,3 +219,36 @@ def test_streaming_and_async_calls_are_blocked(fake_backend, fake_llm):
         auto.stop()
     assert fake_llm.bodies("/chat/completions") == []
     assert fake_llm.bodies("/messages") == []
+
+
+def test_blocked_async_messages_stream_leaves_no_unawaited_request(
+    fake_backend, fake_llm
+):
+    """Re-review #24: the SDK's request coroutine was created before the
+    budget check, so a refused call warned 'coroutine ... never awaited'."""
+    import warnings
+
+    import anthropic
+
+    fake_backend.budget_response = EXHAUSTED
+    auto.auto_instrument(endpoint=fake_backend.url, api_key="k", enforce_budgets=True)
+
+    async def call():
+        client = anthropic.AsyncAnthropic(base_url=fake_llm.url, api_key="k", max_retries=0)
+        async with client.messages.stream(
+            model="claude-x", max_tokens=5, messages=[{"role": "user", "content": "hi"}]
+        ) as s:
+            await s.get_final_message()
+
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with pytest.raises(BudgetExceeded):
+                asyncio.run(call())
+            import gc
+
+            gc.collect()
+    finally:
+        auto.stop()
+    assert not [w for w in caught if "never awaited" in str(w.message)]
+    assert fake_llm.bodies("/messages") == []

@@ -67,7 +67,7 @@ receives (SDK-02); partial streams keep their tokens; no double counting with
 LangChain; fork-safe; one bad event cannot drop others; exit flush works; duplicate
 sends are idempotent (ACC-10).
 
-**S5 Security hardening** — Open (SEC-01 per D4 proposal, pending confirmation).
+**S5 Security hardening** — Open (SEC-01 per D4).
 Accept when: credentials and inputs cannot produce 500s; SSRF guard pins resolved
 addresses and blocks non-global ranges; metadata and chat history are size-capped;
 no webhook secrets in logs/responses; proxy deployment rate limiting is per client.
@@ -115,7 +115,7 @@ Owner decisions (2026-10-28):
   is simpler but leaves the setup choice meaningless and "today" wrong for
   every non-UTC operator.
 - **D3 Cached tokens → exact fields + per-model cache prices** (owner choice).
-- **D4 Credentials → proposal (owner asked for the best option)**: split
+- **D4 Credentials → split credentials with a compatibility window** (owner delegated the choice; decided by the implementation lead): split
   credentials *with a compatibility window* rather than a breaking cut-over.
   (1) Add hashed, named, revocable **ingest keys** (several; only
   `POST /events` and `GET /budgets/check`). (2) Management reads/writes
@@ -125,7 +125,7 @@ Owner decisions (2026-10-28):
   deprecation window, with a UI banner and a log warning on management use;
   after the window it becomes an ingest-only key. (4) Rotation for every key.
   This closes the "one leaked SDK key edits pricing" hole without breaking
-  existing SDK deployments or scripts on upgrade day. To confirm before S5.
+  existing SDK deployments or scripts on upgrade day.
 
 ## Progress log
 
@@ -150,3 +150,19 @@ Owner decisions (2026-10-28):
 - 2026-10-28 — Independent re-review of PR #23: REQUEST CHANGES (multi-batch
   reprice left partial rollups; four minors). Fixed with regression tests
   (FINDINGS REV-23). Backend tests → 181.
+- 2026-10-28 — Owner: no human code review is available. Merge gate is now an
+  independent reviewer agent + green CI + answered bot threads (see CLAUDE.md).
+  D4 decided (compatibility-window split). PR `feat/sdk-coverage` (on #23): SDK-01 (most surfaces), SDK-02, SDK-03; SDK tests 22 → 44.
+- 2026-10-28 — PR #23 merged (squash `7bcb5c8`) after re-review fixes and green
+  CI. Independent review of PR #24: REQUEST CHANGES (one regression: an error
+  before `message_start` in `messages.stream()` recorded nothing). Fixed with
+  the follow-ups and tests (FINDINGS REV-24); SDK floor raised to Python 3.10.
+  PR #24 ported onto master. SDK tests → 64.
+- 2026-10-28 — Focused re-review of the #24 fixes: REQUEST CHANGES (closing a
+  stream from another task/thread raised and left it open). Fixed with the
+  minors (unread/cancelled streams, phantom failures, manager reuse); every
+  new test checked against a mutation of its fix (FINDINGS REV-24b). Helper
+  streams left early deferred as SDK-13. SDK tests → 73.
+- 2026-10-28 — Third review of #24: APPROVE WITH FOLLOW-UPS; follow-ups done
+  (tests for two surviving mutations, thread race, clean-EOF close, SDK-13
+  wording). SDK tests → 78.

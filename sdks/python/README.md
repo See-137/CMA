@@ -98,6 +98,33 @@ with CostTracker(endpoint="http://localhost:8000", api_key="key") as tracker:
 | `budget_check_timeout` | `2.0` | Timeout of the budget-check request (an uncached check blocks the caller at most this long) |
 | `budget_fail_closed` | `False` | Treat an unreachable CMA as "budget exhausted" |
 
+## What auto-instrumentation records
+
+| Library | Calls (sync and async) |
+|---|---|
+| OpenAI | `chat.completions.create` (incl. `stream=True`, `.stream()` helper), `chat.completions.parse`, legacy `completions.create`, `embeddings.create`, `responses.create` (incl. `stream=True`), `responses.parse` |
+| Anthropic | `messages.create` (incl. `stream=True`), `messages.parse`, `messages.stream`, and the same under `beta.messages` |
+
+Not yet recorded: `with_raw_response` / `with_streaming_response` variants (a
+streamed `with_raw_response` call also returns CMA's stream proxy rather than the
+SDK's raw-response object), resuming a Responses stream by `response_id`
+(`responses.stream(response_id=...)` / `retrieve`), and prompt-cache token pricing
+(tracked as SDK-01 remainder / ACC-08 in `docs/FINDINGS.md`). `responses.stream()`
+for a new request is recorded: it goes through `responses.create`.
+
+Streams are passed through unchanged. If CMA injects
+`stream_options.include_usage` for an OpenAI chat stream, the extra usage-only
+chunk is consumed by CMA, not yielded to your code. A stream you stop reading early, close
+unread, or cancel (task cancellation, Ctrl-C) is recorded as `status="incomplete"` with
+whatever tokens the provider already reported, at the moment you close it or leave its
+`with` block; an exception raised by your own code inside `messages.stream()` does not turn
+billed tokens into a `failure`. One exception: OpenAI's `chat.completions.stream()` /
+`responses.stream()` helpers close the HTTP response directly, so a helper stream left
+part-read is recorded at the next cyclic garbage collection rather than at block exit (not
+deterministic; it can be lost at interpreter exit). A stream dropped without being read or
+closed is not recorded. For async `messages.stream()`, argument errors are raised when the
+block is entered rather than at the call.
+
 ## Budget enforcement
 
 CMA always records spend. Enforcement happens **before** a call: budgets whose
@@ -132,8 +159,7 @@ Guarantees and limits:
 - One backend check per attribution per TTL, however many threads call concurrently.
 - Spend counts toward the budget period its timestamp falls in; a replayed
   (back-dated) event never makes today's budget look exhausted.
-- Patched paths: OpenAI chat/legacy completions (sync, async, streaming),
-  Anthropic `messages.create` (sync, async) and `messages.stream`. LangChain
+- Enforcement applies to every auto-instrumented path (table above). LangChain
   callbacks are not enforced.
 
 ## Design Notes
