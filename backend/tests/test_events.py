@@ -147,3 +147,54 @@ def test_event_list_date_filter_accepts_offsets(authed_client):
         params={"from_date": "2026-10-29T07:00:00+02:00"},
     )
     assert resp.json()["total"] == 0
+
+
+def test_agent_autodiscovery_race_does_not_drop_event(authed_client, monkeypatch):
+    """Two requests seeing "no agent" at once: the loser must reuse the row.
+
+    Simulated deterministically: the agent already exists (another request
+    won), but this request's lookup ran before that commit and saw nothing.
+    Previously the UNIQUE violation failed the event's savepoint and the
+    event was silently dropped while the request still returned 200.
+    """
+    from sqlalchemy.orm import Query
+
+    from app.models.models import Agent
+
+    authed_client.post(
+        "/api/v1/events",
+        json={
+            "agent_name": "racer",
+            "model": "gpt-4o",
+            "provider": "OpenAI",
+            "tokens_input": 1,
+            "tokens_output": 1,
+        },
+    )
+
+    real_first = Query.first
+    calls = {"n": 0}
+
+    def stale_first(self):
+        # Only the auto-discovery lookup selects Agent by itself.
+        if self.column_descriptions[0]["entity"] is Agent and calls["n"] == 0:
+            calls["n"] += 1
+            return None
+        return real_first(self)
+
+    monkeypatch.setattr(Query, "first", stale_first)
+    resp = authed_client.post(
+        "/api/v1/events",
+        json={
+            "agent_name": "racer",
+            "model": "gpt-4o",
+            "provider": "OpenAI",
+            "tokens_input": 1,
+            "tokens_output": 1,
+        },
+    )
+    assert calls["n"] == 1
+    body = resp.json()
+    assert body["processed"] == 1
+    assert body["errored"] == 0
+    assert authed_client.get("/api/v1/events").json()["total"] == 2

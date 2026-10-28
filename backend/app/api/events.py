@@ -3,6 +3,7 @@ import logging
 from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
@@ -37,13 +38,20 @@ def _process_event(event: EventIn, db: Session, cost: float) -> CostEvent:
     # Auto-discover: create agent if it doesn't exist
     agent = db.query(Agent).filter(Agent.name == event.agent_name).first()
     if agent is None:
-        agent = Agent(
-            name=event.agent_name,
-            swarm=event.swarm,
-            workflow=event.workflow,
-        )
-        db.add(agent)
-        db.flush()
+        # Concurrent requests can both see "no agent" and race the INSERT. The
+        # loser must reuse the winner's row, not fail (and silently drop) the
+        # event — so the INSERT gets its own savepoint and a re-read on conflict.
+        try:
+            with db.begin_nested():
+                agent = Agent(
+                    name=event.agent_name,
+                    swarm=event.swarm,
+                    workflow=event.workflow,
+                )
+                db.add(agent)
+                db.flush()
+        except IntegrityError:
+            agent = db.query(Agent).filter(Agent.name == event.agent_name).one()
 
     metadata_str = None
     if event.metadata is not None:
@@ -179,6 +187,7 @@ def ingest_events(
         received=len(events),
         processed=processed,
         rejected=rejected,
+        errored=errored,
         rejection_reasons=rejection_reasons,
     )
 

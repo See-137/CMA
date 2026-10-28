@@ -96,6 +96,9 @@ class EventsIngestionResponse(BaseModel):
     received: int
     processed: int
     rejected: int = 0
+    # Events that failed to persist (server-side error). Non-zero means the
+    # caller's data was NOT stored even though the request returned 200.
+    errored: int = 0
     rejection_reasons: list[str] = []
 
 
