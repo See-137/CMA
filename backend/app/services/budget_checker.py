@@ -1,9 +1,11 @@
 import json
 import logging
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.models import Alert, Budget, CostEvent
@@ -58,22 +60,37 @@ def _current_spend(
     return float(result) if result else 0.0
 
 
-def _alert_exists_for_period(
-    budget_id: int, threshold: int, period_start: datetime, db: Session
-) -> bool:
-    """Check if an alert for this budget+threshold already exists in this period."""
-    return (
-        db.query(Alert)
+_LEGACY_THRESHOLD_RE = re.compile(r"\(threshold: (\d+)%\)")
+
+
+def _alerted_thresholds(
+    budget_id: int, period_start: datetime, db: Session
+) -> set[int]:
+    """Thresholds already alerted for this budget in this period.
+
+    Alerts carry (threshold, period_start) since migration 005; older rows
+    have NULLs and are matched by their message marker and creation time.
+    """
+    done: set[int] = set()
+    rows = (
+        db.query(Alert.threshold, Alert.period_start, Alert.message)
         .filter(
             Alert.budget_id == budget_id,
-            Alert.created_at >= period_start,
-            # Match the unambiguous marker emitted in the message, not a bare
-            # "{n}%" substring which collides across thresholds.
-            Alert.message.contains(f"(threshold: {threshold}%)"),
+            or_(
+                Alert.period_start == period_start,
+                and_(Alert.period_start.is_(None), Alert.created_at >= period_start),
+            ),
         )
-        .first()
-        is not None
+        .all()
     )
+    for threshold, start, message in rows:
+        if start is not None and threshold is not None:
+            done.add(threshold)
+        elif start is None:
+            match = _LEGACY_THRESHOLD_RE.search(message or "")
+            if match:
+                done.add(int(match.group(1)))
+    return done
 
 
 def _scope_matches(
@@ -251,9 +268,10 @@ def check_budgets(db: Session) -> list[Alert]:
         except (json.JSONDecodeError, TypeError):
             thresholds = [50, 75, 90, 100]
 
+        already = _alerted_thresholds(budget.id, period_start, db)
         for threshold in sorted(thresholds):
             if percentage >= threshold:
-                if _alert_exists_for_period(budget.id, threshold, period_start, db):
+                if threshold in already:
                     continue
 
                 severity = "info"
@@ -278,8 +296,16 @@ def check_budgets(db: Session) -> list[Alert]:
                     alert_type=alert_type,
                     message=message,
                     severity=severity,
+                    threshold=threshold,
+                    period_start=period_start,
                 )
-                db.add(alert)
+                # Another worker evaluating the same budget may insert the
+                # same alert first; the unique key rejects ours (BUD-06).
+                try:
+                    with db.begin_nested():
+                        db.add(alert)
+                except IntegrityError:
+                    continue
                 new_alerts.append(alert)
 
     if new_alerts:

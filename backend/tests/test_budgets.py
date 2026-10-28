@@ -474,3 +474,117 @@ def test_blank_budget_name_is_rejected(authed_client):
         json={"name": "   ", "scope": "global", "period": "daily", "limit_amount": 1},
     )
     assert resp.status_code == 422
+
+
+# -- BUD-06: one alert per budget, threshold and period ----------------------
+
+
+def _alert_budget(db, thresholds="[50, 100]"):
+    from app.models.models import Budget
+
+    b = Budget(
+        name="cap",
+        scope="global",
+        period="daily",
+        limit_amount=1.0,
+        alert_thresholds=thresholds,
+    )
+    db.add(b)
+    db.commit()
+    return b
+
+
+def _spend_now(db, cost):
+    from app.models.models import CostEvent
+    from app.timeutils import utcnow
+
+    db.add(
+        CostEvent(
+            agent_name="a",
+            model_name="m",
+            provider_name="p",
+            tokens_input=0,
+            tokens_output=0,
+            cost=cost,
+            timestamp=utcnow(),
+        )
+    )
+    db.commit()
+
+
+def test_racing_budget_checks_raise_each_alert_once(authed_client, monkeypatch):
+    """Two workers that both saw 'no alert yet' must not both insert one."""
+    from app.models.models import Alert
+    from app.services import budget_checker
+    from tests.conftest import TestSession
+
+    db = TestSession()
+    try:
+        _alert_budget(db)
+        _spend_now(db, 2.0)
+        monkeypatch.setattr(budget_checker, "_alerted_thresholds", lambda *a: set())
+        first = budget_checker.check_budgets(db)
+        second = budget_checker.check_budgets(db)
+        assert sorted(a.threshold for a in first) == [50, 100]
+        assert second == []
+        assert db.query(Alert).count() == 2
+    finally:
+        db.close()
+
+
+def test_legacy_alert_rows_still_deduplicate(authed_client):
+    from app.models.models import Alert
+    from app.services.budget_checker import check_budgets
+    from tests.conftest import TestSession
+
+    db = TestSession()
+    try:
+        b = _alert_budget(db, "[100]")
+        _spend_now(db, 2.0)
+        db.add(
+            Alert(
+                budget_id=b.id,
+                alert_type="budget_exceeded",
+                message="old (threshold: 100%)",
+                severity="critical",
+            )
+        )
+        db.commit()
+        assert check_budgets(db) == []
+    finally:
+        db.close()
+
+
+def test_next_period_alerts_again(authed_client, monkeypatch):
+    from datetime import timedelta
+
+    from app import timeutils
+    from app.models.models import Alert
+    from app.services.budget_checker import check_budgets
+    from tests.conftest import TestSession
+
+    db = TestSession()
+    try:
+        _alert_budget(db, "[100]")
+        _spend_now(db, 2.0)
+        assert len(check_budgets(db)) == 1
+        later = timeutils.utcnow() + timedelta(days=1)
+        monkeypatch.setattr(timeutils, "utcnow", lambda: later)
+        from app.models.models import CostEvent
+
+        db.add(
+            CostEvent(
+                agent_name="a",
+                model_name="m",
+                provider_name="p",
+                tokens_input=0,
+                tokens_output=0,
+                cost=2.0,
+                timestamp=later,
+            )
+        )
+        db.commit()
+        assert len(check_budgets(db)) == 1
+        assert db.query(Alert).count() == 2
+    finally:
+        db.close()

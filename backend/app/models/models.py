@@ -166,6 +166,20 @@ class Alert(Base):
     is_resolved = Column(Boolean, default=False)
     created_at = Column(DateTime, default=_utcnow)
     resolved_at = Column(DateTime, nullable=True)
+    # Threshold alerts: which threshold (%) and which budget period (start,
+    # naive UTC) this alert is for. Unique together so concurrent budget
+    # checks cannot raise the same alert twice (BUD-06). NULL on other alerts.
+    threshold = Column(Integer, nullable=True)
+    period_start = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "budget_id",
+            "threshold",
+            "period_start",
+            name="uq_alerts_budget_threshold_period",
+        ),
+    )
 
     budget = relationship("Budget", back_populates="alerts")
     alert_channel = relationship("AlertChannel", back_populates="alerts")

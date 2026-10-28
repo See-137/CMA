@@ -68,3 +68,42 @@ def test_003_archives_days_already_pruned_even_with_late_events(tmp_path):
     }
     _alembic(url, "downgrade", "base")
     _alembic(url, "upgrade", "head")
+
+
+def test_005_keeps_existing_alerts_and_rejects_duplicates(tmp_path):
+    """BUD-06: existing alerts survive with NULL keys (which never collide);
+    a second alert for the same budget/threshold/period is rejected."""
+    import pytest
+    from sqlalchemy.exc import IntegrityError
+
+    url = f"sqlite:///{tmp_path / 'mig.db'}"
+    _alembic(url, "upgrade", "004")
+    eng = create_engine(url)
+    with eng.begin() as c:
+        c.execute(
+            text(
+                "INSERT INTO budgets (name, scope, period, limit_amount, is_active) "
+                "VALUES ('b','global','daily',1,1)"
+            )
+        )
+        for _ in range(2):  # legacy duplicates already present
+            c.execute(
+                text(
+                    "INSERT INTO alerts (budget_id, alert_type, message, severity) "
+                    "VALUES (1,'budget_exceeded','x (threshold: 100%)','critical')"
+                )
+            )
+    eng.dispose()
+    _alembic(url, "upgrade", "head")
+    eng = create_engine(url)
+    insert = text(
+        "INSERT INTO alerts (budget_id, alert_type, message, threshold, period_start) "
+        "VALUES (1,'budget_exceeded','y',100,'2026-10-28 00:00:00')"
+    )
+    with eng.begin() as c:
+        assert c.execute(text("SELECT COUNT(*) FROM alerts")).scalar() == 2
+        c.execute(insert)
+    with pytest.raises(IntegrityError), eng.begin() as c:
+        c.execute(insert)
+    eng.dispose()
+    _alembic(url, "downgrade", "004")

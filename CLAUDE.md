@@ -25,7 +25,7 @@
 ```powershell
 cd backend; pip install -r requirements-dev.txt; pytest
 ```
-- 210 backend tests (1 needs `CMA_TEST_PG_URL`, set in CI) (`backend/tests`) + 78 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
+- 214 backend tests (1 needs `CMA_TEST_PG_URL`, set in CI) (`backend/tests`) + 78 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
 - `test_events.py` — ingestion, auto-discovery (incl. race), UTC timestamp normalisation
 - `test_pricing.py` — pricing resolution, cost_source, reprice, reset-full reseed
 - `test_scrooge_grounding.py` — Scrooge totals, windows, entity matching, untrusted data block, degradation
@@ -86,7 +86,7 @@ cd backend; pip install -r requirements-dev.txt; pytest
 | `Agent` | Auto-discovered from events | name, environment, swarm, workflow, is_active |
 | `CostEvent` | Individual LLM calls | tokens_in/out, cost, cost_source (pricing/client/unpriced), over_budget, trace_id, status, metadata_json |
 | `Budget` | Cost limits | scope (global/agent/swarm/workflow), period (daily/weekly/monthly) |
-| `Alert` | Triggered notifications | budget_id, severity, is_resolved |
+| `Alert` | Triggered notifications | budget_id, severity, is_resolved; threshold alerts unique on (budget_id, threshold, period_start) |
 | `AlertChannel` | Notification destinations | webhook, slack, or in_app |
 | `DailyCostRollup` | Daily aggregations | unique on (date, agent, model, provider); `archived` once the day's events are pruned |
 
