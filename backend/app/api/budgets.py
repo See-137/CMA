@@ -14,6 +14,7 @@ from app.schemas.schemas import (
     _check_scope_ref,
 )
 from app.services.budget_checker import _current_spend, precall_check
+from app.timeutils import deployment_tz
 
 router = APIRouter(prefix="/budgets", tags=["budgets"])
 
@@ -22,8 +23,9 @@ router = APIRouter(prefix="/budgets", tags=["budgets"])
 def list_budgets(db: Session = Depends(get_db)):
     budgets = db.query(Budget).filter(Budget.is_active.is_(True)).all()
     result = []
+    tz = deployment_tz(db)
     for b in budgets:
-        spend = _current_spend(b, db)
+        spend = _current_spend(b, db, tz)
         pct = (spend / b.limit_amount * 100) if b.limit_amount > 0 else 0.0
         item = BudgetWithSpend.model_validate(b)
         item.current_spend = round(spend, 6)

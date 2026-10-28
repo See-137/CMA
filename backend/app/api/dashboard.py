@@ -1,11 +1,11 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
-from app.database import engine
 from app.models.models import Budget, CostEvent
 from app.schemas.schemas import (
     BudgetStatusItem,
@@ -18,77 +18,42 @@ from app.schemas.schemas import (
     TopAgentItem,
     TopAgentsResponse,
 )
+from app.services.buckets import bucket_start_utc, local_bucket_expr
 from app.services.budget_checker import _current_spend
 from app.services.cost_engine import unpriced_clause
-from app.timeutils import utcnow
+from app.timeutils import deployment_tz, local_floor, shift_day_start, utc_iso, utcnow
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 
-def _format_timestamp(granularity: str):
-    """Return a portable timestamp grouping expression for SQLite and PostgreSQL."""
-    if granularity == "hour":
-        if engine.dialect.name == "sqlite":
-            return func.strftime("%Y-%m-%d %H:00", CostEvent.timestamp)
-        else:
-            return func.date_trunc("hour", CostEvent.timestamp)
-    else:  # day
-        if engine.dialect.name == "sqlite":
-            return func.strftime("%Y-%m-%d", CostEvent.timestamp)
-        else:
-            return func.date_trunc("day", CostEvent.timestamp)
+_PERIOD_UNIT = {"today": "day", "week": "week", "month": "month", "quarter": "quarter"}
+# Previous like-for-like period, as a local wall-clock shift (D2).
+_PREV_SHIFT = {
+    "day": {"days": -1},
+    "week": {"days": -7},
+    "month": {"months": -1},
+    "quarter": {"months": -3},
+}
 
 
-def _bucket_iso(value) -> str:
-    """Bucket start as UTC ISO-8601 with "Z", identical on SQLite and Postgres
-    (SQLite returns a strftime string, Postgres a naive datetime)."""
-    if isinstance(value, str):
-        value = datetime.fromisoformat(value if len(value) > 10 else value + " 00:00")
-    return value.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _period_bounds(period: str) -> tuple[datetime, datetime]:
-    """Return (start, end) for a named period."""
+def _period_bounds(period: str, tz: ZoneInfo) -> tuple[datetime, datetime]:
+    """(start, now) for a named period; the start is local midnight / local
+    Monday / the local 1st in the deployment time zone (D2)."""
     now = utcnow()
-    if period == "today":
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    elif period == "week":
-        start = (now - timedelta(days=now.weekday())).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-    elif period == "month":
-        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    elif period == "quarter":
-        quarter_month = ((now.month - 1) // 3) * 3 + 1
-        start = now.replace(
-            month=quarter_month, day=1, hour=0, minute=0, second=0, microsecond=0
-        )
-    else:
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    return start, now
+    return local_floor(_PERIOD_UNIT.get(period, "day"), tz, now), now
 
 
-def _months_back(start: datetime, months: int) -> datetime:
-    month_index = start.year * 12 + (start.month - 1) - months
-    return start.replace(year=month_index // 12, month=month_index % 12 + 1)
-
-
-def _prev_period_bounds(period: str) -> tuple[datetime, datetime]:
+def _prev_period_bounds(period: str, tz: ZoneInfo) -> tuple[datetime, datetime]:
     """Like-for-like previous window for change %: the previous period's
     start plus the same elapsed time (clamped to that period's end).
 
     Comparing today-so-far against *all* of yesterday made every morning
     look like a large drop; 'quarter' used to compare against yesterday.
     """
-    start, now = _period_bounds(period)
-    if period == "week":
-        prev_start = start - timedelta(weeks=1)
-    elif period == "month":
-        prev_start = _months_back(start, 1)
-    elif period == "quarter":
-        prev_start = _months_back(start, 3)
-    else:  # today / default
-        prev_start = start - timedelta(days=1)
+    start, now = _period_bounds(period, tz)
+    prev_start = shift_day_start(
+        start, tz, **_PREV_SHIFT[_PERIOD_UNIT.get(period, "day")]
+    )
     prev_end = min(prev_start + (now - start), start)
     return prev_start, prev_end
 
@@ -101,8 +66,9 @@ def _pct_change(current: float, previous: float) -> float:
 
 @router.get("/overview", response_model=DashboardOverview)
 def dashboard_overview(period: str = Query("today"), db: Session = Depends(get_db)):
-    start, end = _period_bounds(period)
-    prev_start, prev_end = _prev_period_bounds(period)
+    tz = deployment_tz(db)
+    start, end = _period_bounds(period, tz)
+    prev_start, prev_end = _prev_period_bounds(period, tz)
 
     # Current period
     current = (
@@ -162,9 +128,10 @@ def dashboard_timeseries(
     granularity: str = Query("day"),
     db: Session = Depends(get_db),
 ):
-    start, end = _period_bounds(period)
-
-    ts_expr = _format_timestamp(granularity).label("ts")
+    tz = deployment_tz(db)
+    start, end = _period_bounds(period, tz)
+    unit = "hour" if granularity == "hour" else "day"
+    ts_expr = local_bucket_expr(CostEvent.timestamp, unit, tz, db).label("ts")
 
     rows = (
         db.query(
@@ -180,13 +147,13 @@ def dashboard_timeseries(
 
     data = [
         TimeseriesPoint(
-            timestamp=_bucket_iso(row.ts),
+            timestamp=utc_iso(bucket_start_utc(row.ts, unit, tz)),
             cost=round(float(row.cost), 6),
             requests=int(row.requests),
         )
         for row in rows
     ]
-    return TimeseriesResponse(data=data)
+    return TimeseriesResponse(data=data, timezone=tz.key)
 
 
 @router.get("/top-agents", response_model=TopAgentsResponse)
@@ -195,7 +162,7 @@ def dashboard_top_agents(
     limit: int = Query(10, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
-    start, end = _period_bounds(period)
+    start, end = _period_bounds(period, deployment_tz(db))
 
     rows = (
         db.query(
@@ -225,7 +192,7 @@ def dashboard_top_agents(
 
 @router.get("/model-usage", response_model=ModelUsageResponse)
 def dashboard_model_usage(period: str = Query("today"), db: Session = Depends(get_db)):
-    start, end = _period_bounds(period)
+    start, end = _period_bounds(period, deployment_tz(db))
 
     rows = (
         db.query(
@@ -261,8 +228,9 @@ def dashboard_budget_status(db: Session = Depends(get_db)):
     budgets = db.query(Budget).filter(Budget.is_active.is_(True)).all()
 
     data = []
+    tz = deployment_tz(db)
     for b in budgets:
-        spent = _current_spend(b, db)
+        spent = _current_spend(b, db, tz)
         pct = (spent / b.limit_amount * 100) if b.limit_amount > 0 else 0.0
 
         if pct >= 100:

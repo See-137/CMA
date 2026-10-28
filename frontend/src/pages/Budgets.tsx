@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import { api, ApiError, apiErrorMessage } from '../api/client';
@@ -8,7 +8,7 @@ import Modal from '../components/Modal';
 import ConfirmDialog from '../components/ConfirmDialog';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { formatCurrency } from '../utils/format';
-import type { Budget } from '../types';
+import type { Budget, SetupStatus } from '../types';
 
 const Budgets: React.FC = () => {
   const { data: budgets, loading, error, refetch } = useApi<Budget[]>('/api/v1/budgets');
@@ -18,6 +18,14 @@ const Budgets: React.FC = () => {
   const [deleting, setDeleting] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [zone, setZone] = useState('UTC');
+
+  useEffect(() => {
+    api
+      .get<SetupStatus>('/api/v1/setup/status')
+      .then((s) => setZone(s.effective_timezone || s.timezone || 'UTC'))
+      .catch(() => undefined);
+  }, []);
   const [formData, setFormData] = useState({
     name: '',
     scope: 'global',
@@ -308,6 +316,9 @@ const Budgets: React.FC = () => {
                 <option value="weekly">Weekly</option>
                 <option value="monthly">Monthly</option>
               </select>
+              <p className="mt-1 text-xs text-secondary">
+                Periods reset at local time in {zone} (weeks start Monday).
+              </p>
             </div>
           </div>
           {formData.scope !== 'global' && (

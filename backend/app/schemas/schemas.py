@@ -10,7 +10,7 @@ from pydantic import (
     model_validator,
 )
 
-from app.timeutils import to_naive_utc
+from app.timeutils import parse_zone, to_naive_utc
 
 
 def _utc_iso(value: datetime) -> str:
@@ -37,8 +37,18 @@ class SetupRequest(BaseModel):
     admin_email: str
     admin_password: str
     deployment_name: str = "CMA"
+    # IANA zone (e.g. "Asia/Jerusalem"). Budget periods, dashboard days and
+    # Scrooge's "today"/"this week" follow it (D2); storage stays UTC.
     timezone: str = "UTC"
     currency: str = "USD"
+
+    @field_validator("timezone")
+    @classmethod
+    def _known_zone(cls, v: str) -> str:
+        zone = parse_zone(v)
+        if zone is None:
+            raise ValueError(f"unknown time zone {v!r}; use an IANA name such as 'UTC'")
+        return zone.key
 
 
 class SetupResponse(BaseModel):
@@ -50,7 +60,9 @@ class SetupResponse(BaseModel):
 class SetupStatusResponse(BaseModel):
     is_complete: bool
     deployment_name: str | None = None
-    timezone: str | None = None
+    timezone: str | None = None  # as stored
+    # The zone actually used for periods (UTC when the stored one is unknown).
+    effective_timezone: str | None = None
     currency: str | None = None
 
 
@@ -414,6 +426,9 @@ class TimeseriesPoint(BaseModel):
 
 class TimeseriesResponse(BaseModel):
     data: list[TimeseriesPoint]
+    # Buckets are local hours/days in this IANA zone (the deployment time
+    # zone); each timestamp is the bucket's start as a UTC instant.
+    timezone: str = "UTC"
 
 
 class TopAgentItem(BaseModel):

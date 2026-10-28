@@ -54,7 +54,7 @@ are ones the answer could use (RAG-09); vector records are time-scoped (RAG-10);
 golden-question context test runs in CI (RAG-14).
 *Met: RAG-01..08. Open: RAG-09, RAG-10, RAG-14.*
 
-**S3 Budget semantics** — D1 done (`feat/budget-enforcement`); D2 time zone open.
+**S3 Budget semantics** — D1 done (#23); D2 time zone done (`feat/deployment-timezone`); BUD-06 open.
 Accept when: every budget action selectable in the UI has tested behaviour; incurred
 spend is always recorded; the guarantee (soft limit, timing, concurrency) is
 documented; period boundaries follow the chosen time zone and are labelled; one
@@ -113,7 +113,10 @@ Owner decisions (2026-10-28):
   raw events); archived days whose events are gone keep their UTC keys —
   documented, not migrated. Rejected alternative (UTC everywhere, labelled)
   is simpler but leaves the setup choice meaningless and "today" wrong for
-  every non-UTC operator.
+  every non-UTC operator. *Implemented in `feat/deployment-timezone` for every
+  user-facing boundary; rollup re-keying deferred to ACC-14 (ACC-18): rollups
+  are not user-facing yet, so re-keying now would be a data migration with no
+  visible benefit.*
 - **D3 Cached tokens → exact fields + per-model cache prices** (owner choice).
 - **D4 Credentials → split credentials with a compatibility window** (owner delegated the choice; decided by the implementation lead): split
   credentials *with a compatibility window* rather than a breaking cut-over.
@@ -166,3 +169,12 @@ Owner decisions (2026-10-28):
 - 2026-10-28 — Third review of #24: APPROVE WITH FOLLOW-UPS; follow-ups done
   (tests for two surviving mutations, thread race, clean-EOF close, SDK-13
   wording). SDK tests → 78.
+- 2026-10-28 — PR #24 merged (squash `5ed49f6`).
+- 2026-10-28 — D2 implemented (`feat/deployment-timezone`): budgets, alert
+  dedup, dashboard periods/buckets and Scrooge windows follow the deployment
+  time zone; zone validated at setup; `tzdata` added for Windows/slim images.
+  Rollup keys stay UTC (ACC-18, deferred). Backend tests → 195.
+- 2026-10-28 — Independent review of #25: REQUEST CHANGES (wizard could not
+  select most zones; 500 on directory names; Cairo midnight-gap days; Postgres
+  bucketing untested in CI). All addressed (FINDINGS REV-25); Postgres service
+  added to CI backend-test. Backend tests → 210.

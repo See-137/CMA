@@ -101,7 +101,7 @@ def _rollup_to_text(row) -> str:
         g = lambda k, d=None: getattr(row, k, d)
 
     return (
-        f"Daily summary for {g('date')}: "
+        f"Daily summary for {g('date')} (UTC day): "
         f"Agent '{g('agent_name')}' using {g('model_name')} via {g('provider_name')}. "
         f"Total cost: ${g('total_cost', 0):.4f}. "
         f"Requests: {g('request_count', 0)} ({g('failure_count', 0)} failures). "

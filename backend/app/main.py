@@ -28,6 +28,7 @@ from app.metrics import (
     init_metrics,
 )
 from app.seed import seed_providers
+from app.timeutils import deployment_tz
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -125,6 +126,13 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         seed_providers(db)
+        # Period boundaries (budgets, dashboard days, Scrooge "today") follow
+        # this zone (D2); say which one is in effect. Only this line may fail
+        # quietly — a seeding failure (e.g. no schema) must stop startup.
+        try:
+            logger.info("Deployment time zone: %s", deployment_tz(db).key)
+        except Exception:
+            logger.exception("Could not read the deployment time zone")
     finally:
         db.close()
 

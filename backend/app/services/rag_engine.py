@@ -5,6 +5,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -12,8 +13,17 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.metrics import RAG_STAGE_SECONDS
 from app.models.models import Agent, CostEvent, ModelPricing, Provider
+from app.services.buckets import bucket_start_utc, local_bucket_expr
 from app.services.vector_store import embed_text, search_events, search_rollups
-from app.timeutils import utcnow
+from app.timeutils import (
+    UTC_ZONE,
+    deployment_tz,
+    local_floor,
+    shift_day_start,
+    to_local,
+    utc_iso,
+    utcnow,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +37,7 @@ Your personality is a specific blend:
 Rules:
 - Lead with the number. Context after, not before.
 - Every figure must come from the data block. Totals come ONLY from rows with "type": "total" — never add up breakdown rows or vector records yourself (breakdowns can be truncated; vector records are examples, not a complete set).
+- Name timeline buckets by their "local" field (the deployment's own calendar), never by converting the UTC "bucket" yourself.
 - State the time window the numbers cover, exactly as given in the data block. If the data block says the window is ALL TIME or that a time period in the question was not recognised, say so — do not present all-time numbers as the period asked about.
 - Cite sources by the labels in the data block — [total], [breakdown], [3] for vector record 3. You checked. Show it.
 - Format costs as USD with appropriate precision: $1.23, $0.000456.
@@ -52,6 +63,7 @@ class QueryIntent:
     needs_timeline: bool = False
     needs_failures: bool = False
     time_range: tuple[datetime, datetime] | None = None
+    tz: ZoneInfo = UTC_ZONE  # deployment time zone the windows were built in
     time_label: str | None = None
     # Further periods named in the same question ("this week vs last week").
     extra_windows: list[tuple[str, tuple[datetime, datetime]]] = field(
@@ -86,42 +98,32 @@ _FAIL_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
-_RELATIVE_TIME = {
-    "today": lambda: (
-        utcnow().replace(hour=0, minute=0, second=0, microsecond=0),
-        utcnow(),
-    ),
-    "yesterday": lambda: (
-        (utcnow() - timedelta(days=1)).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        ),
-        utcnow().replace(hour=0, minute=0, second=0, microsecond=0),
-    ),
-    "this week": lambda: (
-        (utcnow() - timedelta(days=utcnow().weekday())).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        ),
-        utcnow(),
-    ),
-    "last week": lambda: (
-        (utcnow() - timedelta(days=utcnow().weekday() + 7)).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        ),
-        (utcnow() - timedelta(days=utcnow().weekday())).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        ),
-    ),
-    "this month": lambda: (
-        utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0),
-        utcnow(),
-    ),
-    "last month": lambda: (
-        (utcnow().replace(day=1) - timedelta(days=1)).replace(
-            day=1, hour=0, minute=0, second=0, microsecond=0
-        ),
-        utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0),
-    ),
-}
+
+def _relative(name: str, tz: ZoneInfo) -> tuple[datetime, datetime]:
+    """Named periods in the deployment time zone (D2), as naive-UTC
+    half-open windows."""
+    now = utcnow()
+    day = local_floor("day", tz, now)
+    week = local_floor("week", tz, now)
+    month = local_floor("month", tz, now)
+    return {
+        "today": (day, now),
+        "yesterday": (shift_day_start(day, tz, days=-1), day),
+        "this week": (week, now),
+        "last week": (shift_day_start(week, tz, days=-7), week),
+        "this month": (month, now),
+        "last month": (shift_day_start(month, tz, months=-1), month),
+    }[name]
+
+
+_RELATIVE_TIME = (
+    "today",
+    "yesterday",
+    "this week",
+    "last week",
+    "this month",
+    "last month",
+)
 
 # Match "last N days/hours"
 _LAST_N_RE = re.compile(
@@ -173,7 +175,9 @@ def _phrase_re(phrase: str) -> re.Pattern:
     return re.compile(r"(?<![\w-])" + re.escape(phrase) + r"(?![\w-])", re.IGNORECASE)
 
 
-def _find_windows(q_lower: str) -> list[tuple[int, str, tuple[datetime, datetime]]]:
+def _find_windows(
+    q_lower: str, tz: ZoneInfo = UTC_ZONE
+) -> list[tuple[int, str, tuple[datetime, datetime]]]:
     """All time windows named in the question, in order of appearance.
 
     Matching is whole-word and longest-first, with consumed spans removed, so
@@ -217,7 +221,7 @@ def _find_windows(q_lower: str) -> list[tuple[int, str, tuple[datetime, datetime
         for m in _phrase_re(phrase).finditer(q_lower):
             if not free(*m.span()):
                 continue
-            start, end = _RELATIVE_TIME[phrase]()
+            start, end = _relative(phrase, tz)
             since = re.search(r"\bsince\s+$", q_lower[: m.start()])
             if since:  # "since yesterday" = from that period's start until now
                 found.append((since.start(), f"since {phrase}", (start, utcnow())))
@@ -231,10 +235,9 @@ def _find_windows(q_lower: str) -> list[tuple[int, str, tuple[datetime, datetime
             if not free(*m.span()):
                 continue
             now = utcnow()
-            days_back = (now.weekday() - weekday) % 7 or 7
-            target = (now - timedelta(days=days_back)).replace(
-                hour=0, minute=0, second=0, microsecond=0
-            )
+            today = local_floor("day", tz, now)
+            days_back = (to_local(now, tz).weekday() - weekday) % 7 or 7
+            target = shift_day_start(today, tz, days=-days_back)
             since = re.search(r"\bsince\s+$", q_lower[: m.start()])
             if since:  # "since monday" = from that day until now
                 found.append((since.start(), f"since {day_name}", (target, now)))
@@ -244,7 +247,7 @@ def _find_windows(q_lower: str) -> list[tuple[int, str, tuple[datetime, datetime
                     (
                         m.start(),
                         f"last {day_name}",
-                        (target, target + timedelta(days=1)),
+                        (target, shift_day_start(target, tz, days=1)),
                     )
                 )
                 taken.append(m.span())
@@ -286,7 +289,8 @@ def detect_query_intent(query: str, db: Session) -> QueryIntent:
     intent.needs_failures = bool(_FAIL_PATTERNS.search(query))
 
     q_lower = query.lower()
-    windows = _find_windows(q_lower)
+    intent.tz = deployment_tz(db)
+    windows = _find_windows(q_lower, intent.tz)
     if windows:
         _, intent.time_label, intent.time_range = windows[0]
         intent.extra_windows = [(label, rng) for _, label, rng in windows[1:]]
@@ -345,11 +349,14 @@ def _filtered(query, intent: QueryIntent, window=None):
     return query
 
 
-def _window_label(label: str | None, window) -> str:
+def _window_label(label: str | None, window, tz: ZoneInfo = UTC_ZONE) -> str:
     if not window:
         return "ALL TIME"
     start, end = (w.isoformat(timespec="seconds") + "Z" for w in window)
-    return f"{label or 'window'}: {start} to {end} (UTC, end exclusive)"
+    local = " to ".join(to_local(w, tz).strftime("%Y-%m-%d %H:%M") for w in window)
+    return (
+        f"{label or 'window'}: {start} to {end} (UTC, end exclusive; {local} {tz.key})"
+    )
 
 
 def _run_total_query(intent: QueryIntent, db: Session, label, window) -> dict:
@@ -508,26 +515,15 @@ def _run_comparison_query(intent: QueryIntent, db: Session) -> list[dict]:
 _TIMELINE_POINTS = 72
 
 
-def _bucket_utc(value) -> str:
-    """Timeline bucket start as UTC ISO-8601 with 'Z' (same on both DBs)."""
-    if isinstance(value, str):
-        value = datetime.fromisoformat(value if len(value) > 10 else value + " 00:00")
-    return value.isoformat(timespec="minutes") + "Z"
-
-
 def _run_timeline_query(intent: QueryIntent, db: Session) -> list[dict]:
     """Cost trend: hourly buckets for windows up to 3 days, daily beyond (or
-    with no window). Keeps the MOST RECENT buckets if there are too many."""
-    from app.database import engine
-
+    with no window). Buckets are local hours/days in the deployment time zone
+    (D2), reported as UTC instants. Keeps the MOST RECENT buckets if there are
+    too many."""
     window = intent.time_range
     hourly = window is not None and (window[1] - window[0]) <= timedelta(days=3)
-    if engine.dialect.name == "sqlite":
-        ts_expr = func.strftime(
-            "%Y-%m-%d %H:00" if hourly else "%Y-%m-%d", CostEvent.timestamp
-        )
-    else:
-        ts_expr = func.date_trunc("hour" if hourly else "day", CostEvent.timestamp)
+    unit = "hour" if hourly else "day"
+    ts_expr = local_bucket_expr(CostEvent.timestamp, unit, intent.tz, db)
 
     query = _filtered(
         db.query(
@@ -545,12 +541,18 @@ def _run_timeline_query(intent: QueryIntent, db: Session) -> list[dict]:
     return [
         {
             "type": "timeline",
-            "granularity": "hour" if hourly else "day",
-            "bucket": _bucket_utc(r.bucket),
+            "granularity": unit,
+            "timezone": intent.tz.key,
+            "bucket": utc_iso(start),
+            # Label buckets with this (local wall clock in `timezone`).
+            "local": to_local(start, intent.tz).strftime(
+                "%Y-%m-%d %H:%M" if unit == "hour" else "%Y-%m-%d"
+            ),
             "cost": round(float(r.cost), 6),
             "requests": int(r.requests),
         }
         for r in rows
+        for start in [bucket_start_utc(r.bucket, unit, intent.tz)]
     ]
 
 
@@ -619,13 +621,13 @@ def retrieve(query: str, db: Session) -> RetrievalContext:
     ctx.scope.append(
         "Window: "
         + (
-            _window_label(intent.time_label, intent.time_range)
+            _window_label(intent.time_label, intent.time_range, intent.tz)
             if intent.time_range
             else "ALL TIME (no time period recognised in the question)"
         )
     )
     for label, window in intent.extra_windows:
-        ctx.scope.append("Also requested: " + _window_label(label, window))
+        ctx.scope.append("Also requested: " + _window_label(label, window, intent.tz))
     if intent.unparsed_time:
         ctx.scope.append(
             "NOTE: the question mentions a time period that was NOT understood; "
@@ -694,6 +696,11 @@ def retrieve(query: str, db: Session) -> RetrievalContext:
                 )
             )
 
+    if rollup_results:
+        ctx.scope.append(
+            "NOTE: daily summaries from semantic search are UTC calendar days; "
+            f"the windows above are {intent.tz.key} days."
+        )
     for r in rollup_results:
         if len(ctx.vector_results) >= _VECTOR_LIMIT:
             break

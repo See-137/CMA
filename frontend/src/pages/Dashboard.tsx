@@ -99,17 +99,22 @@ export default function Dashboard() {
       </div>
     );
 
+  // Buckets are local hours/days in the deployment time zone; label them in
+  // that zone, or a viewer elsewhere sees each day under the wrong date.
+  const bucketZone = timeseries?.timezone || 'UTC';
   const tsData = (timeseries?.data ?? []).map((d) => ({
     ...d,
     label:
       period === 'today'
-        ? new Date(d.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        : // Day buckets are UTC days — label them as such, or viewers west of
-          // UTC see each bucket under the previous calendar day.
-          new Date(d.timestamp).toLocaleDateString([], {
+        ? new Date(d.timestamp).toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+            timeZone: bucketZone,
+          })
+        : new Date(d.timestamp).toLocaleDateString([], {
             month: 'short',
             day: 'numeric',
-            timeZone: 'UTC',
+            timeZone: bucketZone,
           }),
   }));
 

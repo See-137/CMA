@@ -119,5 +119,7 @@ def test_prev_period_is_like_for_like(monkeypatch, period, now, expected):
         return datetime(*parts, tzinfo=timezone.utc).replace(tzinfo=None)
 
     monkeypatch.setattr(dashboard, "utcnow", lambda: naive_utc(*now))
-    start, end = dashboard._prev_period_bounds(period)
+    from app.timeutils import UTC_ZONE
+
+    start, end = dashboard._prev_period_bounds(period, UTC_ZONE)
     assert (start, end) == (naive_utc(*expected[0]), naive_utc(*expected[1]))

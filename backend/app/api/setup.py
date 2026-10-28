@@ -3,6 +3,8 @@ import secrets
 
 import bcrypt
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.api.deps import _verify_password, get_db
@@ -10,6 +12,7 @@ from app.config import settings
 from app.models.models import SetupConfig
 from app.schemas.schemas import SetupRequest, SetupResponse, SetupStatusResponse
 from app.services.rate_limit import rate_limit
+from app.timeutils import deployment_tz
 
 router = APIRouter(prefix="/setup", tags=["setup"])
 
@@ -22,11 +25,29 @@ def _hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
+def _check_db_knows_zone(db: Session, zone: str) -> None:
+    """Postgres buckets dashboards in SQL with its own tz database, which may
+    lack names Python knows (legacy links such as "Israel"). Reject those at
+    setup rather than failing every dashboard query later."""
+    if db.get_bind().dialect.name != "postgresql":
+        return
+    try:
+        with db.begin_nested():
+            db.execute(text("SELECT timezone(:tz, now())"), {"tz": zone})
+    except DBAPIError:
+        raise HTTPException(
+            status_code=422,
+            detail=f"The database does not know time zone {zone!r}; "
+            "choose its canonical name (e.g. 'Asia/Jerusalem' rather than 'Israel').",
+        ) from None
+
+
 @router.post("", response_model=SetupResponse)
 def run_setup(body: SetupRequest, db: Session = Depends(get_db)):
     existing = db.query(SetupConfig).first()
     if existing and existing.is_setup_complete:
         raise HTTPException(status_code=400, detail="Setup already completed")
+    _check_db_knows_zone(db, body.timezone)
 
     api_key = secrets.token_urlsafe(32)
 
@@ -88,5 +109,6 @@ def get_setup_status(db: Session = Depends(get_db)):
         is_complete=config.is_setup_complete,
         deployment_name=config.deployment_name,
         timezone=config.timezone,
+        effective_timezone=deployment_tz(db).key,
         currency=config.currency,
     )

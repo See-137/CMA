@@ -13,7 +13,9 @@ import {
 import { api } from '../api/client';
 import type { SetupResponse, SetupStatus } from '../types';
 
-const TIMEZONES = [
+// Every IANA zone the browser knows (the server validates the choice too).
+// Budgets, dashboard days and Scrooge's "today" follow this zone.
+const FALLBACK_TIMEZONES = [
   'UTC',
   'America/New_York',
   'America/Chicago',
@@ -22,11 +24,29 @@ const TIMEZONES = [
   'Europe/London',
   'Europe/Berlin',
   'Europe/Moscow',
+  'Asia/Jerusalem',
   'Asia/Tokyo',
   'Asia/Shanghai',
   'Asia/Kolkata',
   'Australia/Sydney',
 ];
+
+function availableTimezones(): string[] {
+  const intl = Intl as unknown as { supportedValuesOf?: (key: string) => string[] };
+  const zones = intl.supportedValuesOf?.('timeZone') ?? FALLBACK_TIMEZONES;
+  return zones.includes('UTC') ? zones : ['UTC', ...zones];
+}
+
+function browserTimezone(zones: string[]): string {
+  try {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return zone && zones.includes(zone) ? zone : 'UTC';
+  } catch {
+    return 'UTC';
+  }
+}
+
+const TIMEZONES = availableTimezones();
 
 const CURRENCIES = ['USD', 'EUR', 'GBP', 'JPY', 'CAD', 'AUD', 'CHF'];
 
@@ -86,7 +106,7 @@ const SetupWizard: React.FC = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [deploymentName, setDeploymentName] = useState('My Deployment');
-  const [timezone, setTimezone] = useState('UTC');
+  const [timezone, setTimezone] = useState(() => browserTimezone(TIMEZONES));
   const [currency, setCurrency] = useState('USD');
   const [selectedProviders, setSelectedProviders] = useState<Set<string>>(new Set(['openai']));
   const [dailyBudget, setDailyBudget] = useState('50');
@@ -231,6 +251,10 @@ const SetupWizard: React.FC = () => {
             </div>
             <div>
               <label className="label">Timezone</label>
+              <p className="mb-1 text-xs text-secondary">
+                Daily budgets, dashboard days and &ldquo;today&rdquo; follow this zone. It
+                cannot be changed later without a reset.
+              </p>
               <select
                 className="input"
                 value={timezone}

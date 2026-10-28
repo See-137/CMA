@@ -25,7 +25,7 @@
 ```powershell
 cd backend; pip install -r requirements-dev.txt; pytest
 ```
-- 181 backend tests (`backend/tests`) + 78 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
+- 210 backend tests (1 needs `CMA_TEST_PG_URL`, set in CI) (`backend/tests`) + 78 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
 - `test_events.py` — ingestion, auto-discovery (incl. race), UTC timestamp normalisation
 - `test_pricing.py` — pricing resolution, cost_source, reprice, reset-full reseed
 - `test_scrooge_grounding.py` — Scrooge totals, windows, entity matching, untrusted data block, degradation
@@ -38,6 +38,8 @@ cd backend; pip install -r requirements-dev.txt; pytest
 - SDK patch targets are listed in `sdks/python/tests/conftest.py::PATCH_TARGETS` (leak guard) — add new targets there
 - `test_dashboard.py` — metrics + rollups
 - `test_setup.py` — initial setup flow
+- `test_timezone.py` — deployment time zone: DST/half-hour zones, budget periods, dashboard + Scrooge buckets
+- `test_buckets_postgres.py` — SQL bucketing on Postgres equals SQLite (runs when `CMA_TEST_PG_URL` is set; CI's backend-test job has a Postgres service)
 - `test_regressions.py` — envelope contract, embedder IDs, batch enforcement, admin gating, SSRF, rate limiting
 - No frontend tests yet (no vitest/jest configured)
 - Migrations: `cd backend; alembic upgrade head; alembic downgrade base; alembic upgrade head; alembic check` (CI runs this on Postgres)
@@ -161,7 +163,7 @@ docker compose --profile observability up -d
 - Fallback aggregation only fires when at least one data intent is detected — pure conversational queries get vector-only context
 - `gpt-4o-mini` doesn't lean hard into the Scrooge personality — larger models follow the system prompt more faithfully
 - Entity matching in intent detection is whole-token; overlapping spans resolve longest-first ("gpt-4" is not matched inside "gpt-4.1", but "gpt-4 and gpt-4o" keeps both)
-- Budget periods, dashboard days and Scrooge windows are UTC; `SetupConfig.timezone`/`currency` are stored but unused (decision D2/ACC-16)
+- Budget periods, dashboard days/buckets and Scrooge's named periods follow the deployment time zone (`SetupConfig.timezone`, IANA, default UTC; decision D2). Storage and API instants stay UTC; daily rollups are still keyed by UTC day (ACC-18). Use `app.timeutils` (`deployment_tz`, `local_floor`, `shift_day_start`) and `app.services.buckets.local_bucket_expr` — never `.replace(hour=0)` on a UTC time. `currency` is stored but unused (ACC-16)
 - Budgets never discard spend: ingestion always stores the event (flagged `over_budget` when a matching blocking budget was already exhausted). Enforcement is pre-call: `GET /budgets/check` + SDK `enforce_budgets=True` → `BudgetExceeded`. Every action except `alert` blocks; `throttle`/`rate_limit`/`model_downgrade` are legacy aliases of block. Response field `rejected` is always 0 (kept for compatibility)
 - `int(row.total_tokens_in)` can throw TypeError if NULL — always use `int(x or 0)` pattern
 - API key stored as plaintext in SetupConfig despite bcrypt being imported — password uses hash, key does not

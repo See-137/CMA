@@ -3,6 +3,7 @@ export interface SetupStatus {
   deployment_name: string;
   timezone: string;
   currency: string;
+  effective_timezone?: string;
 }
 
 export interface SetupRequest {
@@ -149,6 +150,8 @@ export interface TimeseriesPoint {
 
 export interface TimeseriesResponse {
   data: TimeseriesPoint[];
+  /** IANA zone the buckets are local hours/days in (deployment time zone). */
+  timezone?: string;
 }
 
 export interface TopAgent {
