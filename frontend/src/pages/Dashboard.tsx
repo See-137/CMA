@@ -11,7 +11,8 @@ import {
   ResponsiveContainer,
   Legend,
 } from 'recharts';
-import { Coins, Zap, Bot, Hash, MessageSquare } from 'lucide-react';
+import { Coins, Zap, Bot, Hash, MessageSquare, AlertTriangle } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import ChatDrawer from '../components/ChatDrawer';
 import { api } from '../api/client';
 import StatsCard from '../components/StatsCard';
@@ -154,6 +155,25 @@ export default function Dashboard() {
           ))}
         </div>
       </header>
+
+      {/* Unpriced spend makes Total Cost an understatement — say so. */}
+      {overview && (overview.unpriced_events ?? 0) > 0 && (
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-primary"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" aria-hidden />
+          <p>
+            {formatNumber(overview.unpriced_events)} event
+            {overview.unpriced_events === 1 ? '' : 's'} in this period had no matching model
+            price and were recorded at $0, so Total Cost is understated.{' '}
+            <Link to="/providers" className="font-medium underline">
+              Add pricing
+            </Link>
+            , then reprice them from Settings.
+          </p>
+        </div>
+      )}
 
       {/* Stats */}
       {overview && (
