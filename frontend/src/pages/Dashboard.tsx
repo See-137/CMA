@@ -164,13 +164,14 @@ export default function Dashboard() {
         >
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" aria-hidden />
           <p>
-            {formatNumber(overview.unpriced_events)} event
-            {overview.unpriced_events === 1 ? '' : 's'} in this period had no matching model
-            price and were recorded at $0, so Total Cost is understated.{' '}
+            {overview.unpriced_events === 1
+              ? '1 event in this period had no matching model price and was'
+              : `${formatNumber(overview.unpriced_events)} events in this period had no matching model price and were`}{' '}
+            recorded at $0, so Total Cost is understated.{' '}
             <Link to="/providers" className="font-medium underline">
               Add pricing
             </Link>
-            , then reprice them from Settings.
+            , then reprice {overview.unpriced_events === 1 ? 'it' : 'them'} from Settings.
           </p>
         </div>
       )}

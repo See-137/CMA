@@ -102,10 +102,11 @@ demonstrated are encoded as regression tests where fixed.
 | ID | P | Finding | Evidence | Action | Stage | Verification | Status |
 |---|---|---|---|---|---|---|---|
 | OPS-01 | P2 | `/admin/export` is described as a backup but holds the latest 1000 events only; no backup/restore procedure is documented. | Verified | Rename to summary export; add a backup/restore runbook (pg_dump + Chroma rebuild). | S6 | Runbook exercised on a scratch Postgres | Open |
-| OPS-02 | P3 | `/admin/status` DB size reads a hard-coded `data/cma.db`. | Verified | Derive from `DATABASE_URL`; PG size query. | S6 | Test | Open |
+| OPS-02 | P3 | `/admin/status` DB size reads a hard-coded `data/cma.db` (shows 0 MB for any other SQLite path and for Postgres). | Verified (screenshot) | Derive from `DATABASE_URL`; PG size query. | S6 | Test | Open |
 | OPS-03 | P2 | A local uvicorn did not exit within ~5 s of SIGTERM (observed once; cause unknown). | Observed once | Reproduce; check maintenance task/Chroma shutdown. | S6 | Clean exit < 5 s | Open (investigate) |
 | OPS-04 | P3 | Frontend ships a single 700 kB chunk. | Verified (build warning) | Route-level code splitting. | — | — | Deferred: no load-time complaints for a self-hosted dashboard. Trigger: remote/mobile use or a reported slow load. |
 | DOC-01 | P1 | README claims: SDK "never alters or breaks the underlying call" (SDK-02), "stop them before the call is made" / "hard-stop enforcement" (BUD-02). | Verified | Wording corrected in this PR to describe actual behaviour; revisit after D1/SDK-02. | S1/S3 | README matches tested behaviour | Done (interim) |
 | DOC-02 | P3 | Test counts and gotchas in CLAUDE.md/README stale (89 tests; exact-match pricing; substring entity matching). | Verified | Updated. | S1 | Counts match `pytest` | Done |
 | UX-01 | P2 | Events page does not show `cost_source`; unpriced rows look free. | Verified | Badge for unpriced/client costs. | S6 | Visual check | Open |
+| UX-03 | P3 | Change % shows "+100%" when the previous window had no data (no baseline), which reads as a real doubling. | Verified (screenshot) | Return null when there is no baseline; UI shows "new". | S6 | Overview with empty previous window shows no percentage | Open |
 | UX-02 | P3 | No frontend tests. | Verified | Vitest smoke tests for formatters and the unpriced banner. | — | — | Deferred: build + type-check cover current changes. Trigger: next non-trivial UI change. |
