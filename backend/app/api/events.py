@@ -3,6 +3,7 @@ import logging
 from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -101,6 +102,32 @@ def _process_event(
     return cost_event
 
 
+def _begin_batch_transaction(db: Session) -> None:
+    """Make the batch one transaction on SQLite too (OPS-07).
+
+    pysqlite opens a transaction only at the first write statement, so the per-event
+    SAVEPOINT below started a transaction of its own and its RELEASE
+    committed it: a batch that failed half-way kept its first events, and the
+    SDK (which retries 5xx) then sent the whole batch again. Opening the
+    write transaction up front makes the savepoints nest inside it, as on
+    Postgres. IMMEDIATE takes the write lock now (waiting up to the busy
+    timeout) instead of failing on a read-to-write upgrade under concurrency.
+
+    The lock is held for the whole batch: a concurrent writer waits up to the
+    SQLite busy timeout (pysqlite default 5 s; `?timeout=N` on the URL) and
+    then gets "database is locked" -> 500 with nothing stored, which the SDK
+    retries. Keep that timeout below the client's read timeout, or a client
+    may give up and resend a batch that later commits.
+    """
+    if db.get_bind().dialect.name != "sqlite":
+        return
+    # Already in a transaction (an earlier write on this session): the
+    # savepoints nest inside it, and a second BEGIN would fail.
+    if db.connection().connection.dbapi_connection.in_transaction:
+        return
+    db.execute(text("BEGIN IMMEDIATE"))
+
+
 @router.post("", response_model=EventsIngestionResponse)
 def ingest_events(
     body: EventsEnvelope | list[EventIn] | EventIn,
@@ -122,6 +149,8 @@ def ingest_events(
         )
 
     INGEST_BATCH_SIZE.observe(len(events))
+    if events:
+        _begin_batch_transaction(db)
 
     processed = 0
     errored = 0
@@ -188,6 +217,11 @@ def ingest_events(
         bg_db = SessionLocal()
         try:
             check_budgets(bg_db)
+        except Exception:
+            # Background tasks run in sequence and stop at the first error:
+            # a failed check (e.g. a locked SQLite database) must not skip
+            # the embedding task. Alerts are re-evaluated on the next batch.
+            logger.warning("Background budget check failed", exc_info=True)
         finally:
             bg_db.close()
 

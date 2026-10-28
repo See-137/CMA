@@ -198,3 +198,130 @@ def test_agent_autodiscovery_race_does_not_drop_event(authed_client, monkeypatch
     assert body["processed"] == 1
     assert body["errored"] == 0
     assert authed_client.get("/api/v1/events").json()["total"] == 2
+
+
+def test_failed_batch_stores_nothing_on_sqlite(tmp_path, monkeypatch):
+    """OPS-07: on SQLite each event's savepoint used to commit on release, so
+    a batch failing at its 3rd event kept the first two — and the SDK, which
+    retries 5xx, then sent the whole batch again (double-counted spend)."""
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.api import events as events_api
+    from app.database import Base, get_db
+    from app.main import app
+    from app.models.models import CostEvent
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'ops07.db'}", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+
+    def file_db():
+        db = Session()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    real_cost = events_api._event_cost
+    calls = {"n": 0}
+
+    def third_fails(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise RuntimeError("pricing lookup failed")
+        return real_cost(*args, **kwargs)
+
+    monkeypatch.setattr(events_api, "_event_cost", third_fails)
+    monkeypatch.setattr(events_api, "check_budgets", lambda db: [])
+    previous = dict(app.dependency_overrides)
+    app.dependency_overrides[get_db] = file_db
+    from app.api.deps import require_api_key
+
+    app.dependency_overrides[require_api_key] = lambda: None
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            batch = [
+                {
+                    "agent_name": "a",
+                    "model": "gpt-4o",
+                    "provider": "openai",
+                    "tokens_input": 10,
+                    "tokens_output": 10,
+                }
+                for _ in range(3)
+            ]
+            resp = client.post("/api/v1/events", json=batch)
+    finally:
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(previous)
+    assert resp.status_code == 500
+    with Session() as db:
+        assert db.query(CostEvent).count() == 0
+    engine.dispose()
+
+
+def test_concurrent_batches_on_sqlite_all_land(tmp_path, monkeypatch):
+    """The up-front write transaction must queue concurrent batches (busy
+    timeout), not fail them with 'database is locked'."""
+    import threading
+
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.api import events as events_api
+    from app.api.deps import require_api_key
+    from app.database import Base, get_db
+    from app.main import app
+    from app.models.models import CostEvent
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'ops07c.db'}", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+
+    def file_db():
+        db = Session()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    monkeypatch.setattr(events_api, "check_budgets", lambda db: [])
+    previous = dict(app.dependency_overrides)
+    app.dependency_overrides[get_db] = file_db
+    app.dependency_overrides[require_api_key] = lambda: None
+    statuses = []
+    try:
+        with TestClient(app) as client:
+            batch = [
+                {
+                    "agent_name": f"agent-{i % 3}",
+                    "model": "gpt-4o",
+                    "provider": "openai",
+                    "tokens_input": 10,
+                    "tokens_output": 10,
+                }
+                for i in range(20)
+            ]
+
+            def post():
+                statuses.append(client.post("/api/v1/events", json=batch).status_code)
+
+            threads = [threading.Thread(target=post) for _ in range(8)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(60)
+    finally:
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(previous)
+    assert len(statuses) == 8 and set(statuses) <= {200, 201}, statuses
+    with Session() as db:
+        assert db.query(CostEvent).count() == 8 * 20
+    engine.dispose()
