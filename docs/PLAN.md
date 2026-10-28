@@ -158,3 +158,8 @@ Owner decisions (2026-10-28):
   before `message_start` in `messages.stream()` recorded nothing). Fixed with
   the follow-ups and tests (FINDINGS REV-24); SDK floor raised to Python 3.10.
   PR #24 ported onto master. SDK tests → 64.
+- 2026-10-28 — Focused re-review of the #24 fixes: REQUEST CHANGES (closing a
+  stream from another task/thread raised and left it open). Fixed with the
+  minors (unread/cancelled streams, phantom failures, manager reuse); every
+  new test checked against a mutation of its fix (FINDINGS REV-24b). Helper
+  streams left early deferred as SDK-13. SDK tests → 73.

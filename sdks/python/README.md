@@ -114,10 +114,15 @@ for a new request is recorded: it goes through `responses.create`.
 
 Streams are passed through unchanged. If CMA injects
 `stream_options.include_usage` for an OpenAI chat stream, the extra usage-only
-chunk is consumed by CMA, not yielded to your code. A stream you stop reading early is recorded
-as `status="incomplete"` with whatever tokens the provider already reported;
-an exception raised by your own code inside `messages.stream()` does not turn
-billed tokens into a `failure`.
+chunk is consumed by CMA, not yielded to your code. A stream you stop reading early, close
+unread, or cancel (task cancellation, Ctrl-C) is recorded as `status="incomplete"` with
+whatever tokens the provider already reported, at the moment you close it or leave its
+`with` block; an exception raised by your own code inside `messages.stream()` does not turn
+billed tokens into a `failure`. One exception: OpenAI's `chat.completions.stream()` /
+`responses.stream()` helpers close the HTTP response directly, so a helper stream left
+part-read is recorded when it is garbage-collected (normally at once in CPython) rather
+than at block exit. For async `messages.stream()`, argument errors are raised when the
+block is entered rather than at the call.
 
 ## Budget enforcement
 

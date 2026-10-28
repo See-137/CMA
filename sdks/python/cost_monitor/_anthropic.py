@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator, Iterator
 from cost_monitor._patching import (
     InstrumentedAsyncStream,
     InstrumentedStream,
+    StreamState,
     aprecall_enforce,
     get_active_tracker,
     install,
@@ -103,11 +104,31 @@ def _is_api_error(exc: BaseException) -> bool:
     return isinstance(exc, anthropic.AnthropicError)
 
 
+def _log_unread(tracker, model, trace_id, start) -> None:
+    _log_tokens(
+        tracker, model, trace_id, start, 0, 0, status="incomplete",
+        metadata={"reason": "stream closed before it was read"},
+    )
+
+
+def _log_setup_exit(tracker, model, trace_id, start, exc: BaseException) -> None:
+    """The request itself raised: an Exception is a failed call; task
+    cancellation/Ctrl-C while waiting is an incomplete one."""
+    if is_cancellation(exc):
+        _log_tokens(
+            tracker, model, trace_id, start, 0, 0, status="incomplete",
+            metadata={"reason": f"cancelled ({type(exc).__name__})"},
+        )
+    elif isinstance(exc, Exception):
+        _log_failure(tracker, model, trace_id, start, exc)
+
+
 _EARLY_CLOSE = {"reason": "stream closed by caller before the message completed"}
 
 
 def _wrap_sync_stream(
-    stream: Any, tracker, model: str, trace_id: str, start: float
+    stream: Any, tracker, model: str, trace_id: str, start: float,
+    state: StreamState | None = None,
 ) -> Iterator[Any]:
     """Yield every event unchanged; accumulate usage from stream events.
 
@@ -118,6 +139,8 @@ def _wrap_sync_stream(
     tokens_out = 0
     error: BaseException | None = None
     closed_early = False
+    if state is not None:
+        state.started = True
     try:
         for event in stream:
             etype = getattr(event, "type", None)
@@ -136,7 +159,9 @@ def _wrap_sync_stream(
         error = exc
         raise
     finally:
-        if error is not None and is_cancellation(error):
+        if error is not None and (
+            is_cancellation(error) or (state is not None and state.closed_by_caller)
+        ):
             closed_early, error = True, None
         if error is not None:
             # Input tokens from message_start are billed even when the
@@ -174,13 +199,16 @@ def _wrap_sync_stream(
 
 
 async def _wrap_async_stream(
-    stream: Any, tracker, model: str, trace_id: str, start: float
+    stream: Any, tracker, model: str, trace_id: str, start: float,
+    state: StreamState | None = None,
 ) -> AsyncIterator[Any]:
     """Async counterpart of _wrap_sync_stream."""
     tokens_in = 0
     tokens_out = 0
     error: BaseException | None = None
     closed_early = False
+    if state is not None:
+        state.started = True
     try:
         async for event in stream:
             etype = getattr(event, "type", None)
@@ -199,7 +227,9 @@ async def _wrap_async_stream(
         error = exc
         raise
     finally:
-        if error is not None and is_cancellation(error):
+        if error is not None and (
+            is_cancellation(error) or (state is not None and state.closed_by_caller)
+        ):
             closed_early, error = True, None
         if error is not None:
             # Input tokens from message_start are billed even when the
@@ -295,10 +325,8 @@ def _record_stream_exit(tracker, model, trace_id, start, stream, exc) -> None:
             metadata={"reason": f"caller raised {type(exc).__name__}"},
         )
     else:
-        logger.warning(
-            "cost_monitor: messages.stream() ended without a usage snapshot — "
-            "SDK version may be unsupported."
-        )
+        # Left the block before message_start: sent, nothing reported yet.
+        _log_unread(*args)
 
 
 class _InstrumentedStreamManager:
@@ -329,8 +357,8 @@ class _InstrumentedStreamManager:
         # most need visibility into, so it must be logged here.
         try:
             self._cma_stream = self._cma_manager.__enter__()
-        except Exception as exc:
-            _log_failure(*self._cma_args(), exc)
+        except BaseException as exc:
+            _log_setup_exit(*self._cma_args(), exc)
             raise
         return self._cma_stream
 
@@ -375,12 +403,18 @@ class _InstrumentedAsyncStreamManager:
 
     async def __aenter__(self) -> Any:
         await aprecall_enforce(self._cma_tracker, "anthropic", self._cma_model)
+        if self._cma_manager is not None:
+            # The SDK's own manager cannot be entered twice either; without
+            # this a second entry would send a second, unrecorded request.
+            raise RuntimeError("messages.stream() manager cannot be reused")
+        # Argument errors surface here, as from the SDK call itself: no
+        # request was made, so nothing is recorded.
+        self._cma_manager = self._cma_factory()
         self._cma_start = time.time()
         try:
-            self._cma_manager = self._cma_factory()
             self._cma_stream = await self._cma_manager.__aenter__()
-        except Exception as exc:
-            _log_failure(*self._cma_args(), exc)
+        except BaseException as exc:
+            _log_setup_exit(*self._cma_args(), exc)
             raise
         return self._cma_stream
 
@@ -426,12 +460,13 @@ def _make_create(original):
         model = kwargs.get("model", "unknown")
         try:
             response = original(self, *args, **kwargs)
-        except Exception as exc:
-            _log_failure(tracker, model, trace_id, start, exc)
+        except BaseException as exc:
+            _log_setup_exit(tracker, model, trace_id, start, exc)
             raise
         if kwargs.get("stream", False):
-            gen = _wrap_sync_stream(response, tracker, model, trace_id, start)
-            return InstrumentedStream(response, gen)
+            state = StreamState(lambda: _log_unread(tracker, model, trace_id, start))
+            gen = _wrap_sync_stream(response, tracker, model, trace_id, start, state)
+            return InstrumentedStream(response, gen, state)
         _log_response_usage(tracker, model, trace_id, start, response)
         return response
 
@@ -450,12 +485,13 @@ def _make_acreate(original):
         model = kwargs.get("model", "unknown")
         try:
             response = await original(self, *args, **kwargs)
-        except Exception as exc:
-            _log_failure(tracker, model, trace_id, start, exc)
+        except BaseException as exc:
+            _log_setup_exit(tracker, model, trace_id, start, exc)
             raise
         if kwargs.get("stream", False):
-            gen = _wrap_async_stream(response, tracker, model, trace_id, start)
-            return InstrumentedAsyncStream(response, gen)
+            state = StreamState(lambda: _log_unread(tracker, model, trace_id, start))
+            gen = _wrap_async_stream(response, tracker, model, trace_id, start, state)
+            return InstrumentedAsyncStream(response, gen, state)
         _log_response_usage(tracker, model, trace_id, start, response)
         return response
 

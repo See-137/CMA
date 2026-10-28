@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator, Iterator
 from cost_monitor._patching import (
     InstrumentedAsyncStream,
     InstrumentedStream,
+    StreamState,
     config,
     aprecall_enforce,
     get_active_tracker,
@@ -97,6 +98,15 @@ def _log_incomplete(tracker, model: str, trace_id: str, start: float) -> None:
     )
 
 
+def _log_setup_exit(tracker, model, trace_id, start, exc: BaseException) -> None:
+    """The request itself raised: an Exception is a failed call; task
+    cancellation/Ctrl-C while waiting is an incomplete one."""
+    if is_cancellation(exc):
+        _log_incomplete(tracker, model, trace_id, start)
+    elif isinstance(exc, Exception):
+        _log_failure(tracker, model, trace_id, start, exc)
+
+
 def _log_failure(
     tracker, model: str, trace_id: str, start: float, exc: BaseException
 ) -> None:
@@ -182,6 +192,7 @@ def _wrap_sync_stream(
     trace_id: str,
     start: float,
     hide_usage_chunk: bool = False,
+    state: StreamState | None = None,
 ) -> Iterator[Any]:
     """Yield every chunk unchanged (except a usage chunk CMA asked for);
     log usage after the final chunk."""
@@ -189,6 +200,8 @@ def _wrap_sync_stream(
     status = "success"
     error: BaseException | None = None
     closed_early = False
+    if state is not None:
+        state.started = True
     try:
         for chunk in stream:
             chunk_usage = _chunk_usage(chunk)
@@ -205,7 +218,9 @@ def _wrap_sync_stream(
         error = exc
         raise
     finally:
-        if error is not None and is_cancellation(error):
+        if error is not None and (
+            is_cancellation(error) or (state is not None and state.closed_by_caller)
+        ):
             closed_early = True
             error = None
         if error is not None:
@@ -229,12 +244,15 @@ async def _wrap_async_stream(
     trace_id: str,
     start: float,
     hide_usage_chunk: bool = False,
+    state: StreamState | None = None,
 ) -> AsyncIterator[Any]:
     """Async counterpart of _wrap_sync_stream."""
     usage = None
     status = "success"
     error: BaseException | None = None
     closed_early = False
+    if state is not None:
+        state.started = True
     try:
         async for chunk in stream:
             chunk_usage = _chunk_usage(chunk)
@@ -251,7 +269,9 @@ async def _wrap_async_stream(
         error = exc
         raise
     finally:
-        if error is not None and is_cancellation(error):
+        if error is not None and (
+            is_cancellation(error) or (state is not None and state.closed_by_caller)
+        ):
             closed_early = True
             error = None
         if error is not None:
@@ -285,15 +305,18 @@ def _make_sync_wrapper(original_create, inject_usage: bool = True):
 
         try:
             response = original_create(self, *args, **kwargs)
-        except Exception as exc:
-            _log_failure(tracker, model, trace_id, start, exc)
+        except BaseException as exc:
+            _log_setup_exit(tracker, model, trace_id, start, exc)
             raise
 
         if is_streaming:
-            gen = _wrap_sync_stream(
-                response, tracker, model, trace_id, start, injected
+            state = StreamState(
+                lambda: _log_incomplete(tracker, model, trace_id, start)
             )
-            return InstrumentedStream(response, gen)
+            gen = _wrap_sync_stream(
+                response, tracker, model, trace_id, start, injected, state
+            )
+            return InstrumentedStream(response, gen, state)
 
         usage = getattr(response, "usage", None)
         if usage:
@@ -324,15 +347,18 @@ def _make_async_wrapper(original_acreate, inject_usage: bool = True):
 
         try:
             response = await original_acreate(self, *args, **kwargs)
-        except Exception as exc:
-            _log_failure(tracker, model, trace_id, start, exc)
+        except BaseException as exc:
+            _log_setup_exit(tracker, model, trace_id, start, exc)
             raise
 
         if is_streaming:
-            gen = _wrap_async_stream(
-                response, tracker, model, trace_id, start, injected
+            state = StreamState(
+                lambda: _log_incomplete(tracker, model, trace_id, start)
             )
-            return InstrumentedAsyncStream(response, gen)
+            gen = _wrap_async_stream(
+                response, tracker, model, trace_id, start, injected, state
+            )
+            return InstrumentedAsyncStream(response, gen, state)
 
         usage = getattr(response, "usage", None)
         if usage:
