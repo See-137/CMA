@@ -195,7 +195,7 @@ All routes are under `/api/v1` and require the ingest key as `Authorization: Bea
 | Admin | `/admin/status`, `/admin/logs`, `/admin/export`, `/admin/reprice` (recompute unpriced events from current pricing), `/admin/reset` (monitoring data), `/admin/reset-full` (everything, including setup) |
 | Health | `GET /health` (liveness), `GET /health/ready` (readiness with bounded DB and vector-store checks) |
 
-The interactive OpenAPI docs at `/docs` are the authoritative reference. All datetimes in responses are UTC with a `Z` suffix (Python 3.10's `datetime.fromisoformat` does not accept `Z`; use 3.11+ or replace it with `+00:00`).
+The interactive OpenAPI docs at `/docs` are the authoritative reference. All datetimes in responses are UTC with a `Z` suffix; period boundaries ("today", a daily budget, a dashboard day) follow the time zone chosen at setup — a day bucket's timestamp is that local midnight as a UTC instant, and `/dashboard/timeseries` returns the zone in `timezone` (Python 3.10's `datetime.fromisoformat` does not accept `Z`; use 3.11+ or replace it with `+00:00`).
 
 ## Deployment
 
@@ -211,7 +211,7 @@ cd sdks/python && pip install -e ".[dev]" && pytest   # SDK, incl. real openai/a
 cd frontend && npm run build         # tsc + vite build
 ```
 
-The backend suite has 181 tests and the SDK suite 78. The SDK instrumentation tests exercise the real `openai` and `anthropic` client libraries against a local fake HTTP server, so patching is verified against actual SDK internals rather than mocks.
+The backend suite has 193 tests and the SDK suite 78. The SDK instrumentation tests exercise the real `openai` and `anthropic` client libraries against a local fake HTTP server, so patching is verified against actual SDK internals rather than mocks.
 
 CI runs on every push and pull request:
 

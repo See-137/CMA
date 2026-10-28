@@ -1,34 +1,29 @@
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.models import Alert, Budget, CostEvent
-from app.timeutils import utcnow
+from app.timeutils import UTC_ZONE, ZoneInfo, deployment_tz, local_floor
 
 logger = logging.getLogger(__name__)
 
 
-def _period_start(period: str) -> datetime:
-    """Return the start-of-period datetime for the given budget period."""
-    now = utcnow()
-    if period == "hourly":
-        return now.replace(minute=0, second=0, microsecond=0)
-    if period == "daily":
-        return now.replace(hour=0, minute=0, second=0, microsecond=0)
-    elif period == "weekly":
-        start = now - timedelta(days=now.weekday())
-        return start.replace(hour=0, minute=0, second=0, microsecond=0)
-    elif period == "monthly":
-        return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    return now.replace(hour=0, minute=0, second=0, microsecond=0)
+_PERIOD_UNIT = {"hourly": "hour", "daily": "day", "weekly": "week", "monthly": "month"}
 
 
-def _current_spend(budget: Budget, db: Session) -> float:
+def _period_start(period: str, tz: ZoneInfo = UTC_ZONE) -> datetime:
+    """Start (naive UTC) of the budget's current period. Periods follow the
+    deployment time zone (D2): a daily budget resets at local midnight, a
+    weekly one on local Monday, a monthly one on the local 1st."""
+    return local_floor(_PERIOD_UNIT.get(period, "day"), tz)
+
+
+def _current_spend(budget: Budget, db: Session, tz: ZoneInfo | None = None) -> float:
     """Calculate total spend for a budget in its current period."""
-    start = _period_start(budget.period)
+    start = _period_start(budget.period, tz or deployment_tz(db))
 
     query = db.query(func.coalesce(func.sum(CostEvent.cost), 0.0)).filter(
         CostEvent.timestamp >= start
@@ -135,15 +130,22 @@ def load_enforcement_state(db: Session) -> list[dict]:
     every budget for every event in a batch.
     """
     budgets = db.query(Budget).filter(Budget.is_active.is_(True)).all()
+    tz = deployment_tz(db)
     return [
-        {"budget": b, "spend": _current_spend(b, db)} for b in budgets if is_blocking(b)
+        {
+            "budget": b,
+            "spend": _current_spend(b, db, tz),
+            "start": _period_start(b.period, tz),
+        }
+        for b in budgets
+        if is_blocking(b)
     ]
 
 
-def _in_current_period(budget: Budget, timestamp: datetime | None) -> bool:
+def _in_current_period(entry: dict, timestamp: datetime | None) -> bool:
     """Only spend timestamped inside the budget's current period counts toward
     it (a back-dated/replayed event belongs to an earlier period)."""
-    return timestamp is None or timestamp >= _period_start(budget.period)
+    return timestamp is None or timestamp >= entry["start"]
 
 
 def event_budget_violations(
@@ -166,7 +168,7 @@ def event_budget_violations(
         budget = entry["budget"]
         if not _scope_matches(budget, agent_name, workflow, swarm, provider, model):
             continue
-        if not _in_current_period(budget, timestamp):
+        if not _in_current_period(entry, timestamp):
             continue
         if budget.limit_amount > 0 and entry["spend"] >= budget.limit_amount:
             violations.append(_violation(budget, entry["spend"])["message"])
@@ -189,7 +191,7 @@ def accumulate_event(
         budget = entry["budget"]
         if _scope_matches(
             budget, agent_name, workflow, swarm, provider, model
-        ) and _in_current_period(budget, timestamp):
+        ) and _in_current_period(entry, timestamp):
             entry["spend"] += cost
 
 
@@ -208,12 +210,13 @@ def precall_check(
     attribute is supplied (a legacy scoped row with no scope_ref counts as
     global, as its spend does)."""
     violations = []
+    tz = deployment_tz(db)
     for budget in db.query(Budget).filter(Budget.is_active.is_(True)).all():
         if not is_blocking(budget) or budget.limit_amount <= 0:
             continue
         if not _scope_matches(budget, agent_name, workflow, swarm, provider, model):
             continue
-        spend = _current_spend(budget, db)
+        spend = _current_spend(budget, db, tz)
         if spend >= budget.limit_amount:
             violations.append(_violation(budget, spend))
     return violations
@@ -223,14 +226,15 @@ def check_budgets(db: Session) -> list[Alert]:
     """Evaluate all active budgets and create alerts for threshold breaches."""
     budgets = db.query(Budget).filter(Budget.is_active.is_(True)).all()
     new_alerts: list[Alert] = []
+    tz = deployment_tz(db)
 
     for budget in budgets:
-        spend = _current_spend(budget, db)
+        spend = _current_spend(budget, db, tz)
         if budget.limit_amount <= 0:
             continue
 
         percentage = (spend / budget.limit_amount) * 100
-        period_start = _period_start(budget.period)
+        period_start = _period_start(budget.period, tz)
 
         try:
             thresholds = json.loads(budget.alert_thresholds)

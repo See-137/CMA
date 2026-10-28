@@ -149,6 +149,8 @@ export interface TimeseriesPoint {
 
 export interface TimeseriesResponse {
   data: TimeseriesPoint[];
+  /** IANA zone the buckets are local hours/days in (deployment time zone). */
+  timezone?: string;
 }
 
 export interface TopAgent {

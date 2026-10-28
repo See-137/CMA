@@ -1,4 +1,5 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.config import settings
@@ -17,6 +18,15 @@ engine = create_engine(
     connect_args=connect_args,
     echo=False,
 )
+
+
+@event.listens_for(Engine, "connect")
+def _on_connect(dbapi_connection, _record) -> None:
+    # SQLite has no time-zone support; local-day buckets use a Python UDF.
+    from app.services.buckets import register_sqlite_functions
+
+    register_sqlite_functions(dbapi_connection)
+
 
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
