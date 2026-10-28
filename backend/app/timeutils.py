@@ -148,11 +148,12 @@ def local_floor(unit: str, tz: ZoneInfo, now: datetime | None = None) -> datetim
     return from_local(start, tz)
 
 
-def shift_local(
+def shift_day_start(
     value: datetime, tz: ZoneInfo, *, days: int = 0, months: int = 0
 ) -> datetime:
     """Start (naive UTC) of the local day ``days``/``months`` away from the
-    local day that begins at ``value``.
+    local day that begins at ``value`` (a day start, e.g. from local_floor;
+    any other instant is treated as the start of its local day).
 
     For period starts only: works on local *dates*, so a day that began
     after a DST gap at midnight (e.g. Africa/Cairo, where 00:00 does not

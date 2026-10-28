@@ -21,7 +21,7 @@ from app.schemas.schemas import (
 from app.services.buckets import bucket_start_utc, local_bucket_expr
 from app.services.budget_checker import _current_spend
 from app.services.cost_engine import unpriced_clause
-from app.timeutils import deployment_tz, local_floor, shift_local, utc_iso, utcnow
+from app.timeutils import deployment_tz, local_floor, shift_day_start, utc_iso, utcnow
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -51,7 +51,9 @@ def _prev_period_bounds(period: str, tz: ZoneInfo) -> tuple[datetime, datetime]:
     look like a large drop; 'quarter' used to compare against yesterday.
     """
     start, now = _period_bounds(period, tz)
-    prev_start = shift_local(start, tz, **_PREV_SHIFT[_PERIOD_UNIT.get(period, "day")])
+    prev_start = shift_day_start(
+        start, tz, **_PREV_SHIFT[_PERIOD_UNIT.get(period, "day")]
+    )
     prev_end = min(prev_start + (now - start), start)
     return prev_start, prev_end
 

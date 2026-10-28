@@ -127,10 +127,12 @@ async def lifespan(app: FastAPI):
     try:
         seed_providers(db)
         # Period boundaries (budgets, dashboard days, Scrooge "today") follow
-        # this zone (D2); say which one is in effect.
-        logger.info("Deployment time zone: %s", deployment_tz(db).key)
-    except Exception:
-        logger.exception("Could not read the deployment time zone")
+        # this zone (D2); say which one is in effect. Only this line may fail
+        # quietly — a seeding failure (e.g. no schema) must stop startup.
+        try:
+            logger.info("Deployment time zone: %s", deployment_tz(db).key)
+        except Exception:
+            logger.exception("Could not read the deployment time zone")
     finally:
         db.close()
 

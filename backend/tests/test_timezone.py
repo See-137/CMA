@@ -9,7 +9,7 @@ from app import timeutils
 from app.api import dashboard
 from app.models.models import Budget, CostEvent, SetupConfig
 from app.services import rag_engine as rag
-from app.timeutils import ZoneInfo, local_floor, shift_local
+from app.timeutils import ZoneInfo, local_floor, shift_day_start
 from tests.conftest import TestSession
 
 
@@ -65,7 +65,7 @@ def test_local_day_across_dst_end_is_25_hours():
     tz = ZoneInfo("Asia/Jerusalem")  # DST ends 2026-10-25 02:00 local
     day = local_floor("day", tz, U(2026, 10, 26, 12, 0))
     assert day == U(2026, 10, 25, 22, 0)  # local midnight, UTC+2
-    prev = shift_local(day, tz, days=-1)
+    prev = shift_day_start(day, tz, days=-1)
     assert prev == U(2026, 10, 24, 21, 0)  # local midnight, UTC+3
     assert day - prev == timedelta(hours=25)
 
@@ -408,18 +408,11 @@ def test_cairo_midnight_dst_gap_keeps_whole_days(db, monkeypatch):
     )
 
 
-def test_hourly_budget_period_in_a_half_hour_zone():
+def test_hourly_budget_period_in_a_half_hour_zone(monkeypatch):
     from app.services.budget_checker import _period_start
 
-    tz = ZoneInfo("Asia/Kolkata")
-    import app.timeutils as tu
-
-    orig = tu.utcnow
-    tu.utcnow = lambda: U(2026, 10, 28, 22, 45)
-    try:
-        assert _period_start("hourly", tz) == U(2026, 10, 28, 22, 30)
-    finally:
-        tu.utcnow = orig
+    monkeypatch.setattr(timeutils, "utcnow", lambda: U(2026, 10, 28, 22, 45))
+    assert _period_start("hourly", ZoneInfo("Asia/Kolkata")) == U(2026, 10, 28, 22, 30)
 
 
 def test_scrooge_timeline_rows_carry_local_labels(tokyo):

@@ -19,7 +19,7 @@ from app.timeutils import (
     UTC_ZONE,
     deployment_tz,
     local_floor,
-    shift_local,
+    shift_day_start,
     to_local,
     utc_iso,
     utcnow,
@@ -108,11 +108,11 @@ def _relative(name: str, tz: ZoneInfo) -> tuple[datetime, datetime]:
     month = local_floor("month", tz, now)
     return {
         "today": (day, now),
-        "yesterday": (shift_local(day, tz, days=-1), day),
+        "yesterday": (shift_day_start(day, tz, days=-1), day),
         "this week": (week, now),
-        "last week": (shift_local(week, tz, days=-7), week),
+        "last week": (shift_day_start(week, tz, days=-7), week),
         "this month": (month, now),
-        "last month": (shift_local(month, tz, months=-1), month),
+        "last month": (shift_day_start(month, tz, months=-1), month),
     }[name]
 
 
@@ -237,7 +237,7 @@ def _find_windows(
             now = utcnow()
             today = local_floor("day", tz, now)
             days_back = (to_local(now, tz).weekday() - weekday) % 7 or 7
-            target = shift_local(today, tz, days=-days_back)
+            target = shift_day_start(today, tz, days=-days_back)
             since = re.search(r"\bsince\s+$", q_lower[: m.start()])
             if since:  # "since monday" = from that day until now
                 found.append((since.start(), f"since {day_name}", (target, now)))
@@ -247,7 +247,7 @@ def _find_windows(
                     (
                         m.start(),
                         f"last {day_name}",
-                        (target, shift_local(target, tz, days=1)),
+                        (target, shift_day_start(target, tz, days=1)),
                     )
                 )
                 taken.append(m.span())

@@ -15,7 +15,7 @@ turns it back into a naive-UTC instant for the API (emitted with ``Z``).
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 
@@ -51,10 +51,14 @@ def _sqlite_local_bucket(value: str | None, unit: str, tz_name: str) -> str | No
 @lru_cache(maxsize=65536)
 def _bucket_for_minute(minute: str, unit: str, tz_name: str) -> str:
     tz = _zone(tz_name) or ZoneInfo("UTC")
-    local = to_local(datetime.fromisoformat(minute), tz)
+    utc = datetime.fromisoformat(minute)
+    local = to_local(utc, tz)
     if unit == "hour":
-        start = local.replace(minute=0, second=0, microsecond=0)  # keeps fold
-        return from_local(start, tz).strftime(_FMT)
+        # Same rule as the Postgres expression: the instant minus the time
+        # elapsed since the local hour began. Rebuilding the hour from the
+        # wall clock instead would merge hours at a 30-minute DST change
+        # (Australia/Lord_Howe), where 01:00 itself is not ambiguous.
+        return (utc - timedelta(minutes=local.minute)).strftime(_FMT)
     return local.replace(
         tzinfo=None, hour=0, minute=0, second=0, microsecond=0
     ).strftime(_FMT)
