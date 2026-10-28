@@ -43,6 +43,9 @@ def create_provider(body: ProviderCreate, db: Session = Depends(get_db)):
             model_alias=m.model_alias,
             input_price_per_million=m.input_price_per_million,
             output_price_per_million=m.output_price_per_million,
+            cache_read_price_per_million=m.cache_read_price_per_million,
+            cache_write_price_per_million=m.cache_write_price_per_million,
+            cache_write_1h_price_per_million=m.cache_write_1h_price_per_million,
         )
         db.add(model)
 
@@ -115,11 +118,22 @@ def create_model(provider_id: int, body: ModelPricingIn, db: Session = Depends(g
         model_alias=body.model_alias,
         input_price_per_million=body.input_price_per_million,
         output_price_per_million=body.output_price_per_million,
+        cache_read_price_per_million=body.cache_read_price_per_million,
+        cache_write_price_per_million=body.cache_write_price_per_million,
+        cache_write_1h_price_per_million=body.cache_write_1h_price_per_million,
     )
     db.add(model)
     db.commit()
     db.refresh(model)
     return ModelPricingOut.model_validate(model)
+
+
+_NULLABLE_PRICE_FIELDS = {
+    "model_alias",
+    "cache_read_price_per_million",
+    "cache_write_price_per_million",
+    "cache_write_1h_price_per_million",
+}
 
 
 @router.put("/models/{model_id}", response_model=ModelPricingOut)
@@ -132,6 +146,9 @@ def update_model(
 
     update_data = body.model_dump(exclude_unset=True)
     for field, value in update_data.items():
+        # null clears an optional cache price; required fields keep their value
+        if value is None and field not in _NULLABLE_PRICE_FIELDS:
+            continue
         setattr(model, field, value)
 
     db.commit()

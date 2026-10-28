@@ -445,6 +445,8 @@ def _run_aggregation_query(intent: QueryIntent, db: Session) -> list[dict]:
 
 def _run_comparison_query(intent: QueryIntent, db: Session) -> list[dict]:
     """Compare costs between models or show what-if pricing."""
+    from app.services.cost_engine import cost_for
+
     results = []
 
     # Current spend by model
@@ -454,6 +456,9 @@ def _run_comparison_query(intent: QueryIntent, db: Session) -> list[dict]:
         func.sum(CostEvent.cost).label("total_cost"),
         func.sum(CostEvent.tokens_input).label("tokens_in"),
         func.sum(CostEvent.tokens_output).label("tokens_out"),
+        func.sum(CostEvent.tokens_cache_read).label("cache_read"),
+        func.sum(CostEvent.tokens_cache_write).label("cache_write"),
+        func.sum(CostEvent.tokens_cache_write_1h).label("cache_write_1h"),
         func.count(CostEvent.id).label("requests"),
     )
     # Comparisons are ACROSS models: naming a model ("GPT-4 vs Claude") must
@@ -484,14 +489,17 @@ def _run_comparison_query(intent: QueryIntent, db: Session) -> list[dict]:
         # What-if: calculate cost with alternative models
         tokens_in = int(row.tokens_in or 0)
         tokens_out = int(row.tokens_out or 0)
+        cache = (
+            int(row.cache_read or 0),
+            int(row.cache_write or 0),
+            int(row.cache_write_1h or 0),
+        )
         alternatives = []
         for mp in alt_pricing:
             if mp.model_name == row.model_name:
                 continue
-            alt_cost = (
-                tokens_in / 1_000_000 * mp.input_price_per_million
-                + tokens_out / 1_000_000 * mp.output_price_per_million
-            )
+            # Same tokens, same prompt-cache usage, the alternative's prices.
+            alt_cost = cost_for(mp, tokens_in, tokens_out, *cache)
             savings = float(row.total_cost) - alt_cost
             alternatives.append(
                 {

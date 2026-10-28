@@ -89,6 +89,12 @@ class EventIn(BaseModel):
     provider: str = Field(min_length=1, max_length=255)
     tokens_input: int = Field(ge=0)
     tokens_output: int = Field(ge=0)
+    # Prompt-cache breakdown (ACC-08/09). tokens_input counts ALL input
+    # tokens; these are parts of it. Anthropic reports input_tokens without
+    # its cache tokens, so a client must send input + cache read + cache write.
+    tokens_cache_read: int = Field(default=0, ge=0)
+    tokens_cache_write: int = Field(default=0, ge=0)
+    tokens_cache_write_1h: int = Field(default=0, ge=0)
     cost: float | None = Field(default=None, ge=0)
     duration_ms: int | None = Field(default=None, ge=0)
     status: str = Field(default="success", max_length=50)
@@ -101,6 +107,17 @@ class EventIn(BaseModel):
     @classmethod
     def _timestamp_to_utc(cls, v: datetime | None) -> datetime | None:
         return to_naive_utc(v)
+
+    @model_validator(mode="after")
+    def _cache_tokens_within_input(self) -> "EventIn":
+        if self.tokens_cache_read + self.tokens_cache_write > self.tokens_input:
+            raise ValueError(
+                "tokens_cache_read + tokens_cache_write cannot exceed tokens_input "
+                "(tokens_input counts all input tokens, cached ones included)"
+            )
+        if self.tokens_cache_write_1h > self.tokens_cache_write:
+            raise ValueError("tokens_cache_write_1h cannot exceed tokens_cache_write")
+        return self
 
 
 class EventsEnvelope(BaseModel):
@@ -117,6 +134,9 @@ class EventOut(BaseModel):
     provider_name: str
     tokens_input: int
     tokens_output: int
+    tokens_cache_read: int = 0
+    tokens_cache_write: int = 0
+    tokens_cache_write_1h: int = 0
     cost: float
     cost_source: str | None = None
     over_budget: bool = False
@@ -211,6 +231,9 @@ class ModelPricingIn(BaseModel):
     model_name: str = Field(min_length=1, max_length=255)
     input_price_per_million: float = Field(ge=0)
     output_price_per_million: float = Field(ge=0)
+    cache_read_price_per_million: float | None = Field(default=None, ge=0)
+    cache_write_price_per_million: float | None = Field(default=None, ge=0)
+    cache_write_1h_price_per_million: float | None = Field(default=None, ge=0)
     model_alias: str | None = None
 
 
@@ -221,6 +244,9 @@ class ModelPricingOut(BaseModel):
     model_alias: str | None = None
     input_price_per_million: float
     output_price_per_million: float
+    cache_read_price_per_million: float | None = None
+    cache_write_price_per_million: float | None = None
+    cache_write_1h_price_per_million: float | None = None
     is_active: bool
     created_at: UTCDateTime | None = None
     updated_at: UTCDateTime | None = None
@@ -233,6 +259,9 @@ class ModelPricingUpdate(BaseModel):
     model_alias: str | None = None
     input_price_per_million: float | None = Field(default=None, ge=0)
     output_price_per_million: float | None = Field(default=None, ge=0)
+    cache_read_price_per_million: float | None = Field(default=None, ge=0)
+    cache_write_price_per_million: float | None = Field(default=None, ge=0)
+    cache_write_1h_price_per_million: float | None = Field(default=None, ge=0)
     is_active: bool | None = None
 
 

@@ -5,6 +5,7 @@ import logging
 import uuid
 from typing import Any
 
+from cost_monitor._usage import usage_fields
 from cost_monitor.tracker import CostTracker
 
 logger = logging.getLogger("cost_monitor.langchain")
@@ -115,24 +116,20 @@ class CMACallbackHandler(_BaseCallbackHandler):
         else:
             provider = "openai"
 
-        # Accept both OpenAI-style and Anthropic-style token field names
-        tokens_in = (
-            token_usage.get("prompt_tokens")
-            or token_usage.get("input_tokens")
-            or 0
-        )
-        tokens_out = (
-            token_usage.get("completion_tokens")
-            or token_usage.get("output_tokens")
-            or 0
-        )
+        # Accept both OpenAI-style and Anthropic-style token field names,
+        # including prompt-cache counts (Anthropic cache reads/writes are
+        # added to the input total; OpenAI cached tokens are part of it).
+        fields = usage_fields(token_usage if isinstance(token_usage, dict) else None)
 
         self.tracker.log_event(
             agent_name=self.agent_name,
             model=model,
             provider=provider,
-            tokens_input=tokens_in,
-            tokens_output=tokens_out,
+            tokens_input=fields["tokens_input"],
+            tokens_output=fields["tokens_output"],
+            tokens_cache_read=fields["tokens_cache_read"],
+            tokens_cache_write=fields["tokens_cache_write"],
+            tokens_cache_write_1h=fields["tokens_cache_write_1h"],
             duration_ms=duration_ms,
             status="success",
             workflow=self.workflow,

@@ -25,9 +25,11 @@
 ```powershell
 cd backend; pip install -r requirements-dev.txt; pytest
 ```
-- 219 backend tests (1 needs `CMA_TEST_PG_URL`, set in CI) (`backend/tests`) + 78 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
+- 231 backend tests (1 needs `CMA_TEST_PG_URL`, set in CI) (`backend/tests`) + 88 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
 - `test_events.py` — ingestion, auto-discovery (incl. race), UTC timestamp normalisation
 - `test_pricing.py` — pricing resolution, cost_source, reprice, reset-full reseed
+- `test_cache_pricing.py` — prompt-cache tokens: validation, cache prices, fallback to `estimated`, reprice, Scrooge what-if
+- `sdks/python/tests/test_cache_tokens.py` — SDK sends Anthropic/OpenAI cache tokens on every path (create, stream, messages.stream, async, LangChain, log_completion)
 - `test_scrooge_grounding.py` — Scrooge totals, windows, entity matching, untrusted data block, degradation
 - `test_retention.py` — no spend lost on prune (incl. mid-prune inserts)
 - `test_migrations.py` — migration data safety on seeded pre-upgrade data
@@ -71,6 +73,7 @@ cd backend; pip install -r requirements-dev.txt; pytest
 - **Lazy singletons** — ChromaDB client, embedding model, LLM provider cached per process lifetime
 - **Upsert-safe rollups** — daily aggregation is idempotent, safe to re-run
 - **Retention safety** — per day, the rollup is written from exactly the event ids then deleted, in one transaction (rewrite for a never-pruned day, add for an archived one) and the day is marked `archived`; `compute_daily_rollups` never recomputes an archived day (its raw events are gone)
+- **Prompt-cache pricing (D3)** — `tokens_input` counts all input; cache counts are subsets priced at the model's cache prices. A missing cache price falls back to the input price (1h write → 5m write price) and marks the event `estimated` (`cost_engine.event_cost`). SDK normalises both vendors in `cost_monitor/_usage.py` (Anthropic: input + read + write)
 - **Pricing resolution** — provider by case-insensitive name or `provider_type`, model by exact name > alias list > ci name > date-snapshot-stripped; snapshot-only match = `cost_source='estimated'`; no match = `cost_source='unpriced'` at $0 (repriceable via `/admin/reprice`, batched)
 - **UTC at the boundary** — storage is naive UTC; offset inputs are converted, every API datetime is emitted with `Z`
 - **Scrooge data is untrusted** — retrieved data goes in a user-role `<data>` block; only SQL `total` rows (per explicit window, half-open) are presented as totals
@@ -82,9 +85,9 @@ cd backend; pip install -r requirements-dev.txt; pytest
 |-------|---------|-----------|
 | `SetupConfig` | Single-row deployment config | api_key, admin_password_hash, timezone, currency |
 | `Provider` | LLM provider definitions | name, provider_type, is_active (soft-delete) |
-| `ModelPricing` | Per-model pricing | input/output price per million tokens, unique on provider+model |
+| `ModelPricing` | Per-model pricing | input/output price per million tokens; optional cache read / 5m write / 1h write prices; unique on provider+model |
 | `Agent` | Auto-discovered from events | name, environment, swarm, workflow, is_active |
-| `CostEvent` | Individual LLM calls | tokens_in/out, cost, cost_source (pricing/client/unpriced), over_budget, trace_id, status, metadata_json |
+| `CostEvent` | Individual LLM calls | tokens_in (ALL input) / out, tokens_cache_read / _write / _write_1h (parts of tokens_in), cost, cost_source (pricing/estimated/client/unpriced), over_budget, trace_id, status, metadata_json |
 | `Budget` | Cost limits | scope (global/agent/swarm/workflow), period (daily/weekly/monthly) |
 | `Alert` | Triggered notifications | budget_id, severity, is_resolved; threshold alerts unique on (budget_id, threshold, period_start) |
 | `AlertChannel` | Notification destinations | webhook, slack, or in_app |

@@ -156,9 +156,26 @@ const Events: React.FC = () => {
     {
       header: 'Tokens In',
       accessor: 'tokens_input',
-      render: (row) => (
-        <span className="numeral text-secondary">{formatNumber(row.tokens_input)}</span>
-      ),
+      render: (row) => {
+        const cached = (row.tokens_cache_read ?? 0) + (row.tokens_cache_write ?? 0);
+        return (
+          <span className="numeral text-secondary">
+            {formatNumber(row.tokens_input)}
+            {cached > 0 && (
+              <span
+                className="block text-[11px] text-muted"
+                title={`Prompt cache: ${formatNumber(row.tokens_cache_read ?? 0)} read, ${formatNumber(
+                  row.tokens_cache_write ?? 0
+                )} written`}
+              >
+                {formatNumber(row.tokens_cache_read ?? 0)} cache read
+                {(row.tokens_cache_write ?? 0) > 0 &&
+                  ` · ${formatNumber(row.tokens_cache_write ?? 0)} written`}
+              </span>
+            )}
+          </span>
+        );
+      },
     },
     {
       header: 'Tokens Out',

@@ -14,6 +14,8 @@ from typing import Any, Generator
 
 import httpx
 
+from cost_monitor._usage import usage_fields
+
 logger = logging.getLogger("cost_monitor")
 if not logger.handlers:
     _handler = logging.StreamHandler(sys.stderr)
@@ -95,10 +97,14 @@ class RequestContext:
         cost: float | None = None,
         status: str = "success",
         metadata: dict | None = None,
+        tokens_cache_read: int = 0,
+        tokens_cache_write: int = 0,
+        tokens_cache_write_1h: int = 0,
     ) -> None:
         """Log a completion within this traced request.
 
         Duration is computed automatically from the trace start time.
+        ``tokens_input`` counts all input tokens, cached ones included.
         """
         duration_ms = int((time.time() - self.start_time) * 1000)
         self.tracker.log_event(
@@ -114,6 +120,9 @@ class RequestContext:
             swarm=self.swarm,
             trace_id=self.trace_id,
             metadata=metadata,
+            tokens_cache_read=tokens_cache_read,
+            tokens_cache_write=tokens_cache_write,
+            tokens_cache_write_1h=tokens_cache_write_1h,
         )
 
 
@@ -235,8 +244,16 @@ class CostTracker:
         swarm: str | None = None,
         trace_id: str | None = None,
         metadata: dict | None = None,
+        tokens_cache_read: int = 0,
+        tokens_cache_write: int = 0,
+        tokens_cache_write_1h: int = 0,
     ) -> None:
         """Log a single LLM cost event.
+
+        ``tokens_input`` counts ALL input tokens. The optional cache counts
+        say how many of them were read from / written to a prompt cache
+        (``tokens_cache_write_1h``: the part of the writes with a 1-hour TTL);
+        they are priced at the model's cache prices.
 
         The event is buffered and sent to the backend on the next flush.
         If the buffer reaches ``batch_size``, a flush is triggered immediately.
@@ -258,6 +275,22 @@ class CostTracker:
             "swarm": _clip(swarm or self._default_swarm, _MAX_FIELD_LEN),
             "trace_id": _clip(trace_id, _MAX_FIELD_LEN),
         }
+        # Clamp so one inconsistent event cannot 422 the whole envelope:
+        # the backend rejects cache counts larger than the input they are
+        # part of. Sent only when non-zero (older backends ignore them).
+        cache_read = max(int(tokens_cache_read or 0), 0)
+        cache_write = max(int(tokens_cache_write or 0), 0)
+        if cache_read + cache_write > tokens_input:
+            cache_read = min(cache_read, tokens_input)
+            cache_write = tokens_input - cache_read
+        cache_write_1h = min(max(int(tokens_cache_write_1h or 0), 0), cache_write)
+        for key, value in (
+            ("tokens_cache_read", cache_read),
+            ("tokens_cache_write", cache_write),
+            ("tokens_cache_write_1h", cache_write_1h),
+        ):
+            if value:
+                event[key] = value
         if cost is not None:
             event["cost"] = cost
         if duration_ms is not None:
@@ -471,36 +504,16 @@ class CostTracker:
         Accepts both OpenAI-style (``prompt_tokens`` / ``completion_tokens``)
         and Anthropic-style (``input_tokens`` / ``output_tokens``) usage
         objects, whether dicts or attribute-bearing objects (e.g. ``response.usage``).
+        Prompt-cache tokens are picked up from either shape (Anthropic cache
+        reads/writes are added to the input total, as CMA expects).
         """
-        if isinstance(response_usage, dict):
-            tokens_in = (
-                response_usage.get("prompt_tokens")
-                or response_usage.get("input_tokens")
-                or 0
-            )
-            tokens_out = (
-                response_usage.get("completion_tokens")
-                or response_usage.get("output_tokens")
-                or 0
-            )
-        else:
-            tokens_in = (
-                getattr(response_usage, "prompt_tokens", None)
-                or getattr(response_usage, "input_tokens", None)
-                or 0
-            )
-            tokens_out = (
-                getattr(response_usage, "completion_tokens", None)
-                or getattr(response_usage, "output_tokens", None)
-                or 0
-            )
-
+        fields = usage_fields(response_usage)
+        for key, value in fields.items():
+            kwargs.setdefault(key, value)
         self.log_event(
             agent_name=agent,
             model=model,
             provider=provider,
-            tokens_input=tokens_in,
-            tokens_output=tokens_out,
             **kwargs,
         )
 

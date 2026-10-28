@@ -36,10 +36,15 @@ export interface Event {
   agent_name: string;
   model_name: string;
   provider_name: string;
+  /** All input tokens, prompt-cache reads and writes included. */
   tokens_input: number;
   tokens_output: number;
+  /** Parts of tokens_input read from / written to a prompt cache. */
+  tokens_cache_read?: number;
+  tokens_cache_write?: number;
+  tokens_cache_write_1h?: number;
   cost: number;
-  /** 'pricing' | 'client' | 'unpriced'; null for events recorded before tracking. */
+  /** 'pricing' | 'estimated' | 'client' | 'unpriced'; null for events recorded before tracking. */
   cost_source?: string | null;
   /** Recorded while a matching blocking budget was already exhausted. */
   over_budget?: boolean;
@@ -88,6 +93,10 @@ export interface Model {
   model_name: string;
   input_price_per_million: number;
   output_price_per_million: number;
+  /** Prompt-cache prices; null = not set (cached tokens priced at input, cost estimated). */
+  cache_read_price_per_million?: number | null;
+  cache_write_price_per_million?: number | null;
+  cache_write_1h_price_per_million?: number | null;
   is_active: boolean;
 }
 

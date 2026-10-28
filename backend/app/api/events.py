@@ -29,7 +29,7 @@ from app.services.budget_checker import (
     event_budget_violations,
     load_enforcement_state,
 )
-from app.services.cost_engine import cost_for, resolve_pricing_match
+from app.services.cost_engine import event_cost, resolve_pricing_match
 from app.timeutils import to_naive_utc, utcnow
 
 logger = logging.getLogger(__name__)
@@ -49,8 +49,15 @@ def _event_cost(event: EventIn, db: Session) -> tuple[float, str]:
         )
         return 0.0, "unpriced"
     pricing, exact = match
-    cost = cost_for(pricing, event.tokens_input, event.tokens_output)
-    return cost, "pricing" if exact else "estimated"
+    return event_cost(
+        pricing,
+        exact,
+        event.tokens_input,
+        event.tokens_output,
+        event.tokens_cache_read,
+        event.tokens_cache_write,
+        event.tokens_cache_write_1h,
+    )
 
 
 def _process_event(
@@ -89,6 +96,9 @@ def _process_event(
         provider_name=event.provider,
         tokens_input=event.tokens_input,
         tokens_output=event.tokens_output,
+        tokens_cache_read=event.tokens_cache_read,
+        tokens_cache_write=event.tokens_cache_write,
+        tokens_cache_write_1h=event.tokens_cache_write_1h,
         cost=cost,
         cost_source=cost_source,
         duration_ms=event.duration_ms,

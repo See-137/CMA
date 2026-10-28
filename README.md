@@ -28,7 +28,7 @@ It runs entirely on your own infrastructure. No usage data leaves your network.
 
 ## Features
 
-- **Auto-instrumenting Python SDK.** One call patches OpenAI, Anthropic and LangChain clients in place, covering chat completions, Responses, embeddings, `parse`, Anthropic messages and their streams, sync and async (full list in the [SDK README](sdks/python/README.md#what-auto-instrumentation-records)). SDK failures degrade silently, and events are sent from a background worker with retry and bounded backoff. Remaining gaps (raw-response variants, prompt-cache token pricing) are tracked in [docs/FINDINGS.md](docs/FINDINGS.md).
+- **Auto-instrumenting Python SDK.** One call patches OpenAI, Anthropic and LangChain clients in place, covering chat completions, Responses, embeddings, `parse`, Anthropic messages and their streams, sync and async (full list in the [SDK README](sdks/python/README.md#what-auto-instrumentation-records)). SDK failures degrade silently, and events are sent from a background worker with retry and bounded backoff. Prompt-cache tokens (Anthropic cache reads/writes, OpenAI cached input) are recorded and priced at each model's cache prices. Remaining gaps (raw-response variants) are tracked in [docs/FINDINGS.md](docs/FINDINGS.md).
 - **Cost engine and attribution.** Per-agent, per-model and per-provider rollups, agent auto-discovery from incoming events, idempotent daily aggregation, and retention pruning. Provider price tables are editable from the UI; provider/model names match case-insensitively, via aliases, or by stripping a dated snapshot suffix. Events with no matching price are flagged as unpriced (not silently free) and can be repriced after pricing is added.
 - **Budgets, enforcement and alerts.** Threshold alerts at 50, 75, 90 and 100 percent, spend that is always recorded (events past an exhausted blocking budget are flagged *over budget*), opt-in **pre-call enforcement** in the SDK (`enforce_budgets=True` raises `BudgetExceeded` before the provider is contacted; a soft limit, see the [SDK README](sdks/python/README.md#budget-enforcement)), and webhook or Slack delivery behind an **SSRF guard** (private-network targets are rejected unless explicitly allowed).
 - **Scrooge, the RAG assistant.** Hybrid retrieval that combines vector search over events and rollups (ChromaDB + sentence-transformers) with exact SQL aggregations chosen by regex intent detection. "What did we spend last week" hits SQL and returns a real number; "why did the research agent get expensive" hits the vector store and returns cited sources. The LLM is used for answer generation only, streamed token by token.
@@ -178,7 +178,7 @@ See [`sdks/python/README.md`](sdks/python/README.md) for the full API and [`exam
 
 ### Instrumenting agents that are not Python
 
-[`examples/hermes_hook_forwarder.py`](examples/hermes_hook_forwarder.py) shows how to feed CMA from an agent framework's post-request hook. It is stdlib-only, never blocks the agent, spools to a local file on transient failure, and folds Anthropic prompt-cache tokens into a billed-equivalent input count so cost stays accurate. The same shape works for any tool that can pipe JSON to a script.
+[`examples/hermes_hook_forwarder.py`](examples/hermes_hook_forwarder.py) shows how to feed CMA from an agent framework's post-request hook. It is stdlib-only, never blocks the agent, spools to a local file on transient failure, and sends Anthropic prompt-cache tokens as CMA's cache fields so they are priced at the model's cache prices. The same shape works for any tool that can pipe JSON to a script.
 
 ## API
 
@@ -194,6 +194,8 @@ All routes are under `/api/v1` and require the ingest key as `Authorization: Bea
 | Search | `POST /search/semantic` |
 | Admin | `/admin/status`, `/admin/logs`, `/admin/export`, `/admin/reprice` (recompute unpriced events from current pricing), `/admin/reset` (monitoring data), `/admin/reset-full` (everything, including setup) |
 | Health | `GET /health` (liveness), `GET /health/ready` (readiness with bounded DB and vector-store checks) |
+
+**Prompt-cache tokens.** An event's `tokens_input` counts *all* input tokens. Optional `tokens_cache_read`, `tokens_cache_write` and `tokens_cache_write_1h` (the part of the writes made with a 1-hour TTL) say how many of them hit or filled a prompt cache; each must fit inside the one before it (else 422). Anthropic's `input_tokens` excludes its cache tokens, so a client sends `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`; OpenAI's `prompt_tokens` already includes `cached_tokens`. Models carry optional cache prices (seeded for current Anthropic models); a cache price that is not set falls back to the input price (1-hour writes to the 5-minute write price) and the event's `cost_source` is `estimated`. Upgrade the server before the SDK: an older server ignores the cache fields and bills every input token at the input price.
 
 The interactive OpenAPI docs at `/docs` are the authoritative reference. All datetimes in responses are UTC with a `Z` suffix; period boundaries ("today", a daily budget, a dashboard day) follow the time zone chosen at setup — a day bucket's timestamp is that local midnight as a UTC instant, and `/dashboard/timeseries` returns the zone in `timezone` (Python 3.10's `datetime.fromisoformat` does not accept `Z`; use 3.11+ or replace it with `+00:00`).
 
@@ -215,7 +217,7 @@ cd sdks/python && pip install -e ".[dev]" && pytest   # SDK, incl. real openai/a
 cd frontend && npm run build         # tsc + vite build
 ```
 
-The backend suite has 219 tests (one, the Postgres bucketing check, runs only when `CMA_TEST_PG_URL` is set, as in CI) and the SDK suite 78. The SDK instrumentation tests exercise the real `openai` and `anthropic` client libraries against a local fake HTTP server, so patching is verified against actual SDK internals rather than mocks.
+The backend suite has 231 tests (one, the Postgres bucketing check, runs only when `CMA_TEST_PG_URL` is set, as in CI) and the SDK suite 88. The SDK instrumentation tests exercise the real `openai` and `anthropic` client libraries against a local fake HTTP server, so patching is verified against actual SDK internals rather than mocks.
 
 CI runs on every push and pull request:
 

@@ -16,6 +16,7 @@ from cost_monitor._patching import (
     is_cancellation,
     precall_enforce,
 )
+from cost_monitor._usage import cache_kwargs, usage_fields
 
 logger = logging.getLogger("cost_monitor.auto.openai")
 
@@ -122,19 +123,6 @@ def _log_failure(
     )
 
 
-def _usage_tokens(usage: Any) -> tuple[int, int]:
-    """(input, output) from either usage shape: chat/completions/embeddings
-    (prompt_tokens/completion_tokens) or Responses (input_tokens/output_tokens).
-    """
-    tokens_in = getattr(usage, "prompt_tokens", None)
-    if tokens_in is None:
-        tokens_in = getattr(usage, "input_tokens", 0)
-    tokens_out = getattr(usage, "completion_tokens", None)
-    if tokens_out is None:
-        tokens_out = getattr(usage, "output_tokens", 0)
-    return int(tokens_in or 0), int(tokens_out or 0)
-
-
 def _chunk_usage(chunk: Any) -> Any:
     """Usage carried by a stream item: chat chunks have .usage; Responses
     terminal events (response.completed/incomplete/failed) carry
@@ -173,15 +161,18 @@ def _log_usage(
     usage: Any,
     status: str = "success",
 ) -> None:
-    tokens_in, tokens_out = _usage_tokens(usage)
+    fields = usage_fields(usage)
     tracker.log_event(
         model=model,
         provider="openai",
-        tokens_input=tokens_in,
-        tokens_output=tokens_out,
+        tokens_input=fields["tokens_input"],
+        tokens_output=fields["tokens_output"],
         duration_ms=int((time.time() - start) * 1000),
         status=status,
         trace_id=trace_id,
+        # Cached input (prompt_tokens_details / input_tokens_details) is
+        # part of the input total and billed at the cached-input price.
+        **cache_kwargs(fields),
     )
 
 

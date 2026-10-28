@@ -108,8 +108,16 @@ with CostTracker(endpoint="http://localhost:8000", api_key="key") as tracker:
 Not yet recorded: `with_raw_response` / `with_streaming_response` variants (a
 streamed `with_raw_response` call also returns CMA's stream proxy rather than the
 SDK's raw-response object), resuming a Responses stream by `response_id`
-(`responses.stream(response_id=...)` / `retrieve`), and prompt-cache token pricing
-(tracked as SDK-01 remainder / ACC-08 in `docs/FINDINGS.md`). `responses.stream()`
+(`responses.stream(response_id=...)` / `retrieve`) (tracked as SDK-01 remainder
+in `docs/FINDINGS.md`).
+
+Prompt-cache tokens are recorded on every surface above: Anthropic cache reads and
+writes (5-minute and 1-hour) are added to `tokens_input` and sent as
+`tokens_cache_read` / `tokens_cache_write` / `tokens_cache_write_1h`; OpenAI's
+`cached_tokens` is sent as `tokens_cache_read`. The backend prices them at the
+model's cache prices. `log_event`, `log_completion` and the LangChain handler take
+the same fields; `log_event` clamps cache counts that exceed `tokens_input` (the
+backend would reject the whole batch). Needs a CMA server with migration 006. `responses.stream()`
 for a new request is recorded: it goes through `responses.create`.
 
 Streams are passed through unchanged. If CMA injects

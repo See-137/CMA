@@ -15,7 +15,9 @@ Pricing resolution (how an event's provider/model strings find a price row):
       (``gpt-4o-2024-08-06`` -> ``gpt-4o``, ``claude-x-20241022`` -> ``claude-x``)
       compared against names and aliases (case-insensitive)
 
-A match found only by rule (d) is stored with ``cost_source='estimated'``.
+A match found only by rule (d) is stored with ``cost_source='estimated'``, as
+is a call whose prompt-cache tokens hit a cache price the model does not set
+(those tokens are then priced at the input price; see ``cost_for``).
 No match prices the event at 0.0 and marks it ``unpriced`` (``cost_source``)
 so it stays visible and can be repriced once pricing exists
 (``reprice_events`` / ``POST /api/v1/admin/reprice``).
@@ -104,11 +106,79 @@ def resolve_pricing_match(
     return None
 
 
-def cost_for(pricing: ModelPricing, tokens_input: int, tokens_output: int) -> float:
-    cost = (tokens_input / 1_000_000 * pricing.input_price_per_million) + (
-        tokens_output / 1_000_000 * pricing.output_price_per_million
+def _price(value: float | None, fallback: float) -> float:
+    return fallback if value is None else value
+
+
+def cost_for(
+    pricing: ModelPricing,
+    tokens_input: int,
+    tokens_output: int,
+    cache_read: int = 0,
+    cache_write: int = 0,
+    cache_write_1h: int = 0,
+) -> float:
+    """Cost of one call. ``tokens_input`` is ALL input tokens; the cache
+    counts are subsets of it (``cache_write_1h`` a subset of ``cache_write``).
+
+    Uncached input at the input price, cache reads at the cache-read price,
+    5-minute writes at the cache-write price, 1-hour writes at the 1-hour
+    price (falling back to the 5-minute write price). A missing cache price
+    falls back to the input price — see ``cache_prices_exact``."""
+    cache_read = max(cache_read or 0, 0)
+    cache_write = max(cache_write or 0, 0)
+    cache_write_1h = min(max(cache_write_1h or 0, 0), cache_write)
+    uncached = max(tokens_input - cache_read - cache_write, 0)
+    inp = pricing.input_price_per_million
+    write_5m = _price(pricing.cache_write_price_per_million, inp)
+    write_1h = _price(
+        pricing.cache_write_1h_price_per_million,
+        write_5m,
     )
+    cost = (
+        uncached * inp
+        + cache_read * _price(pricing.cache_read_price_per_million, inp)
+        + (cache_write - cache_write_1h) * write_5m
+        + cache_write_1h * write_1h
+        + tokens_output * pricing.output_price_per_million
+    ) / 1_000_000
     return round(cost, 8)
+
+
+def cache_prices_exact(
+    pricing: ModelPricing,
+    cache_read: int = 0,
+    cache_write: int = 0,
+    cache_write_1h: int = 0,
+) -> bool:
+    """False when the call used cache tokens whose price is not set on the
+    model, so ``cost_for`` fell back to another price (cost is an estimate)."""
+    if cache_read and pricing.cache_read_price_per_million is None:
+        return False
+    if cache_write_1h and pricing.cache_write_1h_price_per_million is None:
+        return False
+    writes_5m = (cache_write or 0) - (cache_write_1h or 0)
+    return not (writes_5m > 0 and pricing.cache_write_price_per_million is None)
+
+
+def event_cost(
+    pricing: ModelPricing,
+    exact_model: bool,
+    tokens_input: int,
+    tokens_output: int,
+    cache_read: int = 0,
+    cache_write: int = 0,
+    cache_write_1h: int = 0,
+) -> tuple[float, str]:
+    """(cost, cost_source) for a priced event: 'pricing' when both the model
+    match and every price it used are exact, else 'estimated'."""
+    cost = cost_for(
+        pricing, tokens_input, tokens_output, cache_read, cache_write, cache_write_1h
+    )
+    exact = exact_model and cache_prices_exact(
+        pricing, cache_read, cache_write, cache_write_1h
+    )
+    return cost, "pricing" if exact else "estimated"
 
 
 def calculate_cost(
@@ -204,13 +274,21 @@ def reprice_events(
                     event.cost_source = "unpriced"
                 continue
             pricing, exact = match
-            new_cost = cost_for(pricing, event.tokens_input, event.tokens_output)
+            new_cost, source = event_cost(
+                pricing,
+                exact,
+                event.tokens_input,
+                event.tokens_output,
+                event.tokens_cache_read or 0,
+                event.tokens_cache_write or 0,
+                event.tokens_cache_write_1h or 0,
+            )
             added_cost += new_cost - (event.cost or 0.0)
             repriced_ids.append(event.id)
             batch_dates.add(event.timestamp.date())
             if not dry_run:
                 event.cost = new_cost
-                event.cost_source = "pricing" if exact else "estimated"
+                event.cost_source = source
         if not dry_run:
             db.commit()
             # Recompute this batch's completed days right away, so an
