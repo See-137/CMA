@@ -40,7 +40,13 @@ def prune_old_events(db: Session) -> int:
 
     deleted = 0
     pruned_ids: list[int] = []
+    from app.services.rollup import compute_daily_rollups
+
     for d in dates:
+        # Re-aggregate the day right before deleting its events: events that
+        # arrived after the day was first rolled up (late or back-dated
+        # ingestion, repricing) would otherwise vanish from every total.
+        compute_daily_rollups(db, d)
         start = datetime.combine(d, datetime.min.time())
         end = start + timedelta(days=1)
         ids = [
