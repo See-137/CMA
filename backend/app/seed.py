@@ -21,12 +21,41 @@ SEED_DATA = [
         "name": "Anthropic",
         "provider_type": "anthropic",
         "models": [
-            # Current generation (prices per 1M tokens, standard tier)
-            {"model_name": "claude-opus-4-8", "input": 5.00, "output": 25.00},
-            {"model_name": "claude-opus-4-7", "input": 5.00, "output": 25.00},
-            {"model_name": "claude-sonnet-5", "input": 3.00, "output": 15.00},
-            {"model_name": "claude-sonnet-4-6", "input": 3.00, "output": 15.00},
-            {"model_name": "claude-haiku-4-5", "input": 1.00, "output": 5.00},
+            # Current generation (prices per 1M tokens, standard tier).
+            # Input/output and prompt-cache prices (cache read, 5-minute
+            # write, 1-hour write) checked against
+            # platform.claude.com/docs/en/build-with-claude/prompt-caching
+            # on 2026-10-29.
+            {
+                "model_name": "claude-opus-4-8",
+                "input": 5.00,
+                "output": 25.00,
+                "cache": (0.50, 6.25, 10.00),
+            },
+            {
+                "model_name": "claude-opus-4-7",
+                "input": 5.00,
+                "output": 25.00,
+                "cache": (0.50, 6.25, 10.00),
+            },
+            {
+                "model_name": "claude-sonnet-5",
+                "input": 2.00,
+                "output": 10.00,
+                "cache": (0.20, 2.50, 4.00),
+            },
+            {
+                "model_name": "claude-sonnet-4-6",
+                "input": 3.00,
+                "output": 15.00,
+                "cache": (0.30, 3.75, 6.00),
+            },
+            {
+                "model_name": "claude-haiku-4-5",
+                "input": 1.00,
+                "output": 5.00,
+                "cache": (0.10, 1.25, 2.00),
+            },
             # Legacy (kept for older event streams and test fixtures)
             {"model_name": "claude-3.5-sonnet", "input": 3.00, "output": 15.00},
             {"model_name": "claude-3-opus", "input": 15.00, "output": 75.00},
@@ -64,11 +93,15 @@ def seed_providers(db: Session) -> None:
         db.flush()  # get provider.id
 
         for model_data in provider_data["models"]:
+            read, write, write_1h = model_data.get("cache", (None, None, None))
             model = ModelPricing(
                 provider_id=provider.id,
                 model_name=model_data["model_name"],
                 input_price_per_million=model_data["input"],
                 output_price_per_million=model_data["output"],
+                cache_read_price_per_million=read,
+                cache_write_price_per_million=write,
+                cache_write_1h_price_per_million=write_1h,
             )
             db.add(model)
 

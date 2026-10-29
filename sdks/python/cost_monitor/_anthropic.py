@@ -17,6 +17,7 @@ from cost_monitor._patching import (
     is_cancellation,
     precall_enforce,
 )
+from cost_monitor._usage import cache_kwargs, merge_anthropic_delta, usage_fields
 
 logger = logging.getLogger("cost_monitor.auto.anthropic")
 
@@ -81,6 +82,7 @@ def _log_tokens(
     tokens_out: int,
     status: str = "success",
     metadata: dict | None = None,
+    cache: dict | None = None,
 ) -> None:
     tracker.log_event(
         model=model,
@@ -91,6 +93,7 @@ def _log_tokens(
         status=status,
         trace_id=trace_id,
         metadata=metadata,
+        **(cache or {}),
     )
 
 
@@ -137,6 +140,8 @@ def _wrap_sync_stream(
     """
     tokens_in = 0
     tokens_out = 0
+    fields = usage_fields(None)
+    cache: dict = {}
     error: BaseException | None = None
     closed_early = False
     finished = False
@@ -147,11 +152,14 @@ def _wrap_sync_stream(
             etype = getattr(event, "type", None)
             if etype == "message_start":
                 msg = getattr(event, "message", None)
-                usage = getattr(msg, "usage", None) if msg else None
-                tokens_in = getattr(usage, "input_tokens", 0) if usage else 0
+                fields = usage_fields(getattr(msg, "usage", None) if msg else None)
+                tokens_in, cache = fields["tokens_input"], cache_kwargs(fields)
             elif etype == "message_delta":
                 usage = getattr(event, "usage", None)
-                tokens_out = getattr(usage, "output_tokens", 0) if usage else 0
+                tokens_out = usage_fields(usage)["tokens_output"] if usage else 0
+                if usage is not None:
+                    fields = merge_anthropic_delta(fields, usage)
+                    tokens_in, cache = fields["tokens_input"], cache_kwargs(fields)
             elif etype == "message_stop":
                 finished = True
             yield event
@@ -181,6 +189,7 @@ def _wrap_sync_stream(
                 tokens_out,
                 status="failure",
                 metadata={"error": str(error)[:500]},
+                cache=cache,
             )
         elif closed_early:
             # Input tokens arrive in message_start, so an early stop still
@@ -194,9 +203,12 @@ def _wrap_sync_stream(
                 tokens_out,
                 status="incomplete",
                 metadata=_EARLY_CLOSE,
+                cache=cache,
             )
         elif tokens_in or tokens_out:
-            _log_tokens(tracker, model, trace_id, start, tokens_in, tokens_out)
+            _log_tokens(
+                tracker, model, trace_id, start, tokens_in, tokens_out, cache=cache
+            )
         else:
             logger.warning(
                 "cost_monitor: Anthropic stream ended with no usage events. "
@@ -211,6 +223,8 @@ async def _wrap_async_stream(
     """Async counterpart of _wrap_sync_stream."""
     tokens_in = 0
     tokens_out = 0
+    fields = usage_fields(None)
+    cache: dict = {}
     error: BaseException | None = None
     closed_early = False
     finished = False
@@ -221,11 +235,14 @@ async def _wrap_async_stream(
             etype = getattr(event, "type", None)
             if etype == "message_start":
                 msg = getattr(event, "message", None)
-                usage = getattr(msg, "usage", None) if msg else None
-                tokens_in = getattr(usage, "input_tokens", 0) if usage else 0
+                fields = usage_fields(getattr(msg, "usage", None) if msg else None)
+                tokens_in, cache = fields["tokens_input"], cache_kwargs(fields)
             elif etype == "message_delta":
                 usage = getattr(event, "usage", None)
-                tokens_out = getattr(usage, "output_tokens", 0) if usage else 0
+                tokens_out = usage_fields(usage)["tokens_output"] if usage else 0
+                if usage is not None:
+                    fields = merge_anthropic_delta(fields, usage)
+                    tokens_in, cache = fields["tokens_input"], cache_kwargs(fields)
             elif etype == "message_stop":
                 finished = True
             yield event
@@ -255,6 +272,7 @@ async def _wrap_async_stream(
                 tokens_out,
                 status="failure",
                 metadata={"error": str(error)[:500]},
+                cache=cache,
             )
         elif closed_early:
             # Input tokens arrive in message_start, so an early stop still
@@ -268,9 +286,12 @@ async def _wrap_async_stream(
                 tokens_out,
                 status="incomplete",
                 metadata=_EARLY_CLOSE,
+                cache=cache,
             )
         elif tokens_in or tokens_out:
-            _log_tokens(tracker, model, trace_id, start, tokens_in, tokens_out)
+            _log_tokens(
+                tracker, model, trace_id, start, tokens_in, tokens_out, cache=cache
+            )
         else:
             logger.warning(
                 "cost_monitor: Anthropic async stream ended with no usage "
@@ -308,15 +329,15 @@ def _record_stream_exit(tracker, model, trace_id, start, stream, exc) -> None:
     """
     snapshot = _snapshot_or_none(stream)
     usage = getattr(snapshot, "usage", None)
-    tokens = (
-        (getattr(usage, "input_tokens", 0) or 0),
-        (getattr(usage, "output_tokens", 0) or 0),
-    )
+    fields = usage_fields(usage)
+    tokens = (fields["tokens_input"], fields["tokens_output"])
+    cache = cache_kwargs(fields)
     args = (tracker, model, trace_id, start)
     if exc is not None and _is_api_error(exc):
         if usage is not None:
             _log_tokens(
-                *args, *tokens, status="failure", metadata={"error": str(exc)[:500]}
+                *args, *tokens, status="failure", metadata={"error": str(exc)[:500]},
+                cache=cache,
             )
         else:
             _log_failure(*args, exc)
@@ -328,7 +349,7 @@ def _record_stream_exit(tracker, model, trace_id, start, stream, exc) -> None:
             status, meta = "incomplete", _EARLY_CLOSE
         else:
             status, meta = "success", None
-        _log_tokens(*args, *tokens, status=status, metadata=meta)
+        _log_tokens(*args, *tokens, status=status, metadata=meta, cache=cache)
     elif exc is not None:
         # The caller's own code raised before message_start: the request was
         # sent but no tokens were reported yet.
@@ -445,13 +466,15 @@ class _InstrumentedAsyncStreamManager:
 def _log_response_usage(tracker, model, trace_id, start, response) -> None:
     usage = getattr(response, "usage", None)
     if usage:
+        fields = usage_fields(usage)
         _log_tokens(
             tracker,
             model,
             trace_id,
             start,
-            getattr(usage, "input_tokens", 0) or 0,
-            getattr(usage, "output_tokens", 0) or 0,
+            fields["tokens_input"],
+            fields["tokens_output"],
+            cache=cache_kwargs(fields),
         )
     else:
         _warn_untracked_response()

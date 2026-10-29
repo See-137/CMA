@@ -114,3 +114,72 @@ def test_005_keeps_existing_alerts_and_rejects_duplicates(tmp_path):
         assert c.execute(text("SELECT COUNT(*) FROM alerts")).scalar() == 3
     eng.dispose()
     _alembic(url, "upgrade", "head")
+
+
+def test_006_adds_cache_fields_and_backfills_only_untouched_anthropic_rows(tmp_path):
+    """ACC-08/09: existing events get 0 cache tokens; seeded Anthropic rows
+    still at the official input price get cache prices; edited rows and
+    other providers stay NULL; downgrade removes the columns, keeps the rows."""
+    url = f"sqlite:///{tmp_path / 'mig.db'}"
+    _alembic(url, "upgrade", "005")
+    eng = create_engine(url)
+    with eng.begin() as c:
+        c.execute(
+            text(
+                "INSERT INTO providers (id, name, provider_type, is_active) VALUES "
+                "(1,'Anthropic','anthropic',1),(2,'OpenAI','openai',1)"
+            )
+        )
+        c.execute(
+            text(
+                "INSERT INTO model_pricing (provider_id, model_name, "
+                "input_price_per_million, output_price_per_million, is_active) VALUES "
+                "(1,'claude-sonnet-4-6',3.0,15.0,1),"  # untouched -> backfilled
+                "(1,'claude-haiku-4-5',0.8,4.0,1),"  # operator-edited -> left
+                "(2,'claude-sonnet-4-6',3.0,15.0,1),"  # not Anthropic -> left
+                "(2,'gpt-4o',2.5,10.0,1)"
+            )
+        )
+        c.execute(
+            text(
+                "INSERT INTO cost_events (agent_name, model_name, provider_name, "
+                "tokens_input, tokens_output, cost, timestamp) VALUES "
+                "('a','gpt-4o','openai',10,5,0.1,'2026-10-28 00:00:00')"
+            )
+        )
+    eng.dispose()
+    _alembic(url, "upgrade", "head")
+    eng = create_engine(url)
+    with eng.connect() as c:
+        prices = {
+            (r[0], r[1]): tuple(r[2:])
+            for r in c.execute(
+                text(
+                    "SELECT provider_id, model_name, cache_read_price_per_million, "
+                    "cache_write_price_per_million, cache_write_1h_price_per_million "
+                    "FROM model_pricing"
+                )
+            )
+        }
+        assert prices[(1, "claude-sonnet-4-6")] == (0.3, 3.75, 6.0)
+        assert prices[(1, "claude-haiku-4-5")] == (None, None, None)
+        assert prices[(2, "claude-sonnet-4-6")] == (None, None, None)
+        assert prices[(2, "gpt-4o")] == (None, None, None)
+        row = c.execute(
+            text(
+                "SELECT tokens_cache_read, tokens_cache_write, tokens_cache_write_1h "
+                "FROM cost_events"
+            )
+        ).one()
+        assert tuple(row) == (0, 0, 0)
+    eng.dispose()
+    _alembic(url, "downgrade", "005")
+    eng = create_engine(url)
+    with eng.connect() as c:
+        cols = {r[1] for r in c.execute(text("PRAGMA table_info(cost_events)"))}
+        assert "tokens_cache_read" not in cols
+        mcols = {r[1] for r in c.execute(text("PRAGMA table_info(model_pricing)"))}
+        assert "cache_read_price_per_million" not in mcols
+        assert c.execute(text("SELECT COUNT(*) FROM model_pricing")).scalar() == 4
+        assert c.execute(text("SELECT COUNT(*) FROM cost_events")).scalar() == 1
+    eng.dispose()

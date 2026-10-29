@@ -10,7 +10,29 @@ import EmptyState from '../components/EmptyState';
 import type { Provider, Model } from '../types';
 
 /** Format a per-million price to 2 dp */
-const formatPrice = (v: number) => `$${v.toFixed(2)}`;
+// At least 2 decimals, up to 4 when the price needs them ($0.125, $0.0375).
+const formatPrice = (v: number | null | undefined) =>
+  v === null || v === undefined
+    ? '—'
+    : `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
+
+type PriceField =
+  | 'input_price_per_million'
+  | 'output_price_per_million'
+  | 'cache_read_price_per_million'
+  | 'cache_write_price_per_million'
+  | 'cache_write_1h_price_per_million';
+
+// Cache prices are optional: left blank, cached tokens are billed at the
+// input price (1-hour writes at the 5-minute write price) and the event's
+// cost is marked estimated.
+const PRICE_COLUMNS: { field: PriceField; label: string; required: boolean }[] = [
+  { field: 'input_price_per_million', label: 'Input $/M', required: true },
+  { field: 'output_price_per_million', label: 'Output $/M', required: true },
+  { field: 'cache_read_price_per_million', label: 'Cache read $/M', required: false },
+  { field: 'cache_write_price_per_million', label: 'Cache write 5m $/M', required: false },
+  { field: 'cache_write_1h_price_per_million', label: 'Cache write 1h $/M', required: false },
+];
 
 const providerTypeVariant = (type: string): 'info' | 'warning' | 'success' | 'default' => {
   switch (type.toLowerCase()) {
@@ -36,8 +58,7 @@ const Providers: React.FC = () => {
   const [pricingError, setPricingError] = useState<string | null>(null);
   const [editingModel, setEditingModel] = useState<{
     id: number;
-    inputPrice: string;
-    outputPrice: string;
+    prices: Record<PriceField, string>;
   } | null>(null);
   const [formData, setFormData] = useState({
     name: '',
@@ -63,11 +84,12 @@ const Providers: React.FC = () => {
 
   const startEditing = (model: Model) => {
     setPricingError(null);
-    setEditingModel({
-      id: model.id,
-      inputPrice: model.input_price_per_million.toString(),
-      outputPrice: model.output_price_per_million.toString(),
-    });
+    const prices = {} as Record<PriceField, string>;
+    for (const { field } of PRICE_COLUMNS) {
+      const value = model[field];
+      prices[field] = value === null || value === undefined ? '' : value.toString();
+    }
+    setEditingModel({ id: model.id, prices });
   };
 
   const cancelEditing = () => {
@@ -95,17 +117,26 @@ const Providers: React.FC = () => {
   const saveEditing = async () => {
     if (!editingModel) return;
     setPricingError(null);
-    const inputPrice = parseFloat(editingModel.inputPrice);
-    const outputPrice = parseFloat(editingModel.outputPrice);
-    if (Number.isNaN(inputPrice) || Number.isNaN(outputPrice)) {
-      setPricingError('Both prices must be numbers.');
-      return;
+    const body: Partial<Record<PriceField, number | null>> = {};
+    for (const { field, required } of PRICE_COLUMNS) {
+      const raw = editingModel.prices[field].trim();
+      if (raw === '' && !required) {
+        body[field] = null; // clears the cache price
+        continue;
+      }
+      const value = parseFloat(raw);
+      if (Number.isNaN(value) || value < 0) {
+        setPricingError(
+          required
+            ? 'Input and output prices must be non-negative numbers.'
+            : 'Cache prices must be non-negative numbers, or blank.'
+        );
+        return;
+      }
+      body[field] = value;
     }
     try {
-      await api.put(`/api/v1/models/${editingModel.id}`, {
-        input_price_per_million: inputPrice,
-        output_price_per_million: outputPrice,
-      });
+      await api.put(`/api/v1/models/${editingModel.id}`, body);
       setEditingModel(null);
       refetch();
     } catch (err) {
@@ -221,18 +252,21 @@ const Providers: React.FC = () => {
                         </div>
                       )}
                     {provider.models.length > 0 ? (
+                      <div className="overflow-x-auto">
                       <table className="w-full text-sm">
                         <thead>
                           <tr className="bg-surface-2">
                             <th className="px-4 py-2 text-left text-[11px] font-semibold uppercase tracking-wider text-muted">
                               Model
                             </th>
-                            <th className="px-4 py-2 text-left text-[11px] font-semibold uppercase tracking-wider text-muted">
-                              Input $/M
-                            </th>
-                            <th className="px-4 py-2 text-left text-[11px] font-semibold uppercase tracking-wider text-muted">
-                              Output $/M
-                            </th>
+                            {PRICE_COLUMNS.map(({ field, label }) => (
+                              <th
+                                key={field}
+                                className="px-4 py-2 text-left text-[11px] font-semibold uppercase tracking-wider text-muted"
+                              >
+                                {label}
+                              </th>
+                            ))}
                             <th className="px-4 py-2 text-right text-[11px] font-semibold uppercase tracking-wider text-muted">
                               Actions
                             </th>
@@ -254,48 +288,32 @@ const Providers: React.FC = () => {
                                   )}
                                 </div>
                               </td>
-                              <td className="px-4 py-2.5">
-                                {editingModel?.id === model.id ? (
-                                  <input
-                                    type="number"
-                                    className="input w-24 py-1 text-xs"
-                                    step="0.01"
-                                    value={editingModel.inputPrice}
-                                    onChange={(e) =>
-                                      setEditingModel({
-                                        ...editingModel,
-                                        inputPrice: e.target.value,
-                                      })
-                                    }
-                                    onClick={(e) => e.stopPropagation()}
-                                  />
-                                ) : (
-                                  <span className="numeral text-secondary">
-                                    {formatPrice(model.input_price_per_million)}
-                                  </span>
-                                )}
-                              </td>
-                              <td className="px-4 py-2.5">
-                                {editingModel?.id === model.id ? (
-                                  <input
-                                    type="number"
-                                    className="input w-24 py-1 text-xs"
-                                    step="0.01"
-                                    value={editingModel.outputPrice}
-                                    onChange={(e) =>
-                                      setEditingModel({
-                                        ...editingModel,
-                                        outputPrice: e.target.value,
-                                      })
-                                    }
-                                    onClick={(e) => e.stopPropagation()}
-                                  />
-                                ) : (
-                                  <span className="numeral text-secondary">
-                                    {formatPrice(model.output_price_per_million)}
-                                  </span>
-                                )}
-                              </td>
+                              {PRICE_COLUMNS.map(({ field, label, required }) => (
+                                <td key={field} className="px-4 py-2.5">
+                                  {editingModel?.id === model.id ? (
+                                    <input
+                                      type="number"
+                                      className="input w-24 py-1 text-xs"
+                                      step="0.01"
+                                      min="0"
+                                      aria-label={label}
+                                      placeholder={required ? undefined : 'not set'}
+                                      value={editingModel.prices[field]}
+                                      onChange={(e) =>
+                                        setEditingModel({
+                                          ...editingModel,
+                                          prices: { ...editingModel.prices, [field]: e.target.value },
+                                        })
+                                      }
+                                      onClick={(e) => e.stopPropagation()}
+                                    />
+                                  ) : (
+                                    <span className="numeral text-secondary">
+                                      {formatPrice(model[field])}
+                                    </span>
+                                  )}
+                                </td>
+                              ))}
                               <td className="px-4 py-2.5 text-right">
                                 {editingModel?.id === model.id ? (
                                   <div className="flex items-center justify-end gap-1">
@@ -337,6 +355,7 @@ const Providers: React.FC = () => {
                           ))}
                         </tbody>
                       </table>
+                      </div>
                     ) : (
                       <p className="p-4 text-center text-sm text-muted">
                         No tariff sheet — models are added automatically on first use.

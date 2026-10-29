@@ -61,6 +61,11 @@ class ModelPricing(Base):
     model_alias = Column(String(255), nullable=True)
     input_price_per_million = Column(Float, nullable=False)
     output_price_per_million = Column(Float, nullable=False)
+    # Prompt-cache prices (ACC-08/09, decision D3). NULL = not set: cached
+    # tokens are then priced at the input price and the cost is 'estimated'.
+    cache_read_price_per_million = Column(Float, nullable=True)
+    cache_write_price_per_million = Column(Float, nullable=True)  # 5-minute TTL
+    cache_write_1h_price_per_million = Column(Float, nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
@@ -99,6 +104,14 @@ class CostEvent(Base):
     provider_name = Column(String(255), nullable=False)
     tokens_input = Column(Integer, nullable=False)
     tokens_output = Column(Integer, nullable=False)
+    # Prompt-cache breakdown of tokens_input (each is a subset of it):
+    # tokens read from cache, tokens written to cache, and the part of those
+    # writes made with the 1-hour TTL. tokens_input is ALL input tokens.
+    tokens_cache_read = Column(Integer, nullable=False, default=0, server_default="0")
+    tokens_cache_write = Column(Integer, nullable=False, default=0, server_default="0")
+    tokens_cache_write_1h = Column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     cost = Column(Float, nullable=False)
     # 'pricing' | 'estimated' | 'client' | 'unpriced' (NULL = recorded before
     # this existed). Unindexed: low cardinality and queried via OR/NULL.

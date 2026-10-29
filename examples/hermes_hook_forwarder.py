@@ -20,10 +20,12 @@ Wire shape: Hermes pipes {"hook_event_name", "session_id", "cwd", "extra":
 {...event kwargs...}} to stdin. `hermes hooks test` sends the kwargs flat
 instead — _map_event handles both by merging `extra` over the top level.
 
-Token accounting: CMA's cost model is flat input/output price. Anthropic bills
-cache writes at 1.25x and cache reads at 0.1x of the input rate, so we fold
-cache traffic into a billed-equivalent input token count (cost stays accurate;
-raw counts are preserved in metadata for auditing).
+Token accounting: Anthropic reports input_tokens WITHOUT its prompt-cache
+tokens. CMA's tokens_input counts all input, so we send input + cache reads +
+cache writes, plus the cache breakdown (tokens_cache_read / tokens_cache_write
+/ tokens_cache_write_1h), which CMA prices at the model's cache prices. Needs a
+CMA server with migration 006 (an older server ignores the breakdown and bills
+every input token at the input price). Raw counts stay in metadata.
 """
 
 from __future__ import annotations
@@ -131,11 +133,22 @@ def _normalize_model(model: str) -> str:
     return _DOT_VERSION.sub(r"\1-\2", model)
 
 
-def _billed_input_tokens(usage: dict) -> int:
+def _input_fields(usage: dict) -> dict:
     base = max(0, _to_int(usage.get("input_tokens")))
-    creation = max(0, _to_int(usage.get("cache_creation_input_tokens")))
+    write = max(0, _to_int(usage.get("cache_creation_input_tokens")))
     read = max(0, _to_int(usage.get("cache_read_input_tokens")))
-    return round(base + 1.25 * creation + 0.1 * read)
+    creation = usage.get("cache_creation")
+    write_1h = 0
+    if isinstance(creation, dict):
+        write_1h = min(
+            max(0, _to_int(creation.get("ephemeral_1h_input_tokens"))), write
+        )
+    return {
+        "tokens_input": base + write + read,
+        "tokens_cache_read": read,
+        "tokens_cache_write": write,
+        "tokens_cache_write_1h": write_1h,
+    }
 
 
 def _map_event(payload, agent_name: str) -> dict | None:
@@ -156,7 +169,7 @@ def _map_event(payload, agent_name: str) -> dict | None:
         "agent_name": agent_name,
         "model": _normalize_model(str(model)),
         "provider": PROVIDER_NAMES.get(provider, provider.capitalize()),
-        "tokens_input": _billed_input_tokens(usage),
+        **_input_fields(usage),
         "tokens_output": max(0, _to_int(usage.get("output_tokens"))),
         "duration_ms": max(0, int(_to_float(p.get("api_duration")) * 1000)),
         "status": "error" if p.get("is_error") else "success",

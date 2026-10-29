@@ -60,7 +60,7 @@ spend is always recorded; the guarantee (soft limit, timing, concurrency) is
 documented; period boundaries follow the chosen time zone and are labelled; one
 alert per threshold per period under concurrency (BUD-06).
 
-**S4 Instrumentation coverage and delivery** — Open (ACC-08/09 per D3).
+**S4 Instrumentation coverage and delivery** — Open. ACC-08/09 (D3) done in `feat/cache-tokens`.
 Accept when: every listed OpenAI/Anthropic surface (sync, async, stream, parse, raw)
 yields exactly one event with correct tokens; the SDK never changes what user code
 receives (SDK-02); partial streams keep their tokens; no double counting with
@@ -118,6 +118,17 @@ Owner decisions (2026-10-28):
   are not user-facing yet, so re-keying now would be a data migration with no
   visible benefit.*
 - **D3 Cached tokens → exact fields + per-model cache prices** (owner choice).
+  Implemented in `feat/cache-tokens`: `tokens_input` means ALL input tokens
+  (OpenAI's convention; the SDK adds Anthropic's cache tokens, which Anthropic
+  reports outside `input_tokens`) with `tokens_cache_read`, `tokens_cache_write`
+  and `tokens_cache_write_1h` as parts of it, so token totals, rollups and
+  dashboards keep one meaning. Three optional cache prices per model (read,
+  5-minute write, 1-hour write: Anthropic bills 1-hour writes at 2× input vs
+  1.25× for 5-minute, so one write price would under-price 1-hour caching by
+  ~37%). A cache price that is not set falls back to the input price (1-hour
+  writes to the 5-minute price) and marks the event `estimated` rather than
+  silently guessing a vendor multiplier. Rejected: a billed-equivalent input
+  count (the old Hermes forwarder approach) — cost right, token counts wrong.
 - **D4 Credentials → split credentials with a compatibility window** (owner delegated the choice; decided by the implementation lead): split
   credentials *with a compatibility window* rather than a breaking cut-over.
   (1) Add hashed, named, revocable **ingest keys** (several; only
@@ -192,3 +203,15 @@ Owner decisions (2026-10-28):
 - 2026-10-28 — OPS-07 (`fix/sqlite-transactions`, stacked on #26): ingestion
   is one transaction on SQLite too, so a failing batch stores nothing and the
   SDK's retry cannot double-count. Backend tests → 219.
+- 2026-10-29 — ACC-08/09 (`feat/cache-tokens`, D3): cache-token fields on
+  events, cache prices on models (migration 006, Anthropic prices from the
+  official page), SDK captures cache tokens on every Anthropic/OpenAI surface
+  and LangChain, Providers page edits cache prices, Events page shows them,
+  Scrooge what-if prices alternatives with cache usage. New ACC-20/21.
+  Backend tests → 231, SDK → 88.
+- 2026-10-29 — Independent review of #28: REQUEST CHANGES (1-hour cache writes
+  lost on `stream=True` when the delta carries cumulative counts). Fixed with
+  a field-by-field delta merge plus all minors (FINDINGS REV-28). Backend
+  tests → 235, SDK → 101.
+- 2026-10-29 — Re-review of the #28 fixes: APPROVE WITH FOLLOW-UPS; all done
+  (FINDINGS REV-28b). SDK tests → 112.

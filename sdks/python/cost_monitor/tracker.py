@@ -14,6 +14,9 @@ from typing import Any, Generator
 
 import httpx
 
+from cost_monitor._usage import _int as _count
+from cost_monitor._usage import usage_fields
+
 logger = logging.getLogger("cost_monitor")
 if not logger.handlers:
     _handler = logging.StreamHandler(sys.stderr)
@@ -95,10 +98,14 @@ class RequestContext:
         cost: float | None = None,
         status: str = "success",
         metadata: dict | None = None,
+        tokens_cache_read: int = 0,
+        tokens_cache_write: int = 0,
+        tokens_cache_write_1h: int = 0,
     ) -> None:
         """Log a completion within this traced request.
 
         Duration is computed automatically from the trace start time.
+        ``tokens_input`` counts all input tokens, cached ones included.
         """
         duration_ms = int((time.time() - self.start_time) * 1000)
         self.tracker.log_event(
@@ -114,6 +121,9 @@ class RequestContext:
             swarm=self.swarm,
             trace_id=self.trace_id,
             metadata=metadata,
+            tokens_cache_read=tokens_cache_read,
+            tokens_cache_write=tokens_cache_write,
+            tokens_cache_write_1h=tokens_cache_write_1h,
         )
 
 
@@ -235,8 +245,16 @@ class CostTracker:
         swarm: str | None = None,
         trace_id: str | None = None,
         metadata: dict | None = None,
+        tokens_cache_read: int = 0,
+        tokens_cache_write: int = 0,
+        tokens_cache_write_1h: int = 0,
     ) -> None:
         """Log a single LLM cost event.
+
+        ``tokens_input`` counts ALL input tokens. The optional cache counts
+        say how many of them were read from / written to a prompt cache
+        (``tokens_cache_write_1h``: the part of the writes with a 1-hour TTL);
+        they are priced at the model's cache prices.
 
         The event is buffered and sent to the backend on the next flush.
         If the buffer reaches ``batch_size``, a flush is triggered immediately.
@@ -251,13 +269,33 @@ class CostTracker:
             ),
             "model": _clip(model, _MAX_FIELD_LEN) or "unknown",
             "provider": _clip(provider, _MAX_FIELD_LEN) or "unknown",
-            "tokens_input": tokens_input,
-            "tokens_output": tokens_output,
+            # Coerced (None/"10"/10.0 -> int): an invalid count would 422 the
+            # whole envelope this event ships in.
+            "tokens_input": _count(tokens_input),
+            "tokens_output": _count(tokens_output),
             "status": _clip(status, _MAX_STATUS_LEN) or "success",
             "workflow": _clip(workflow or self._default_workflow, _MAX_FIELD_LEN),
             "swarm": _clip(swarm or self._default_swarm, _MAX_FIELD_LEN),
             "trace_id": _clip(trace_id, _MAX_FIELD_LEN),
         }
+        # Clamp so one inconsistent event cannot 422 the whole envelope:
+        # the backend rejects cache counts larger than the input they are
+        # part of. Sent only when non-zero (older backends ignore them).
+        # Never raises: odd values (None, "10", 10.0) count as best they can.
+        total = _count(tokens_input)
+        cache_read = _count(tokens_cache_read)
+        cache_write = _count(tokens_cache_write)
+        if cache_read + cache_write > total:
+            cache_read = min(cache_read, total)
+            cache_write = total - cache_read
+        cache_write_1h = min(_count(tokens_cache_write_1h), cache_write)
+        for key, value in (
+            ("tokens_cache_read", cache_read),
+            ("tokens_cache_write", cache_write),
+            ("tokens_cache_write_1h", cache_write_1h),
+        ):
+            if value:
+                event[key] = value
         if cost is not None:
             event["cost"] = cost
         if duration_ms is not None:
@@ -471,36 +509,16 @@ class CostTracker:
         Accepts both OpenAI-style (``prompt_tokens`` / ``completion_tokens``)
         and Anthropic-style (``input_tokens`` / ``output_tokens``) usage
         objects, whether dicts or attribute-bearing objects (e.g. ``response.usage``).
+        Prompt-cache tokens are picked up from either shape (Anthropic cache
+        reads/writes are added to the input total, as CMA expects).
         """
-        if isinstance(response_usage, dict):
-            tokens_in = (
-                response_usage.get("prompt_tokens")
-                or response_usage.get("input_tokens")
-                or 0
-            )
-            tokens_out = (
-                response_usage.get("completion_tokens")
-                or response_usage.get("output_tokens")
-                or 0
-            )
-        else:
-            tokens_in = (
-                getattr(response_usage, "prompt_tokens", None)
-                or getattr(response_usage, "input_tokens", None)
-                or 0
-            )
-            tokens_out = (
-                getattr(response_usage, "completion_tokens", None)
-                or getattr(response_usage, "output_tokens", None)
-                or 0
-            )
-
+        fields = usage_fields(response_usage)
+        for key, value in fields.items():
+            kwargs.setdefault(key, value)
         self.log_event(
             agent_name=agent,
             model=model,
             provider=provider,
-            tokens_input=tokens_in,
-            tokens_output=tokens_out,
             **kwargs,
         )
 
