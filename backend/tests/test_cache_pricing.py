@@ -243,8 +243,16 @@ def test_five_minute_writes_without_a_write_price_are_estimated():
     )
     assert not cache_prices_exact(m, 0, 200, 50)  # 150 five-minute writes
     assert cache_prices_exact(m, 0, 200, 200)  # all 1-hour: exact
-    # A stored row with 1h > write is clamped the same way cost_for clamps it.
+    # A stored row with 1h > write is clamped the same way cost_for clamps it:
+    # all 100 writes are 1-hour (priced), none fall to the missing 5m price.
     assert cache_prices_exact(m, 0, 100, 300)
+    no_1h = ModelPricing(
+        input_price_per_million=4.0,
+        output_price_per_million=0.0,
+        cache_write_price_per_million=5.0,
+    )
+    # Negative stored counts clamp to 0: nothing estimated.
+    assert cache_prices_exact(no_1h, -5, 100, -1)
 
 
 def test_reprice_applies_one_hour_write_price(authed_client, db):

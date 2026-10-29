@@ -269,8 +269,10 @@ class CostTracker:
             ),
             "model": _clip(model, _MAX_FIELD_LEN) or "unknown",
             "provider": _clip(provider, _MAX_FIELD_LEN) or "unknown",
-            "tokens_input": tokens_input,
-            "tokens_output": tokens_output,
+            # Coerced (None/"10"/10.0 -> int): an invalid count would 422 the
+            # whole envelope this event ships in.
+            "tokens_input": _count(tokens_input),
+            "tokens_output": _count(tokens_output),
             "status": _clip(status, _MAX_STATUS_LEN) or "success",
             "workflow": _clip(workflow or self._default_workflow, _MAX_FIELD_LEN),
             "swarm": _clip(swarm or self._default_swarm, _MAX_FIELD_LEN),

@@ -156,7 +156,7 @@ def _wrap_sync_stream(
                 tokens_in, cache = fields["tokens_input"], cache_kwargs(fields)
             elif etype == "message_delta":
                 usage = getattr(event, "usage", None)
-                tokens_out = getattr(usage, "output_tokens", 0) if usage else 0
+                tokens_out = usage_fields(usage)["tokens_output"] if usage else 0
                 if usage is not None:
                     fields = merge_anthropic_delta(fields, usage)
                     tokens_in, cache = fields["tokens_input"], cache_kwargs(fields)
@@ -239,7 +239,7 @@ async def _wrap_async_stream(
                 tokens_in, cache = fields["tokens_input"], cache_kwargs(fields)
             elif etype == "message_delta":
                 usage = getattr(event, "usage", None)
-                tokens_out = getattr(usage, "output_tokens", 0) if usage else 0
+                tokens_out = usage_fields(usage)["tokens_output"] if usage else 0
                 if usage is not None:
                     fields = merge_anthropic_delta(fields, usage)
                     tokens_in, cache = fields["tokens_input"], cache_kwargs(fields)

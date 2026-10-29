@@ -488,3 +488,48 @@ def test_log_event_never_raises_on_odd_token_values(fake_backend):
         tracker.log_event(model="b", provider="p", tokens_input="10", tokens_cache_read=4)
     finally:
         tracker.close()
+
+
+def test_merge_delta_none_read_keeps_start_read():
+    start = usage_fields(START)
+    delta = SimpleNamespace(
+        input_tokens=30, cache_read_input_tokens=None, cache_creation_input_tokens=500
+    )
+    merged = merge_anthropic_delta(start, delta)
+    assert merged["tokens_cache_read"] == 50_000
+    assert merged["tokens_input"] == 50_530
+
+
+def test_proxy_prompt_tokens_never_below_cache_counts():
+    f = usage_fields({"prompt_tokens": 100, "cache_read_input_tokens": 800,
+                      "cache_creation_input_tokens": 300})
+    assert f["tokens_input"] == 1_100
+
+
+def test_proxy_mirroring_the_inclusive_count_into_input_tokens():
+    f = usage_fields({"prompt_tokens": 1_110, "input_tokens": 1_110,
+                      "cache_read_input_tokens": 800, "cache_creation_input_tokens": 300})
+    assert f["tokens_input"] == 1_110
+    # Native Anthropic (no prompt_tokens): input_tokens is uncached only.
+    native = usage_fields({"input_tokens": 10, "cache_read_input_tokens": 800,
+                           "cache_creation_input_tokens": 300})
+    assert native["tokens_input"] == 1_110
+
+
+@pytest.mark.parametrize("value", ["²", "①", "-3", "", "1.5", None, True])
+def test_odd_count_strings_never_raise(value):
+    assert usage_fields({"input_tokens": value, "output_tokens": 1})["tokens_input"] == 0
+
+
+def test_log_event_sends_valid_counts_for_odd_values(fake_backend):
+    from cost_monitor import CostTracker
+
+    tracker = CostTracker(endpoint=fake_backend.url, api_key="k")
+    try:
+        tracker.log_event(model="a", provider="p", tokens_input=None, tokens_output="7")
+        tracker.log_event(model="b", provider="p", tokens_input=10.0)
+    finally:
+        tracker.close()
+    events = {e["model"]: e for e in _delivered(fake_backend, 2)}
+    assert (events["a"]["tokens_input"], events["a"]["tokens_output"]) == (0, 7)
+    assert events["b"]["tokens_input"] == 10

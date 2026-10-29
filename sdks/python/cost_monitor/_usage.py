@@ -38,7 +38,9 @@ def _num(value: Any) -> int | None:
         return max(value, 0)
     if isinstance(value, str):
         value = value.strip()
-        return max(int(value), 0) if value.isdigit() else None
+        if not (value.isascii() and value.isdigit()):
+            return None
+        return int(value)
     try:
         as_int = int(value)
         if as_int == value:  # float/numpy: integral values only
@@ -90,9 +92,10 @@ def usage_fields(usage: Any) -> dict[str, int]:
         write = _int(_get(usage, "cache_creation_input_tokens"))
         base = _num(_get(usage, "input_tokens"))
         prompt = _num(_get(usage, "prompt_tokens"))
-        if base is None and prompt is not None:
+        if prompt is not None and (base is None or base == prompt >= read + write):
             # OpenAI-compatible proxies (e.g. LiteLLM) report prompt_tokens,
-            # which already INCLUDES the cache counts.
+            # which already INCLUDES the cache counts (some mirror it into
+            # input_tokens too: equal values are read as the inclusive total).
             total = max(prompt, read + write)
         else:
             total = (base or 0) + read + write
@@ -130,7 +133,8 @@ def merge_anthropic_delta(fields: dict[str, int], usage: Any) -> dict[str, int]:
     carries no ``cache_creation`` TTL split. So each count present in the
     delta replaces ``message_start``'s; an absent one keeps it; the 1-hour
     write count is kept (capped at the new write total) unless the delta
-    states it."""
+    states it. If the delta's write total is below that 1-hour count, every
+    remaining write is then counted as 1-hour (the delta gives no split)."""
     old_read = fields["tokens_cache_read"]
     old_write = fields["tokens_cache_write"]
     old_base = max(fields["tokens_input"] - old_read - old_write, 0)

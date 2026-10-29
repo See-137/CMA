@@ -213,3 +213,5 @@ Owner decisions (2026-10-28):
   lost on `stream=True` when the delta carries cumulative counts). Fixed with
   a field-by-field delta merge plus all minors (FINDINGS REV-28). Backend
   tests → 235, SDK → 101.
+- 2026-10-29 — Re-review of the #28 fixes: APPROVE WITH FOLLOW-UPS; all done
+  (FINDINGS REV-28b). SDK tests → 112.
