@@ -1,4 +1,7 @@
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
+
+_DEFAULT_MODELS = {"openai": "gpt-6-luna", "ollama": "llama3"}
 
 
 class Settings(BaseSettings):
@@ -14,7 +17,9 @@ class Settings(BaseSettings):
 
     # LLM provider for chat generation ("openai" or "ollama")
     LLM_PROVIDER: str = "ollama"
-    LLM_MODEL: str = "llama3"
+    # Empty = the provider's default (_DEFAULT_MODELS): compose passes an
+    # empty value when .env sets only the provider.
+    LLM_MODEL: str = ""
     OPENAI_API_KEY: str = ""
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
     OLLAMA_BASE_URL: str = "http://localhost:11434"
@@ -35,6 +40,8 @@ class Settings(BaseSettings):
 
     # Ingestion / abuse limits
     MAX_EVENTS_PER_REQUEST: int = 1000
+    # Larger event metadata is replaced by a marker; the event itself is kept.
+    MAX_EVENT_METADATA_BYTES: int = 65536
     RATE_LIMIT_LOGIN_PER_MINUTE: int = 10
     RATE_LIMIT_CHAT_PER_MINUTE: int = 30
 
@@ -55,6 +62,12 @@ class Settings(BaseSettings):
     SERVE_STATIC_DIR: str = ""
 
     model_config = {"env_prefix": "CMA_", "env_file": ".env", "extra": "ignore"}
+
+    @model_validator(mode="after")
+    def _default_model(self):
+        if not self.LLM_MODEL:
+            self.LLM_MODEL = _DEFAULT_MODELS.get(self.LLM_PROVIDER, "llama3")
+        return self
 
 
 settings = Settings()

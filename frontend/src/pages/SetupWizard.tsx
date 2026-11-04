@@ -48,7 +48,6 @@ function browserTimezone(zones: string[]): string {
 
 const TIMEZONES = availableTimezones();
 
-const CURRENCIES = ['USD', 'EUR', 'GBP', 'JPY', 'CAD', 'AUD', 'CHF'];
 
 const STEPS = ['Your Keys', 'The House', 'Providers', 'The Coffer'];
 
@@ -107,7 +106,6 @@ const SetupWizard: React.FC = () => {
   const [password, setPassword] = useState('');
   const [deploymentName, setDeploymentName] = useState('My Deployment');
   const [timezone, setTimezone] = useState(() => browserTimezone(TIMEZONES));
-  const [currency, setCurrency] = useState('USD');
   const [selectedProviders, setSelectedProviders] = useState<Set<string>>(new Set(['openai']));
   const [dailyBudget, setDailyBudget] = useState('50');
 
@@ -129,7 +127,7 @@ const SetupWizard: React.FC = () => {
   // server to mis-validate or overwrite config fields.
 
   const handleReconnect = async () => {
-    if (!email || password.length < 6) return;
+    if (!email || !password) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -149,7 +147,7 @@ const SetupWizard: React.FC = () => {
   const canNext = (): boolean => {
     switch (step) {
       case 0:
-        return email.length > 0 && password.length >= 6;
+        return /^[^@\s]+@[^@\s]+$/.test(email.trim()) && password.length >= 8;
       case 1:
         return deploymentName.length > 0;
       case 2:
@@ -178,7 +176,6 @@ const SetupWizard: React.FC = () => {
         admin_password: password,
         deployment_name: deploymentName,
         timezone,
-        currency,
       });
       localStorage.setItem('api_key', result.api_key);
 
@@ -225,12 +222,12 @@ const SetupWizard: React.FC = () => {
               <input
                 type="password"
                 className="input"
-                placeholder="Min. 6 characters"
+                placeholder="Min. 8 characters"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
               />
               <p className="mt-1.5 text-xs text-muted">
-                The master key to your counting house. At least 6 characters.
+                The master key to your counting house. At least 8 characters.
               </p>
             </div>
           </div>
@@ -263,20 +260,6 @@ const SetupWizard: React.FC = () => {
                 {TIMEZONES.map((tz) => (
                   <option key={tz} value={tz}>
                     {tz}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="label">Currency</label>
-              <select
-                className="input"
-                value={currency}
-                onChange={(e) => setCurrency(e.target.value)}
-              >
-                {CURRENCIES.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
                   </option>
                 ))}
               </select>
@@ -331,7 +314,7 @@ const SetupWizard: React.FC = () => {
         return (
           <div className="space-y-4">
             <div>
-              <label className="label">Daily Budget Limit ({currency})</label>
+              <label className="label">Daily Budget Limit (USD)</label>
               <div className="relative">
                 <span className="absolute left-3.5 top-1/2 -translate-y-1/2 font-mono text-sm text-muted">
                   $
@@ -485,7 +468,7 @@ const SetupWizard: React.FC = () => {
               </div>
               <button
                 onClick={handleReconnect}
-                disabled={!email || password.length < 6 || submitting}
+                disabled={!email || !password || submitting}
                 className="btn-primary w-full justify-center gap-2"
               >
                 <LogIn className="h-4 w-4" />

@@ -159,6 +159,8 @@ def setup_logging() -> None:
                     "filters": ["request_context"],
                 },
             },
+            # httpx logs every request URL at INFO, and a webhook URL is a secret.
+            "loggers": {"httpx": {"level": "WARNING"}},
             "root": {
                 "level": settings.LOG_LEVEL,
                 "handlers": ["console", "file"],

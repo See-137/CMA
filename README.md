@@ -24,7 +24,7 @@ CMA was built to answer three questions that provider billing pages cannot:
 2. **Is anyone about to blow the budget, and can we stop the next call before it is made?**
 3. **Why did spend change?** In plain language, with cited evidence.
 
-It runs entirely on your own infrastructure. No usage data leaves your network.
+It runs entirely on your own infrastructure. Usage data stays on your network, unless you point Scrooge at a hosted LLM: with `CMA_LLM_PROVIDER=openai`, the data Scrooge retrieves for a question (agent, model and workflow names, costs, and matching event records) is sent to that provider. The default, Ollama, keeps it local.
 
 ## Features
 
@@ -34,7 +34,7 @@ It runs entirely on your own infrastructure. No usage data leaves your network.
 - **Scrooge, the RAG assistant.** Hybrid retrieval that combines vector search over events and rollups (ChromaDB + sentence-transformers) with exact SQL aggregations chosen by regex intent detection. "What did we spend last week" hits SQL and returns a real number; "why did the research agent get expensive" hits the vector store and returns cited sources. The LLM is used for answer generation only, streamed token by token.
 - **Dashboards and semantic search.** Recharts visualizations of spend over time, top agents, model mix and budget status, plus meaning-based search across events.
 - **Production observability.** Liveness and readiness endpoints with bounded dependency checks, structured JSON logging with request-ID correlation, and a Prometheus exporter with a bundled Grafana dashboard.
-- **Security hardening.** Constant-time comparison for every credential, an admin scope separated from the ingest key, dependency-free rate limiting on login and chat, input size caps, and a systemd unit with a locked-down sandbox for native deploys.
+- **Security hardening.** Constant-time comparison for every credential, an admin scope separated from the ingest key, dependency-free rate limiting on login and chat, size caps on batches, event metadata, chat history and search, an SSRF guard that connects only to the address it validated, masked webhook secrets, and a systemd unit with a locked-down sandbox for native deploys.
 
 ## Screenshots
 
@@ -98,7 +98,7 @@ To add Prometheus and Grafana:
 docker compose --profile observability up -d
 ```
 
-Grafana is at <http://localhost:3000> with the CMA dashboard pre-provisioned.
+Grafana is at <http://localhost:3000> with the CMA dashboard pre-provisioned. Its password is `CMA_GRAFANA_PASSWORD`, or `admin` if unset, so set it before exposing the port. The OpenAPI docs at `/docs` are public on any host that can reach the backend (they describe the API and hold no data).
 
 ### Local development
 
@@ -129,11 +129,12 @@ Copy `.env.template` to `.env` in the repo root. Every backend setting uses the 
 |---|---|---|
 | `CMA_DATABASE_URL` | `sqlite:///./data/cma.db` | SQLAlchemy URL; use a `postgresql://` URL in production |
 | `CMA_LLM_PROVIDER` | `ollama` | `ollama` or `openai` for Scrooge's answer generation |
-| `CMA_LLM_MODEL` | `llama3` | Model name for the chosen provider |
+| `CMA_LLM_MODEL` | `llama3` (Ollama), `gpt-6-luna` (OpenAI) | Model name for the chosen provider |
 | `CMA_OPENAI_API_KEY` | empty | Required when provider is `openai` |
-| `CMA_OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama endpoint |
+| `CMA_OLLAMA_BASE_URL` | `http://localhost:11434` (Docker: the host) | Local Ollama endpoint |
 | `CMA_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | sentence-transformers model, downloaded on first run |
 | `CMA_RAG_TOP_K` | `10` | Retrieved chunks per question |
+| `CMA_MAX_EVENT_METADATA_BYTES` | `65536` | Larger event metadata is replaced by a marker, and the event is still stored. Metadata is stored in plaintext, so keep secrets out of it |
 | `CMA_ALLOW_PRIVATE_WEBHOOKS` | `false` | Permit alert webhooks to private networks (disables the SSRF guard) |
 | `POSTGRES_PASSWORD` | required | Database password for the Compose stack |
 | `CMA_GRAFANA_PASSWORD` | `admin` | Grafana admin password; change it before exposing port 3000 beyond loopback |
@@ -217,7 +218,7 @@ cd sdks/python && pip install -e ".[dev]" && pytest   # SDK, incl. real openai/a
 cd frontend && npm run build         # tsc + vite build
 ```
 
-The backend suite has 235 tests (one, the Postgres bucketing check, runs only when `CMA_TEST_PG_URL` is set, as in CI) and the SDK suite 112. The SDK instrumentation tests exercise the real `openai` and `anthropic` client libraries against a local fake HTTP server, so patching is verified against actual SDK internals rather than mocks.
+The backend suite has 308 tests (one, the Postgres bucketing check, runs only when `CMA_TEST_PG_URL` is set, as in CI) and the SDK suite 112. The SDK instrumentation tests exercise the real `openai` and `anthropic` client libraries against a local fake HTTP server, so patching is verified against actual SDK internals rather than mocks.
 
 CI runs on every push and pull request:
 

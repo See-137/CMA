@@ -29,15 +29,22 @@ services:
       - CMA_DATABASE_URL=postgresql://cma:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/cma
       - CMA_CORS_ORIGINS=["http://localhost:5173","http://localhost:3000"]
       - CMA_CHROMA_PERSIST_DIR=/app/data/chroma
-      - CMA_LLM_PROVIDER=ollama
-      - CMA_LLM_MODEL=llama3
-      - CMA_OLLAMA_BASE_URL=http://host.docker.internal:11434
+      # Scrooge's LLM: set these in .env, as the README says.
+      - CMA_LLM_PROVIDER=${CMA_LLM_PROVIDER:-ollama}
+      - CMA_LLM_MODEL=${CMA_LLM_MODEL:-}
+      - CMA_OPENAI_API_KEY=${CMA_OPENAI_API_KEY:-}
+      - CMA_OLLAMA_BASE_URL=${CMA_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - CMA_ALLOW_PRIVATE_WEBHOOKS=${CMA_ALLOW_PRIVATE_WEBHOOKS:-false}
+      - CMA_MAX_EVENT_METADATA_BYTES=${CMA_MAX_EVENT_METADATA_BYTES:-65536}
       # Metrics-scoped credential for the Prometheus scraper (optional —
       # unset means /metrics accepts the API key only). The same value
       # must be written to deploy/prometheus/metrics-token.
       - CMA_METRICS_TOKEN=${CMA_METRICS_TOKEN:-}
       # Only the frontend's X-Forwarded-For is trusted (see backend/Dockerfile).
       - FORWARDED_ALLOW_IPS=172.28.0.10
+    # host.docker.internal exists by default only on Docker Desktop.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - cma
     depends_on:

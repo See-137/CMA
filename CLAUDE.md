@@ -25,7 +25,7 @@
 ```powershell
 cd backend; pip install -r requirements-dev.txt; pytest
 ```
-- 235 backend tests (1 needs `CMA_TEST_PG_URL`, set in CI) (`backend/tests`) + 112 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
+- 308 backend tests (1 needs `CMA_TEST_PG_URL`, set in CI) (`backend/tests`) + 112 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
 - `test_events.py` — ingestion, auto-discovery (incl. race), UTC timestamp normalisation
 - `test_pricing.py` — pricing resolution, cost_source, reprice, reset-full reseed
 - `test_cache_pricing.py` — prompt-cache tokens: validation, cache prices, fallback to `estimated`, reprice, Scrooge what-if
@@ -42,6 +42,7 @@ cd backend; pip install -r requirements-dev.txt; pytest
 - `test_setup.py` — initial setup flow
 - `test_timezone.py` — deployment time zone: DST/half-hour zones, budget periods, dashboard + Scrooge buckets
 - `test_buckets_postgres.py` — SQL bucketing on Postgres equals SQLite (runs when `CMA_TEST_PG_URL` is set; CI's backend-test job has a Postgres service)
+- `test_hardening.py` — credential and input validation, SSRF, masked webhook secrets, truthful status endpoints
 - `test_regressions.py` — envelope contract, embedder IDs, batch enforcement, admin gating, SSRF, rate limiting
 - No frontend tests yet (no vitest/jest configured)
 - Migrations: `cd backend; alembic upgrade head; alembic downgrade base; alembic upgrade head; alembic check` (CI runs this on Postgres)
@@ -166,12 +167,13 @@ docker compose --profile observability up -d
 - Fallback aggregation only fires when at least one data intent is detected — pure conversational queries get vector-only context
 - `gpt-4o-mini` doesn't lean hard into the Scrooge personality — larger models follow the system prompt more faithfully
 - Entity matching in intent detection is whole-token; overlapping spans resolve longest-first ("gpt-4" is not matched inside "gpt-4.1", but "gpt-4 and gpt-4o" keeps both)
-- Budget periods, dashboard days/buckets and Scrooge's named periods follow the deployment time zone (`SetupConfig.timezone`, IANA, default UTC; decision D2). Storage and API instants stay UTC; daily rollups are still keyed by UTC day (ACC-18). Use `app.timeutils` (`deployment_tz`, `local_floor`, `shift_day_start`) and `app.services.buckets.local_bucket_expr` — never `.replace(hour=0)` on a UTC time. `currency` is stored but unused (ACC-16)
+- Budget periods, dashboard days/buckets and Scrooge's named periods follow the deployment time zone (`SetupConfig.timezone`, IANA, default UTC; decision D2). Storage and API instants stay UTC; daily rollups are still keyed by UTC day (ACC-18). Use `app.timeutils` (`deployment_tz`, `local_floor`, `shift_day_start`) and `app.services.buckets.local_bucket_expr` — never `.replace(hour=0)` on a UTC time. `currency` is stored but unused and no longer offered (ACC-16)
 - Budgets never discard spend: ingestion always stores the event (flagged `over_budget` when a matching blocking budget was already exhausted). Enforcement is pre-call: `GET /budgets/check` + SDK `enforce_budgets=True` → `BudgetExceeded`. Every action except `alert` blocks; `throttle`/`rate_limit`/`model_downgrade` are legacy aliases of block. Response field `rejected` is always 0 (kept for compatibility)
 - SQLite savepoints: pysqlite opens a transaction only at the first write statement, so a `begin_nested()` before any write commits on RELEASE. Ingestion opens `BEGIN IMMEDIATE` up front on SQLite for this reason (OPS-07); any new savepoint use on SQLite needs the same (or a commit-per-row design, as in `check_budgets`). Ingestion therefore holds the write lock for the whole batch: concurrent writers wait up to the SQLite busy timeout (5 s; `?timeout=N` on the URL) and then get a 500 with nothing stored — keep that timeout below the SDK's read timeout (10 s)
 - `int(row.total_tokens_in)` can throw TypeError if NULL — always use `int(x or 0)` pattern
 - API key stored as plaintext in SetupConfig despite bcrypt being imported — password uses hash, key does not
 - On Windows, npm/npx are .cmd shims — `Start-Process` needs `cmd.exe /c npm`, not `npm` directly
+- `AlertChannelCreate.channel_type` lists only what `dispatch_alert` delivers; add a type in both places
 - Vite proxy (`/api` -> localhost:8000) only works in dev; prod nginx handles routing
 - `frontend/package-lock.json` is **committed** (keep it so) — CI/local/Docker install identical deps. A floating lockfile previously broke `frontend-build` twice (stricter TS; `simple-icons` dropping the trademarked OpenAI logo, now inlined). Tests create the `data/` dir + use an isolated DB since Alembic, not `create_all`, owns the schema.
 

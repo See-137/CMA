@@ -1,8 +1,11 @@
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, generate_latest
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -179,6 +182,19 @@ app.add_middleware(
 PREFIX = "/api/v1"
 
 # Public routes (no auth)
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(_request, exc: RequestValidationError) -> Response:
+    """The 422 body echoes the input, and JSON can carry lone surrogates that
+    the default ASCII-off renderer cannot encode (a 422 became a 500)."""
+    detail = jsonable_encoder(exc.errors())
+    # NaN/Infinity from the input are not JSON: strict parsers would refuse.
+    detail = json.loads(json.dumps(detail), parse_constant=lambda _: None)
+    body = json.dumps({"detail": detail}, ensure_ascii=True)
+    return Response(body, status_code=422, media_type="application/json")
+
+
 app.include_router(setup.router, prefix=PREFIX)
 app.include_router(auth.router, prefix=PREFIX)
 
