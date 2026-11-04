@@ -10,6 +10,7 @@ from app.schemas.schemas import (
     ProviderCreate,
     ProviderOut,
     ProviderUpdate,
+    check_long_context,
 )
 
 router = APIRouter(tags=["providers"])
@@ -46,6 +47,9 @@ def create_provider(body: ProviderCreate, db: Session = Depends(get_db)):
             cache_read_price_per_million=m.cache_read_price_per_million,
             cache_write_price_per_million=m.cache_write_price_per_million,
             cache_write_1h_price_per_million=m.cache_write_1h_price_per_million,
+            long_context_threshold=m.long_context_threshold,
+            long_context_input_multiplier=m.long_context_input_multiplier,
+            long_context_output_multiplier=m.long_context_output_multiplier,
         )
         db.add(model)
 
@@ -121,6 +125,9 @@ def create_model(provider_id: int, body: ModelPricingIn, db: Session = Depends(g
         cache_read_price_per_million=body.cache_read_price_per_million,
         cache_write_price_per_million=body.cache_write_price_per_million,
         cache_write_1h_price_per_million=body.cache_write_1h_price_per_million,
+        long_context_threshold=body.long_context_threshold,
+        long_context_input_multiplier=body.long_context_input_multiplier,
+        long_context_output_multiplier=body.long_context_output_multiplier,
     )
     db.add(model)
     db.commit()
@@ -133,6 +140,9 @@ _NULLABLE_PRICE_FIELDS = {
     "cache_read_price_per_million",
     "cache_write_price_per_million",
     "cache_write_1h_price_per_million",
+    "long_context_threshold",
+    "long_context_input_multiplier",
+    "long_context_output_multiplier",
 }
 
 
@@ -150,6 +160,16 @@ def update_model(
         if value is None and field not in _NULLABLE_PRICE_FIELDS:
             continue
         setattr(model, field, value)
+
+    try:
+        check_long_context(
+            model.long_context_threshold,
+            model.long_context_input_multiplier,
+            model.long_context_output_multiplier,
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     db.commit()
     db.refresh(model)

@@ -230,8 +230,8 @@ def test_scrooge_what_if_uses_alternative_cache_prices(db):
     db.commit()
     rows = rag._run_comparison_query(rag.QueryIntent(needs_comparison=True), db)
     alts = {a["model"]: a for a in rows[0]["alternatives"]}
-    # Sonnet 5's cache read is $0.20/M: 1M cached tokens cost $0.20, not $2.
-    assert alts["claude-sonnet-5"]["estimated_cost"] == pytest.approx(0.20)
+    # Luna's cache read is $0.01/M; this one call is over 272K input, so doubled.
+    assert alts["gpt-6-luna"]["estimated_cost"] == pytest.approx(0.02)
 
 
 def test_five_minute_writes_without_a_write_price_are_estimated():

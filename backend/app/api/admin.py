@@ -200,6 +200,9 @@ class RepriceRequest(BaseModel):
     from_date: datetime | None = None
     to_date: datetime | None = None
     dry_run: bool = False
+    # Also recompute events already priced from the price table, to apply a
+    # corrected price to history. Client-supplied costs are never touched.
+    include_priced: bool = False
 
     @field_validator("from_date", "to_date")
     @classmethod
@@ -224,10 +227,13 @@ def reprice(
     recompute the daily rollups of the affected completed days.
 
     Use after adding/fixing model pricing. ``dry_run`` reports what would
-    change without writing.
+    change without writing. ``include_priced`` also recomputes events already
+    priced from the price table (after correcting a wrong price).
     """
     body = body or RepriceRequest()
-    result = reprice_events(db, body.from_date, body.to_date, body.dry_run)
+    result = reprice_events(
+        db, body.from_date, body.to_date, body.dry_run, body.include_priced
+    )
     ids = result.pop("repriced_ids")
     if ids and not body.dry_run:
         # Embedded event text includes the cost — refresh the cache.
@@ -243,6 +249,20 @@ def reprice(
             finally:
                 bg_db.close()
 
+        def _recheck_budgets() -> None:
+            # Higher costs can cross a threshold no new event would trigger.
+            from app.database import SessionLocal
+            from app.services.budget_checker import check_budgets
+
+            bg_db = SessionLocal()
+            try:
+                check_budgets(bg_db)
+            except Exception:
+                logger.warning("Budget check after reprice failed", exc_info=True)
+            finally:
+                bg_db.close()
+
+        background_tasks.add_task(_recheck_budgets)
         background_tasks.add_task(_reembed, ids)
     logger.info(
         "Reprice: %d events, +%.6f cost (dry_run=%s)",

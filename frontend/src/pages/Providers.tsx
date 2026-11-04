@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Plus, ChevronDown, ChevronUp, Pencil, Check, X, Trash2 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
-import { api } from '../api/client';
+import { api, apiErrorMessage } from '../api/client';
 import Badge from '../components/Badge';
 import Modal from '../components/Modal';
 import ConfirmDialog from '../components/ConfirmDialog';
@@ -16,22 +16,35 @@ const formatPrice = (v: number | null | undefined) =>
     ? '—'
     : `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
 
+/** Long-prompt columns are a token count and multiples, not prices. */
+const formatColumn = (field: string, v: number | null | undefined) => {
+  if (v === null || v === undefined || !field.startsWith('long_context')) return formatPrice(v);
+  return field === 'long_context_threshold' ? v.toLocaleString('en-US') : `×${v}`;
+};
+
 type PriceField =
   | 'input_price_per_million'
   | 'output_price_per_million'
   | 'cache_read_price_per_million'
   | 'cache_write_price_per_million'
-  | 'cache_write_1h_price_per_million';
+  | 'cache_write_1h_price_per_million'
+  | 'long_context_threshold'
+  | 'long_context_input_multiplier'
+  | 'long_context_output_multiplier';
 
 // Cache prices are optional: left blank, cached tokens are billed at the
-// input price (1-hour writes at the 5-minute write price) and the event's
-// cost is marked estimated.
+// input price (long writes at the short write price) and the event's cost is
+// marked estimated. Short/long writes: Anthropic 5m/1h, OpenAI 30m/12h.
 const PRICE_COLUMNS: { field: PriceField; label: string; required: boolean }[] = [
   { field: 'input_price_per_million', label: 'Input $/M', required: true },
   { field: 'output_price_per_million', label: 'Output $/M', required: true },
   { field: 'cache_read_price_per_million', label: 'Cache read $/M', required: false },
-  { field: 'cache_write_price_per_million', label: 'Cache write 5m $/M', required: false },
-  { field: 'cache_write_1h_price_per_million', label: 'Cache write 1h $/M', required: false },
+  { field: 'cache_write_price_per_million', label: 'Cache write short $/M', required: false },
+  { field: 'cache_write_1h_price_per_million', label: 'Cache write long $/M', required: false },
+  // A prompt over the threshold bills the whole request at these multiples.
+  { field: 'long_context_threshold', label: 'Long prompt > tokens', required: false },
+  { field: 'long_context_input_multiplier', label: 'Long × input', required: false },
+  { field: 'long_context_output_multiplier', label: 'Long × output', required: false },
 ];
 
 const providerTypeVariant = (type: string): 'info' | 'warning' | 'success' | 'default' => {
@@ -121,15 +134,19 @@ const Providers: React.FC = () => {
     for (const { field, required } of PRICE_COLUMNS) {
       const raw = editingModel.prices[field].trim();
       if (raw === '' && !required) {
-        body[field] = null; // clears the cache price
+        body[field] = null; // clears an optional setting
         continue;
       }
       const value = parseFloat(raw);
-      if (Number.isNaN(value) || value < 0) {
+      if (
+        Number.isNaN(value) ||
+        value < 0 ||
+        (field.startsWith('long_context') && value === 0)
+      ) {
         setPricingError(
           required
             ? 'Input and output prices must be non-negative numbers.'
-            : 'Cache prices must be non-negative numbers, or blank.'
+            : 'Cache prices must be non-negative numbers, long-prompt settings positive numbers, or blank.'
         );
         return;
       }
@@ -141,9 +158,7 @@ const Providers: React.FC = () => {
       refetch();
     } catch (err) {
       // Keep editing form open so the clerk can retry
-      setPricingError(
-        err instanceof Error ? err.message : 'Failed to save pricing. Try again.'
-      );
+      setPricingError(apiErrorMessage(err, 'Failed to save pricing. Try again.'));
     }
   };
 
@@ -309,7 +324,7 @@ const Providers: React.FC = () => {
                                     />
                                   ) : (
                                     <span className="numeral text-secondary">
-                                      {formatPrice(model[field])}
+                                      {formatColumn(field, model[field])}
                                     </span>
                                   )}
                                 </td>

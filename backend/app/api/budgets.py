@@ -13,7 +13,7 @@ from app.schemas.schemas import (
     BudgetWithSpend,
     _check_scope_ref,
 )
-from app.services.budget_checker import _current_spend, precall_check
+from app.services.budget_checker import precall_check, spend_and_unpriced
 from app.timeutils import deployment_tz
 
 router = APIRouter(prefix="/budgets", tags=["budgets"])
@@ -25,10 +25,11 @@ def list_budgets(db: Session = Depends(get_db)):
     result = []
     tz = deployment_tz(db)
     for b in budgets:
-        spend = _current_spend(b, db, tz)
+        spend, unpriced = spend_and_unpriced(b, db, tz)
         pct = (spend / b.limit_amount * 100) if b.limit_amount > 0 else 0.0
         item = BudgetWithSpend.model_validate(b)
         item.current_spend = round(spend, 6)
+        item.unpriced_events = unpriced
         item.percentage = round(pct, 2)
         result.append(item)
     return result
@@ -57,8 +58,12 @@ def check_budget(
     behaves as global, exactly as its spend is summed). The SDK calls this before each LLM call when
     enforce_budgets=True.
     """
-    violations = precall_check(db, agent_name, workflow, swarm, provider, model)
-    return BudgetCheckResponse(allowed=not violations, violations=violations)
+    violations, unpriced = precall_check(
+        db, agent_name, workflow, swarm, provider, model
+    )
+    return BudgetCheckResponse(
+        allowed=not violations, violations=violations, unpriced_events=unpriced
+    )
 
 
 @router.post("", response_model=BudgetOut, status_code=201)

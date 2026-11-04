@@ -26,6 +26,7 @@ from app.schemas.schemas import (
 from app.services.budget_checker import (
     accumulate_event,
     check_budgets,
+    check_unpriced_models,
     event_budget_violations,
     load_enforcement_state,
 )
@@ -167,6 +168,7 @@ def ingest_events(
     over_budget = 0
     budget_violations: list[str] = []
     created: list[CostEvent] = []
+    unpriced_models: set[tuple[str, str]] = set()
 
     # Prefetch enforcement budgets + baseline spend once for the whole batch.
     with BUDGET_STATE_LOAD_SECONDS.time():
@@ -195,6 +197,8 @@ def ingest_events(
                 db.flush()  # materialise the INSERT so cost_event.id is populated
             created.append(cost_event)
             processed += 1
+            if cost_source == "unpriced":
+                unpriced_models.add((event.provider, event.model))
             over_budget += bool(violations)
             for v in violations:
                 if v not in budget_violations:
@@ -226,12 +230,19 @@ def ingest_events(
 
         bg_db = SessionLocal()
         try:
-            check_budgets(bg_db)
-        except Exception:
             # Background tasks run in sequence and stop at the first error:
             # a failed check (e.g. a locked SQLite database) must not skip
-            # the embedding task. Alerts are re-evaluated on the next batch.
-            logger.warning("Background budget check failed", exc_info=True)
+            # the embedding task. Budget alerts are re-evaluated on the next
+            # batch; an unpriced model's next event alerts instead.
+            for check, args in (
+                (check_budgets, ()),
+                (check_unpriced_models, (unpriced_models,)),
+            ):
+                try:
+                    check(bg_db, *args)
+                except Exception:
+                    bg_db.rollback()
+                    logger.warning("Background check failed", exc_info=True)
         finally:
             bg_db.close()
 
