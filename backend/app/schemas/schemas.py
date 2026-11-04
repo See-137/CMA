@@ -480,23 +480,26 @@ class AlertChannelCreate(BaseModel):
     config: str = Field(max_length=4000)
 
 
-_SECRET_KEY = re.compile(r"secret|token|password|passwd|api_?key|auth", re.IGNORECASE)
+_SECRET_KEY = re.compile(
+    r"secret|token|pass|pwd|key|auth|credential|cookie|signature", re.IGNORECASE
+)
 
 
 def _mask_config(value, key: str = ""):
-    """Copy a channel config with secrets hidden, at any depth."""
+    """Copy a channel config with secrets hidden, at any depth. A secret-looking
+    key hides everything under it, whatever its type."""
+    if _SECRET_KEY.search(key):
+        return "***"
     if isinstance(value, dict):
         return {k: _mask_config(v, str(k)) for k, v in value.items()}
     if isinstance(value, list):
         return [_mask_config(v, key) for v in value]
     if not isinstance(value, str):
         return value
-    if _SECRET_KEY.search(key):
-        return "***"
-    if "://" in value:
+    if "://" in value or re.match(r"[\w.-]+\.[a-z]{2,}/", value, re.IGNORECASE):
         # A webhook URL is a bearer secret: show where it points, not the path.
         try:
-            parsed = urlsplit(value)
+            parsed = urlsplit(value if "://" in value else f"https://{value}")
             return f"{parsed.scheme}://{parsed.hostname or ''}/***"
         except ValueError:
             return "***"

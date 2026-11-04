@@ -112,7 +112,10 @@ def validate_external_url(url: str) -> str:
 
 def _uses_proxy(scheme: str, host: str) -> bool:
     """Would the environment's proxy settings carry a request to this host?"""
-    return scheme in getproxies_environment() and not proxy_bypass_environment(host)
+    proxies = getproxies_environment()
+    return (scheme in proxies or "all" in proxies) and not proxy_bypass_environment(
+        host
+    )
 
 
 def _post_pinned(
@@ -163,8 +166,13 @@ def _post_json(url: str, payload: dict) -> httpx.Response:
     host, addresses = _resolve_allowed(url)
     proxied = _uses_proxy(urlparse(url).scheme, host)
     try:
+        # trust_env=False would also drop SSL_CERT_FILE/SSL_CERT_DIR, which a
+        # private or TLS-inspecting CA relies on: keep those for direct calls.
         with httpx.Client(
-            timeout=10, follow_redirects=False, trust_env=proxied or not addresses
+            timeout=10,
+            follow_redirects=False,
+            trust_env=proxied or not addresses,
+            verify=httpx.create_ssl_context(trust_env=True),
         ) as client:
             if addresses and not proxied:
                 resp = _post_pinned(client, url, host, addresses, payload)
@@ -174,7 +182,13 @@ def _post_json(url: str, payload: dict) -> httpx.Response:
             if not resp.is_success:
                 raise WebhookFailed(f"{host} returned HTTP {resp.status_code}")
     except httpx.HTTPError as exc:
-        raise WebhookFailed(f"{host}: {type(exc).__name__}") from None
+        # The reason tells a bad certificate from a refused connection. Any
+        # copy of the path is removed: it is often the secret.
+        path = urlparse(url).path
+        reason = str(exc)[:200]
+        if path and path != "/":
+            reason = reason.replace(path, "/***")
+        raise WebhookFailed(f"{host}: {type(exc).__name__}: {reason}") from None
     return resp
 
 

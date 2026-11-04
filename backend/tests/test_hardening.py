@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import json
+import logging
 import socket
 
 import bcrypt
@@ -413,9 +414,32 @@ def test_bad_stored_values_cannot_break_the_channel_list(authed_client):
     assert resp.status_code in (200, 201)
     listed = authed_client.get("/api/v1/alerts/channels")
     assert listed.status_code == 200
-    text = listed.text
-    for secret in ("secret-path", "secret-list", '"abc"', "[oops"):
-        assert secret not in text
+    item = next(c for c in listed.json() if c["name"] == "c")
+    masked = json.loads(item["config_json"])
+    assert masked["token"] == "***"
+    assert masked["note"] == "***"
+    assert masked["nested"]["url"] == "https://h.example.com/***"
+    assert masked["other"] == ["https://h.example.com/***"]
+
+
+@pytest.mark.parametrize(
+    ("config", "hidden"),
+    [
+        ({"auth": {"user": "U1", "pass": "PW1"}}, "PW1"),
+        ({"token": 123456}, "123456"),
+        ({"secret": [{"x": "L2"}]}, "L2"),
+        ({"X-Api-Key": "K1"}, "K1"),
+        ({"pwd": "K2"}, "K2"),
+        ({"credential": "K3"}, "K3"),
+        ({"hook": "hooks.slack.com/services/T0/SEC"}, "SEC"),
+    ],
+)
+def test_secret_values_are_hidden_whatever_their_shape(authed_client, config, hidden):
+    authed_client.post(
+        "/api/v1/alerts/channels",
+        json={"name": "c", "channel_type": "in_app", "config": json.dumps(config)},
+    )
+    assert hidden not in authed_client.get("/api/v1/alerts/channels").text
 
 
 def test_webhook_secret_stays_out_of_logs_on_failure_and_success(monkeypatch, caplog):
@@ -460,6 +484,101 @@ def test_webhook_secret_stays_out_of_logs_on_failure_and_success(monkeypatch, ca
     assert "delivered" in joined
     assert "hooks.slack.com returned HTTP 404" in joined
     assert "SUPERSECRET" not in joined
+
+
+def test_transport_failure_names_the_reason_not_the_secret(monkeypatch, caplog):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, 1, 6, "", ("93.184.216.34", 443))],
+    )
+
+    def handler(request):
+        raise httpx.ConnectError(f"CERTIFICATE_VERIFY_FAILED for {request.url}")
+
+    _mock_transport(monkeypatch, handler)
+    with pytest.raises(alert_service.WebhookFailed) as err:
+        alert_service._post_json("https://h.example.com/T0/SECRET", {"a": 1})
+    assert "CERTIFICATE_VERIFY_FAILED" in str(err.value)
+    assert "SECRET" not in str(err.value)
+    assert err.value.__cause__ is None
+    assert err.value.__suppress_context__ is True
+
+
+def test_httpx_request_logging_is_off():
+    from app.logging_config import setup_logging
+
+    setup_logging()
+    assert logging.getLogger("httpx").getEffectiveLevel() > logging.INFO
+
+
+def test_a_redirect_is_not_a_delivery(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, 1, 6, "", ("93.184.216.34", 443))],
+    )
+    _mock_transport(
+        monkeypatch,
+        lambda request: httpx.Response(302, headers={"location": "http://10.0.0.1/"}),
+    )
+    with pytest.raises(alert_service.WebhookFailed):
+        alert_service._post_json("https://h.example.com/x", {"a": 1})
+
+
+def test_direct_calls_ignore_proxy_env_but_keep_ca_env(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, 1, 6, "", ("93.184.216.34", 443))],
+    )
+    seen = {}
+    real_client = httpx.Client
+
+    def client(**kw):
+        seen.update(trust_env=kw["trust_env"], verify=kw["verify"])
+        kw.pop("verify")
+        return real_client(
+            transport=httpx.MockTransport(lambda r: httpx.Response(200)), **kw
+        )
+
+    made = []
+    monkeypatch.setattr(alert_service.httpx, "Client", client)
+    monkeypatch.setattr(
+        alert_service.httpx,
+        "create_ssl_context",
+        lambda trust_env: made.append(trust_env) or "ctx",
+    )
+    alert_service._post_json("https://h.example.com/x", {"a": 1})
+    assert seen == {"trust_env": False, "verify": "ctx"}
+    assert made == [True]
+
+
+def test_all_proxy_counts_as_a_proxy(monkeypatch):
+    monkeypatch.setenv("ALL_PROXY", "http://proxy.internal:3128")
+    assert alert_service._uses_proxy("https", "h.example.com") is True
+
+
+def test_model_default_follows_the_provider(monkeypatch):
+    from app.config import Settings
+
+    for name in ("CMA_LLM_MODEL", "CMA_LLM_PROVIDER"):
+        monkeypatch.delenv(name, raising=False)
+    assert Settings(_env_file=None, LLM_PROVIDER="openai").LLM_MODEL == "gpt-6-luna"
+    assert Settings(_env_file=None, LLM_PROVIDER="ollama").LLM_MODEL == "llama3"
+    assert (
+        Settings(_env_file=None, LLM_PROVIDER="openai", LLM_MODEL="x").LLM_MODEL == "x"
+    )
+
+
+def test_a_422_for_nan_is_valid_json(client):
+    resp = client.post(
+        "/api/v1/setup",
+        content='{"admin_email":NaN,"admin_password":"testpass123"}',
+        headers={"content-type": "application/json"},
+    )
+    assert resp.status_code == 422
+    json.loads(resp.text, parse_constant=lambda c: pytest.fail(c))
 
 
 def test_webhook_behind_a_proxy_keeps_the_host_name(monkeypatch):

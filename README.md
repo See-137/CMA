@@ -129,7 +129,7 @@ Copy `.env.template` to `.env` in the repo root. Every backend setting uses the 
 |---|---|---|
 | `CMA_DATABASE_URL` | `sqlite:///./data/cma.db` | SQLAlchemy URL; use a `postgresql://` URL in production |
 | `CMA_LLM_PROVIDER` | `ollama` | `ollama` or `openai` for Scrooge's answer generation |
-| `CMA_LLM_MODEL` | `llama3` | Model name for the chosen provider |
+| `CMA_LLM_MODEL` | `llama3` (Ollama), `gpt-6-luna` (OpenAI) | Model name for the chosen provider |
 | `CMA_OPENAI_API_KEY` | empty | Required when provider is `openai` |
 | `CMA_OLLAMA_BASE_URL` | `http://localhost:11434` (Docker: the host) | Local Ollama endpoint |
 | `CMA_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | sentence-transformers model, downloaded on first run |
@@ -218,7 +218,7 @@ cd sdks/python && pip install -e ".[dev]" && pytest   # SDK, incl. real openai/a
 cd frontend && npm run build         # tsc + vite build
 ```
 
-The backend suite has 294 tests (one, the Postgres bucketing check, runs only when `CMA_TEST_PG_URL` is set, as in CI) and the SDK suite 112. The SDK instrumentation tests exercise the real `openai` and `anthropic` client libraries against a local fake HTTP server, so patching is verified against actual SDK internals rather than mocks.
+The backend suite has 308 tests (one, the Postgres bucketing check, runs only when `CMA_TEST_PG_URL` is set, as in CI) and the SDK suite 112. The SDK instrumentation tests exercise the real `openai` and `anthropic` client libraries against a local fake HTTP server, so patching is verified against actual SDK internals rather than mocks.
 
 CI runs on every push and pull request:
 
