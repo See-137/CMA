@@ -218,7 +218,7 @@ cd sdks/python && pip install -e ".[dev]" && pytest   # SDK, incl. real openai/a
 cd frontend && npm run build         # tsc + vite build
 ```
 
-The backend suite has 346 tests (one, the Postgres bucketing check, runs only when `CMA_TEST_PG_URL` is set, as in CI) and the SDK suite 141. The SDK instrumentation tests exercise the real `openai` and `anthropic` client libraries against a local fake HTTP server, so patching is verified against actual SDK internals rather than mocks.
+The backend suite has 369 tests (one, the Postgres bucketing check, runs only when `CMA_TEST_PG_URL` is set, as in CI) and the SDK suite 141. The SDK instrumentation tests exercise the real `openai` and `anthropic` client libraries against a local fake HTTP server, so patching is verified against actual SDK internals rather than mocks.
 
 CI runs on every push and pull request:
 
@@ -257,7 +257,7 @@ CMA is a working single-maintainer project used to monitor a personal multi-agen
 - Publish the SDK to PyPI.
 - Multi-user accounts. Today there is one ingest key and one admin password.
 - Provider price-table sync from upstream pricing pages instead of manual entry.
-- Quality evaluation for Scrooge: a golden question set with expected sources, run in CI.
+- A real-model run of the Scrooge golden set (`backend/scripts/scrooge_eval.py`); the deterministic half runs in CI.
 
 Issues and pull requests are welcome.
 

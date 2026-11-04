@@ -25,13 +25,15 @@
 ```powershell
 cd backend; pip install -r requirements-dev.txt; pytest
 ```
-- 346 backend tests (1 needs `CMA_TEST_PG_URL`, set in CI) (`backend/tests`) + 141 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
+- 369 backend tests (1 needs `CMA_TEST_PG_URL`, set in CI) (`backend/tests`) + 141 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
 - `test_events.py` — ingestion, auto-discovery (incl. race), UTC timestamp normalisation
 - `test_pricing.py` — pricing resolution, cost_source, reprice, reset-full reseed
 - `test_current_pricing.py` — current models, long-context billing, migration 007 vs seed, reprice of priced events, unpriced alerts
 - `test_cache_pricing.py` — prompt-cache tokens: validation, cache prices, fallback to `estimated`, reprice, Scrooge what-if
 - `sdks/python/tests/test_cache_tokens.py` — SDK sends Anthropic/OpenAI cache tokens on every path (create, stream, messages.stream, async, LangChain, log_completion)
 - `test_scrooge_grounding.py` — Scrooge totals, windows, entity matching, untrusted data block, degradation
+- `test_scrooge_citations.py` — answers return what they cite, unknown labels flagged, vector records stay in the window (real Chroma)
+- `test_scrooge_golden.py` / `golden_ledger.py` — golden questions over a fixed ledger; `scripts/scrooge_eval.py` runs them through a real model
 - `test_retention.py` — no spend lost on prune (incl. mid-prune inserts)
 - `test_migrations.py` — migration data safety on seeded pre-upgrade data
 - `test_auth.py` — setup + login
@@ -81,6 +83,7 @@ cd backend; pip install -r requirements-dev.txt; pytest
 - **Long-context pricing** — a prompt with more than `long_context_threshold` input tokens bills the whole request at the input/cache and output multipliers (`cost_for`). New models go in both `app/seed.py` and a migration: the seed only reaches fresh installs
 - **Pricing resolution** — provider by case-insensitive name or `provider_type`, model by exact name > alias list > ci name > date-snapshot-stripped; snapshot-only match = `cost_source='estimated'`; no match = `cost_source='unpriced'` at $0 (repriceable via `/admin/reprice`, batched)
 - **UTC at the boundary** — storage is naive UTC; offset inputs are converted, every API datetime is emitted with `Z`
+- **Scrooge citations** — the answer's labels decide what is returned as a source (`verified_citations`); the SSE stream sends what was retrieved first, then replaces it when the answer is complete
 - **Scrooge data is untrusted** — retrieved data goes in a user-role `<data>` block; only SQL `total` rows (per explicit window, half-open) are presented as totals
 - **Prometheus over OTel** — single process, no cross-service propagation to buy; RAG stage histograms are span-shaped (1:1 names) so an OTel migration stays mechanical. Metrics carry NO agent/model labels (unbounded cardinality); CMA's own rollups watch the spend, Prometheus watches the service
 - **JSON file logging, human console** — `data/cma.log` is JSON lines (machine surface: /admin/logs, shippers); request IDs via contextvar middleware, no structlog (zero call-site changes)

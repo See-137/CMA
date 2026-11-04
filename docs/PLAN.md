@@ -52,7 +52,7 @@ understood; entity filters match whole names; ingested text never has system
 authority; empty data and vector outages are stated, not hidden; citations returned
 are ones the answer could use (RAG-09); vector records are time-scoped (RAG-10); a
 golden-question context test runs in CI (RAG-14).
-*Met: RAG-01..08. Open: RAG-09, RAG-10, RAG-14.*
+*Met: RAG-01..10 and the deterministic half of RAG-14. Open: a real-model run of `scripts/scrooge_eval.py`.*
 
 **S3 Budget semantics** — D1 done (#23); D2 time zone done (`feat/deployment-timezone`); BUD-06 done (`feat/alert-dedup`); BUD-05 docs open.
 Accept when: every budget action selectable in the UI has tested behaviour; incurred
@@ -219,3 +219,4 @@ Owner decisions (2026-10-28):
 - 2026-11-04 — `fix/cheap-hardening`: SEC-02/05/06/07/08/09, RAG-11/12/13, OPS-02/08/09, ACC-16, BUD-05, UX-03/05. Backend tests → 294 (after review fixes).
 - 2026-11-04 — `feat/current-pricing`: ACC-11/20/22/23, migration 007, reprice of priced events, unpriced alerts and warnings. New ACC-24.
 - 2026-11-04 — `feat/sdk-reliability`: ACC-10 (migration 008), SDK-01 remainder, SDK-04..12. S4 complete.
+- 2026-11-05 — `feat/scrooge-grounding`: RAG-09, RAG-10, golden set in CI, opt-in LLM eval. Real-model run still blocked.
