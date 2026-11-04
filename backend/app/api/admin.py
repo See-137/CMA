@@ -8,8 +8,10 @@ from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_admin
+from app.api.setup import check_db_knows_zone
 from app.logging_config import LOG_FILE
 from app.models.models import Agent, Alert, Budget, CostEvent, SetupConfig
+from app.schemas.schemas import TimezoneUpdate
 from app.services.cost_engine import reprice_events
 from app.timeutils import to_naive_utc, utcnow
 
@@ -66,6 +68,18 @@ def system_status(db: Session = Depends(get_db)):
             or 0,
         },
     }
+
+
+@router.put("/timezone", dependencies=admin_only)
+def set_timezone(body: TimezoneUpdate, db: Session = Depends(get_db)):
+    """Change the deployment time zone (UX-04). Periods, budgets and day buckets
+    follow it from now on; stored instants are UTC, so history is not rewritten,
+    and only its grouping into days moves."""
+    check_db_knows_zone(db, body.timezone)
+    config = db.query(SetupConfig).first()
+    config.timezone = body.timezone
+    db.commit()
+    return {"timezone": body.timezone}
 
 
 @router.get("/logs", dependencies=admin_only)
@@ -137,6 +151,8 @@ def full_reset(db: Session = Depends(get_db)):
     db.execute(text("DELETE FROM model_pricing"))
     db.execute(text("DELETE FROM providers"))
     db.execute(text("DELETE FROM setup_config"))
+    db.execute(text("DELETE FROM ingest_keys"))
+    db.execute(text("DELETE FROM admin_sessions"))
     db.commit()
     # Seeding only runs at startup; without re-seeding here, every event
     # ingested after a full reset (until the next restart) is priced at $0.

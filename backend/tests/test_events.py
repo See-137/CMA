@@ -239,9 +239,9 @@ def test_failed_batch_stores_nothing_on_sqlite(tmp_path, monkeypatch):
     monkeypatch.setattr(events_api, "check_budgets", lambda db: [])
     previous = dict(app.dependency_overrides)
     app.dependency_overrides[get_db] = file_db
-    from app.api.deps import require_api_key
+    from app.api.deps import require_ingest
 
-    app.dependency_overrides[require_api_key] = lambda: None
+    app.dependency_overrides[require_ingest] = lambda: None
     try:
         with TestClient(app, raise_server_exceptions=False) as client:
             batch = [
@@ -274,7 +274,7 @@ def test_concurrent_batches_on_sqlite_all_land(tmp_path, monkeypatch):
     from sqlalchemy.orm import sessionmaker
 
     from app.api import events as events_api
-    from app.api.deps import require_api_key
+    from app.api.deps import require_ingest
     from app.database import Base, get_db
     from app.main import app
     from app.models.models import CostEvent
@@ -295,7 +295,7 @@ def test_concurrent_batches_on_sqlite_all_land(tmp_path, monkeypatch):
     monkeypatch.setattr(events_api, "check_budgets", lambda db: [])
     previous = dict(app.dependency_overrides)
     app.dependency_overrides[get_db] = file_db
-    app.dependency_overrides[require_api_key] = lambda: None
+    app.dependency_overrides[require_ingest] = lambda: None
     statuses = []
     try:
         with TestClient(app) as client:

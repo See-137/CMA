@@ -17,11 +17,12 @@ from app.api import (
     budgets,
     dashboard,
     events,
+    keys,
     providers,
     setup,
 )
 from app.api.admin import router as admin_router
-from app.api.deps import require_api_key, require_metrics_access
+from app.api.deps import require_management, require_metrics_access
 from app.config import settings
 from app.database import SessionLocal
 from app.logging_config import RequestIDMiddleware, setup_logging
@@ -178,6 +179,7 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Admin-Password"],
+    expose_headers=["X-CMA-Deprecated"],
 )
 
 # Mount all routers under /api/v1
@@ -200,12 +202,14 @@ async def _validation_error(_request, exc: RequestValidationError) -> Response:
 app.include_router(setup.router, prefix=PREFIX)
 app.include_router(auth.router, prefix=PREFIX)
 
-# Protected routes (require API key)
-auth_deps = [Depends(require_api_key)]
-app.include_router(events.router, prefix=PREFIX, dependencies=auth_deps)
+# Events and budgets choose per route: agents' ingest keys reach POST /events
+# and GET /budgets/check, everything else needs management access (D4).
+auth_deps = [Depends(require_management)]
+app.include_router(events.router, prefix=PREFIX)
+app.include_router(keys.router, prefix=PREFIX, dependencies=auth_deps)
 app.include_router(agents.router, prefix=PREFIX, dependencies=auth_deps)
 app.include_router(providers.router, prefix=PREFIX, dependencies=auth_deps)
-app.include_router(budgets.router, prefix=PREFIX, dependencies=auth_deps)
+app.include_router(budgets.router, prefix=PREFIX)
 app.include_router(alerts.router, prefix=PREFIX, dependencies=auth_deps)
 app.include_router(dashboard.router, prefix=PREFIX, dependencies=auth_deps)
 app.include_router(admin_router, prefix=PREFIX, dependencies=auth_deps)

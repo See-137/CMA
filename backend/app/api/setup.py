@@ -3,7 +3,7 @@ import secrets
 import bcrypt
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import _verify_password, get_db, safe_compare
@@ -15,7 +15,8 @@ from app.schemas.schemas import (
     SetupResponse,
     SetupStatusResponse,
 )
-from app.services.rate_limit import rate_limit
+from app.services import credentials
+from app.services.rate_limit import limit_account_failures, rate_limit
 from app.timeutils import deployment_tz
 
 router = APIRouter(prefix="/setup", tags=["setup"])
@@ -29,7 +30,7 @@ def _hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
-def _check_db_knows_zone(db: Session, zone: str) -> None:
+def check_db_knows_zone(db: Session, zone: str) -> None:
     """Postgres buckets dashboards in SQL with its own tz database, which may
     lack names Python knows (legacy links such as "Israel"). Reject those at
     setup rather than failing every dashboard query later."""
@@ -51,9 +52,11 @@ def run_setup(body: SetupRequest, db: Session = Depends(get_db)):
     existing = db.query(SetupConfig).first()
     if existing and existing.is_setup_complete:
         raise HTTPException(status_code=400, detail="Setup already completed")
-    _check_db_knows_zone(db, body.timezone)
+    check_db_knows_zone(db, body.timezone)
 
-    api_key = secrets.token_urlsafe(32)
+    # The column is required but unusable on a new install: legacy_key_enabled
+    # stays False, so agents use the ingest key below and people log in.
+    unused_shared_key = secrets.token_urlsafe(32)
 
     if existing:
         existing.admin_email = body.admin_email
@@ -61,7 +64,7 @@ def run_setup(body: SetupRequest, db: Session = Depends(get_db)):
         existing.deployment_name = body.deployment_name
         existing.timezone = body.timezone
         existing.currency = body.currency
-        existing.api_key = api_key
+        existing.api_key = unused_shared_key
         existing.is_setup_complete = True
     else:
         config = SetupConfig(
@@ -70,15 +73,23 @@ def run_setup(body: SetupRequest, db: Session = Depends(get_db)):
             deployment_name=body.deployment_name,
             timezone=body.timezone,
             currency=body.currency,
-            api_key=api_key,
+            api_key=unused_shared_key,
             is_setup_complete=True,
         )
         db.add(config)
 
-    db.commit()
+    _, ingest_key = credentials.create_ingest_key(db, "default")
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        # Two first-run requests raced: the single-row key let one through.
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Setup already completed") from exc
+    token, _ = credentials.create_session(db)
     return SetupResponse(
         message="Setup completed successfully",
-        api_key=api_key,
+        api_key=ingest_key,
+        session_token=token,
         is_complete=True,
     )
 
@@ -87,7 +98,7 @@ def run_setup(body: SetupRequest, db: Session = Depends(get_db)):
     "/reconnect", response_model=SetupResponse, dependencies=[Depends(_login_limit)]
 )
 def reconnect(body: ReconnectRequest, db: Session = Depends(get_db)):
-    """Return existing API key after verifying admin credentials."""
+    """Log in from the setup screen. Keys are not shown again: Settings makes new ones."""
     config = db.query(SetupConfig).first()
     if not config or not config.is_setup_complete:
         raise HTTPException(status_code=400, detail="Setup not completed yet")
@@ -95,11 +106,13 @@ def reconnect(body: ReconnectRequest, db: Session = Depends(get_db)):
     email_ok = safe_compare(config.admin_email, body.admin_email)
     password_ok = _verify_password(body.admin_password, config.admin_password_hash)
     if not (email_ok and password_ok):
+        limit_account_failures("login", settings.RATE_LIMIT_LOGIN_PER_MINUTE * 5)
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
+    token, _ = credentials.create_session(db)
     return SetupResponse(
         message="Reconnected successfully",
-        api_key=config.api_key,
+        session_token=token,
         is_complete=True,
     )
 

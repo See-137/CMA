@@ -69,7 +69,7 @@ def client():
 
 @pytest.fixture
 def authed_client(client):
-    """Client that has completed setup and includes API key in headers."""
+    """Client that has completed setup and holds an admin session."""
     resp = client.post(
         "/api/v1/setup",
         json={
@@ -79,6 +79,6 @@ def authed_client(client):
         },
     )
     assert resp.status_code == 200
-    api_key = resp.json()["api_key"]
-    client.headers["Authorization"] = f"Bearer {api_key}"
+    client.headers["Authorization"] = f"Bearer {resp.json()['session_token']}"
+    client.ingest_key = resp.json()["api_key"]
     return client

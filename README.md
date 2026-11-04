@@ -34,7 +34,7 @@ It runs entirely on your own infrastructure. Usage data stays on your network, u
 - **Scrooge, the RAG assistant.** Hybrid retrieval that combines vector search over events and rollups (ChromaDB + sentence-transformers) with exact SQL aggregations chosen by regex intent detection. "What did we spend last week" hits SQL and returns a real number; "why did the research agent get expensive" hits the vector store and returns cited sources. The LLM is used for answer generation only, streamed token by token.
 - **Dashboards and semantic search.** Recharts visualizations of spend over time, top agents, model mix and budget status, plus meaning-based search across events.
 - **Production observability.** Liveness and readiness endpoints with bounded dependency checks, structured JSON logging with request-ID correlation, and a Prometheus exporter with a bundled Grafana dashboard.
-- **Security hardening.** Constant-time comparison for every credential, an admin scope separated from the ingest key, dependency-free rate limiting on login and chat, size caps on batches, event metadata, chat history and search, an SSRF guard that connects only to the address it validated, masked webhook secrets, and a systemd unit with a locked-down sandbox for native deploys.
+- **Security hardening.** Constant-time comparison for every credential, hashed, revocable ingest keys that cannot read or change anything else, short-lived admin sessions, dependency-free rate limiting on login and chat, size caps on batches, event metadata, chat history and search, an SSRF guard that connects only to the address it validated, masked webhook secrets, and a systemd unit with a locked-down sandbox for native deploys.
 
 ## Screenshots
 
@@ -90,7 +90,7 @@ docker compose up -d
 
 Compose refuses to start without the Postgres password. Every published port is bound to `127.0.0.1`, because the setup endpoint is unauthenticated until the wizard has run; for remote access put a reverse proxy in front or use an SSH tunnel.
 
-Open <http://localhost:5173> and complete the setup wizard. The wizard creates the admin credentials and shows the ingest API key; copy it for the SDK. If you lose it, the Reconnect screen returns it after admin login.
+Open <http://localhost:5173> and complete the setup wizard. The wizard creates the admin credentials and shows the first ingest key; copy it for the SDK, as it is shown only once. Settings creates, rotates and revokes ingest keys.
 
 To add Prometheus and Grafana:
 
@@ -183,7 +183,9 @@ See [`sdks/python/README.md`](sdks/python/README.md) for the full API and [`exam
 
 ## API
 
-All routes are under `/api/v1` and require the ingest key as `Authorization: Bearer <key>`, except setup, auth and health. Destructive admin operations additionally require an `X-Admin-Password` header, and failed admin attempts are rate limited like login.
+All routes are under `/api/v1` and take `Authorization: Bearer <token>`, except setup, auth and health. `POST /events` and `GET /budgets/check` accept an ingest key. Everything else needs the session token from `POST /auth/login` (12 hours, ended by `POST /auth/logout`). Destructive admin operations additionally require an `X-Admin-Password` header, and failed admin attempts are rate limited like login.
+
+**Upgrading from a version with one shared key:** it keeps full access for 90 days after the upgrade, with a banner and a log warning. After that it can only send events, so existing SDK deployments keep reporting. Move agents to ingest keys under Settings, then retire the shared key with `POST /keys/shared/retire`.
 
 | Area | Endpoints |
 |---|---|
@@ -218,7 +220,7 @@ cd sdks/python && pip install -e ".[dev]" && pytest   # SDK, incl. real openai/a
 cd frontend && npm run build         # tsc + vite build
 ```
 
-The backend suite has 369 tests (one, the Postgres bucketing check, runs only when `CMA_TEST_PG_URL` is set, as in CI) and the SDK suite 141. The SDK instrumentation tests exercise the real `openai` and `anthropic` client libraries against a local fake HTTP server, so patching is verified against actual SDK internals rather than mocks.
+The backend suite has 411 tests (one, the Postgres bucketing check, runs only when `CMA_TEST_PG_URL` is set, as in CI) and the SDK suite 141. The SDK instrumentation tests exercise the real `openai` and `anthropic` client libraries against a local fake HTTP server, so patching is verified against actual SDK internals rather than mocks.
 
 CI runs on every push and pull request:
 
@@ -255,7 +257,7 @@ The current audit, finding register and stabilization plan are in [docs/FINDINGS
 CMA is a working single-maintainer project used to monitor a personal multi-agent fleet. It is stable for that scale. Things not done yet, roughly in priority order:
 
 - Publish the SDK to PyPI.
-- Multi-user accounts. Today there is one ingest key and one admin password.
+- Multi-user accounts. Today there is one admin login, with as many ingest keys as you need.
 - Provider price-table sync from upstream pricing pages instead of manual entry.
 - A real-model run of the Scrooge golden set (`backend/scripts/scrooge_eval.py`); the deterministic half runs in CI.
 

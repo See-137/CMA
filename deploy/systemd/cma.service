@@ -29,7 +29,8 @@ EnvironmentFile=/opt/cma/.env
 Environment=HF_HOME=/opt/cma/backend/data/hf
 # Alembic owns the schema — migrate before every start (idempotent).
 ExecStartPre=/opt/cma/.venv/bin/alembic upgrade head
-ExecStart=/opt/cma/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+# --proxy-headers: rate limits count each client, not the reverse proxy on this host.
+ExecStart=/opt/cma/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips=127.0.0.1
 Restart=always
 RestartSec=5
 

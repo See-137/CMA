@@ -1,5 +1,5 @@
 import bcrypt
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.deps import (
@@ -12,7 +12,8 @@ from app.api.deps import (
 from app.config import settings
 from app.models.models import SetupConfig
 from app.schemas.schemas import LoginRequest, LoginResponse
-from app.services.rate_limit import rate_limit
+from app.services import credentials
+from app.services.rate_limit import limit_account_failures, rate_limit
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -35,6 +36,7 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
     email_ok = safe_compare(config.admin_email, body.email)
     password_ok = _verify_password(body.password, config.admin_password_hash)
     if not (email_ok and password_ok):
+        limit_account_failures("login", settings.RATE_LIMIT_LOGIN_PER_MINUTE * 5)
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     # Transparently upgrade legacy SHA-256 hashes to bcrypt on successful login
@@ -48,4 +50,14 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
         ).decode()
         db.commit()
 
-    return LoginResponse(api_key=config.api_key, email=config.admin_email)
+    token, expires = credentials.create_session(db)
+    return LoginResponse(
+        session_token=token, expires_at=expires, email=config.admin_email
+    )
+
+
+@router.post("/logout", status_code=204)
+def logout(authorization: str | None = Header(None), db: Session = Depends(get_db)):
+    """End this session. Harmless with any other credential."""
+    if authorization and authorization.startswith("Bearer "):
+        credentials.revoke_session(db, authorization[7:])

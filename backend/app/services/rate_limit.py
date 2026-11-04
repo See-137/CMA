@@ -70,6 +70,14 @@ def limit_failures(
     _check(f"{name}:{_client_id(request)}", limit, window)
 
 
+def limit_account_failures(name: str, limit: int, window: float = 60.0) -> None:
+    """Failed attempts against one account from anywhere (SEC-04): a per-address
+    limit does nothing against many addresses, and behind a proxy with no
+    forwarded headers every client shares one address anyway. Generous, because
+    an attacker can use it to lock the admin out while it lasts."""
+    _check(f"account:{name}", limit, window)
+
+
 def reset() -> None:
     """Clear all counters — for tests."""
     with _lock:

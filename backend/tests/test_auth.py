@@ -14,7 +14,8 @@ def test_login_success(client):
         },
     )
     assert resp.status_code == 200
-    assert "api_key" in resp.json()
+    assert "api_key" not in resp.json()
+    assert resp.json()["session_token"].startswith("cmas_")
 
 
 def test_login_wrong_password(client):

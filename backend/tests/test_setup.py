@@ -18,8 +18,8 @@ def test_setup_creates_admin(client):
     assert resp.status_code == 200
     data = resp.json()
     assert data["is_complete"] is True
-    assert "api_key" in data
-    assert len(data["api_key"]) > 20
+    assert data["api_key"].startswith("cmai_")
+    assert data["session_token"].startswith("cmas_")
 
 
 def test_setup_cannot_run_twice(client):

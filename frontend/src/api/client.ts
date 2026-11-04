@@ -23,7 +23,7 @@ function getAuthHeaders(extra?: Record<string, string>): Record<string, string> 
   return { ...headers, ...extra };
 }
 
-async function handleResponse<T>(response: Response): Promise<T> {
+async function handleResponse<T>(response: Response, sentAdminPassword = false): Promise<T> {
   if (!response.ok) {
     // Setup was reset (account deleted) — clear local key and redirect to wizard
     if (response.status === 503) {
@@ -42,6 +42,17 @@ async function handleResponse<T>(response: Response): Promise<T> {
       localStorage.removeItem('api_key');
       window.location.href = '/setup';
       throw new ApiError('Session expired', 401, null);
+    }
+    // The shared key lost management access, or an ingest key was pasted: only
+    // the X-Admin-Password flows answer 403 otherwise, and they send that header.
+    if (
+      response.status === 403 &&
+      localStorage.getItem('api_key') &&
+      !sentAdminPassword
+    ) {
+      localStorage.removeItem('api_key');
+      window.location.href = '/setup';
+      throw new ApiError('Log in again', 403, null);
     }
     const text = await response.text();
     let body: unknown;
@@ -77,7 +88,7 @@ export const api = {
       method: 'GET',
       headers: getAuthHeaders(headers),
     });
-    return handleResponse<T>(response);
+    return handleResponse<T>(response, !!headers?.['X-Admin-Password']);
   },
 
   async post<T>(path: string, body?: unknown, headers?: Record<string, string>): Promise<T> {
@@ -86,7 +97,7 @@ export const api = {
       headers: getAuthHeaders(headers),
       body: body ? JSON.stringify(body) : undefined,
     });
-    return handleResponse<T>(response);
+    return handleResponse<T>(response, !!headers?.['X-Admin-Password']);
   },
 
   async put<T>(path: string, body?: unknown, headers?: Record<string, string>): Promise<T> {
@@ -95,7 +106,7 @@ export const api = {
       headers: getAuthHeaders(headers),
       body: body ? JSON.stringify(body) : undefined,
     });
-    return handleResponse<T>(response);
+    return handleResponse<T>(response, !!headers?.['X-Admin-Password']);
   },
 
   async delete<T>(path: string, headers?: Record<string, string>): Promise<T> {
@@ -103,7 +114,7 @@ export const api = {
       method: 'DELETE',
       headers: getAuthHeaders(headers),
     });
-    return handleResponse<T>(response);
+    return handleResponse<T>(response, !!headers?.['X-Admin-Password']);
   },
 };
 

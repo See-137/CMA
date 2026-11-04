@@ -1,10 +1,9 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import {
   Plug,
   Copy,
   Check,
-  Eye,
-  EyeOff,
   Zap,
   Terminal,
   Package,
@@ -25,7 +24,6 @@ import {
 import Badge from '../components/Badge';
 import Drawer from '../components/Drawer';
 import { api, ApiError, apiErrorMessage } from '../api/client';
-import { useLocalStorage } from '../hooks/useLocalStorage';
 import { timeAgo, formatNumber } from '../utils/format';
 import type { PaginatedEvents } from '../types';
 
@@ -57,7 +55,6 @@ function OpenAiLogo({ className }: { className?: string }) {
 
 export default function Integrations() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [showApiKey, setShowApiKey] = useState(false);
   const [activeCat, setActiveCat] = useState<string>('all');
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<Integration | null>(null);
@@ -70,10 +67,6 @@ export default function Integrations() {
   const [testMsg, setTestMsg] = useState<string | null>(null);
 
   const endpoint = window.location.origin;
-  const apiKey = useLocalStorage('api_key') ?? '';
-  const maskedKey = apiKey
-    ? `${apiKey.slice(0, 6)}${'•'.repeat(Math.max(0, apiKey.length - 10))}${apiKey.slice(-4)}`
-    : 'No API key found';
 
   const copyToClipboard = useCallback((text: string, id: string) => {
     navigator.clipboard.writeText(text).then(() => {
@@ -82,12 +75,8 @@ export default function Integrations() {
     });
   }, []);
 
-  // Copy gets the real key; the on-screen snippet only ever shows it masked,
-  // so a screenshot or screen share cannot leak it.
-  const inject = (code: string): string =>
-    code.replace(/YOUR_ENDPOINT/g, endpoint).replace(/YOUR_API_KEY/g, apiKey);
-  const injectMasked = (code: string): string =>
-    code.replace(/YOUR_ENDPOINT/g, endpoint).replace(/YOUR_API_KEY/g, maskedKey);
+  const inject = (code: string): string => code.replace(/YOUR_ENDPOINT/g, endpoint);
+  const injectMasked = inject;
 
   const fetchStatus = useCallback(async () => {
     setStatusLoading(true);
@@ -434,26 +423,14 @@ curl "YOUR_ENDPOINT/api/v1/events?agent_name=my-agent&status=success&per_page=10
 
           {/* API key */}
           <div>
-            <label className="label">
-              API Key
-              <span className="ml-2 font-normal normal-case text-muted">
-                (masked — copy sends the full key)
-              </span>
-            </label>
-            <div className="flex items-center gap-2">
-              <div className="flex-1 truncate rounded-lg bg-ink-950 px-3 py-2.5 font-mono text-sm text-brand-300">
-                {showApiKey ? apiKey || 'No API key found' : maskedKey}
-              </div>
-              <button
-                onClick={() => setShowApiKey((v) => !v)}
-                className="btn-secondary h-9 w-9 p-0"
-                title={showApiKey ? 'Hide key' : 'Reveal key'}
-                aria-label={showApiKey ? 'Hide key' : 'Reveal key'}
-              >
-                {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
-              <CopyBtn text={apiKey} id="apikey" copiedId={copiedId} onCopy={copyToClipboard} />
-            </div>
+            <label className="label">API Key</label>
+            <p className="text-sm text-secondary">
+              Use an ingest key.{' '}
+              <Link to="/settings" className="underline">
+                Create one under Settings
+              </Link>
+              . The snippets below show it as YOUR_API_KEY.
+            </p>
           </div>
         </div>
 
