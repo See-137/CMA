@@ -3,7 +3,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db
+from app.api.deps import get_db, require_ingest, require_management
 from app.models.models import Budget
 from app.schemas.schemas import (
     BudgetCheckResponse,
@@ -16,10 +16,12 @@ from app.schemas.schemas import (
 from app.services.budget_checker import precall_check, spend_and_unpriced
 from app.timeutils import deployment_tz
 
+_management = [Depends(require_management)]
+
 router = APIRouter(prefix="/budgets", tags=["budgets"])
 
 
-@router.get("", response_model=list[BudgetWithSpend])
+@router.get("", response_model=list[BudgetWithSpend], dependencies=_management)
 def list_budgets(db: Session = Depends(get_db)):
     budgets = db.query(Budget).filter(Budget.is_active.is_(True)).all()
     result = []
@@ -35,7 +37,11 @@ def list_budgets(db: Session = Depends(get_db)):
     return result
 
 
-@router.get("/check", response_model=BudgetCheckResponse)
+@router.get(
+    "/check",
+    response_model=BudgetCheckResponse,
+    dependencies=[Depends(require_ingest)],
+)
 def check_budget(
     agent_name: str | None = None,
     workflow: str | None = None,
@@ -66,7 +72,7 @@ def check_budget(
     )
 
 
-@router.post("", response_model=BudgetOut, status_code=201)
+@router.post("", response_model=BudgetOut, status_code=201, dependencies=_management)
 def create_budget(body: BudgetCreate, db: Session = Depends(get_db)):
     budget = Budget(
         name=body.name,
@@ -83,7 +89,7 @@ def create_budget(body: BudgetCreate, db: Session = Depends(get_db)):
     return BudgetOut.model_validate(budget)
 
 
-@router.put("/{budget_id}", response_model=BudgetOut)
+@router.put("/{budget_id}", response_model=BudgetOut, dependencies=_management)
 def update_budget(budget_id: int, body: BudgetUpdate, db: Session = Depends(get_db)):
     budget = db.query(Budget).filter(Budget.id == budget_id).first()
     if not budget:
@@ -112,7 +118,7 @@ def update_budget(budget_id: int, body: BudgetUpdate, db: Session = Depends(get_
     return BudgetOut.model_validate(budget)
 
 
-@router.delete("/{budget_id}", response_model=BudgetOut)
+@router.delete("/{budget_id}", response_model=BudgetOut, dependencies=_management)
 def delete_budget(budget_id: int, db: Session = Depends(get_db)):
     budget = db.query(Budget).filter(Budget.id == budget_id).first()
     if not budget:

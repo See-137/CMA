@@ -12,6 +12,7 @@ import {
   Coins,
 } from 'lucide-react';
 import { formatCurrency } from '../utils/format';
+import IngestKeys from '../components/IngestKeys';
 import { api, ApiError } from '../api/client';
 import Modal from '../components/Modal';
 
@@ -585,6 +586,8 @@ const Settings: React.FC = () => {
         </div>
 
         {/* ── Application Logs ──────────────────────────────────────────── */}
+        <IngestKeys />
+
         <div className="card-ledger p-6 lg:col-span-2">
           <div className="mb-4 flex items-center justify-between">
             <div className="flex items-center gap-2">

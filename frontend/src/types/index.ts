@@ -16,7 +16,8 @@ export interface SetupRequest {
 
 export interface SetupResponse {
   message: string;
-  api_key: string;
+  api_key?: string | null;
+  session_token: string;
   is_complete: boolean;
 }
 
@@ -26,7 +27,8 @@ export interface LoginRequest {
 }
 
 export interface LoginResponse {
-  api_key: string;
+  session_token: string;
+  expires_at: string;
   email: string;
 }
 
@@ -249,4 +251,20 @@ export interface SemanticSearchResponse {
   results: SemanticSearchResult[];
   query_embedding_time_ms: number;
   search_time_ms: number;
+}
+
+export interface IngestKey {
+  id: number;
+  name: string;
+  prefix: string;
+  created_at: string | null;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  key?: string;
+}
+
+export interface CredentialStatus {
+  role: 'session' | 'shared_key';
+  shared_key_enabled: boolean;
+  shared_key_full_access_until: string | null;
 }

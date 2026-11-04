@@ -14,6 +14,7 @@ import {
   Moon,
   Coins,
 } from 'lucide-react';
+import { api } from '../api/client';
 import { useTheme } from '../contexts/ThemeContext';
 
 interface NavEntry {
@@ -73,7 +74,8 @@ function NavItem({ to, icon: Icon, label }: NavEntry) {
 export default function Sidebar() {
   const { theme, toggleTheme } = useTheme();
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await api.post('/api/v1/auth/logout', {}).catch(() => undefined);
     localStorage.removeItem('api_key');
     window.location.href = '/setup';
   };

@@ -67,7 +67,7 @@ receives (SDK-02); partial streams keep their tokens; no double counting with
 LangChain; fork-safe; one bad event cannot drop others; exit flush works; duplicate
 sends are idempotent (ACC-10).
 
-**S5 Security hardening** — Open (SEC-01 per D4).
+**S5 Security hardening** — Done (`fix/cheap-hardening`, `feat/split-credentials`).
 Accept when: credentials and inputs cannot produce 500s; SSRF guard pins resolved
 addresses and blocks non-global ranges; metadata and chat history are size-capped;
 no webhook secrets in logs/responses; proxy deployment rate limiting is per client.
@@ -220,3 +220,4 @@ Owner decisions (2026-10-28):
 - 2026-11-04 — `feat/current-pricing`: ACC-11/20/22/23, migration 007, reprice of priced events, unpriced alerts and warnings. New ACC-24.
 - 2026-11-04 — `feat/sdk-reliability`: ACC-10 (migration 008), SDK-01 remainder, SDK-04..12. S4 complete.
 - 2026-11-05 — `feat/scrooge-grounding`: RAG-09, RAG-10, golden set in CI, opt-in LLM eval. Real-model run still blocked.
+- 2026-11-05 — `feat/split-credentials`: D4 implemented (SEC-01), SEC-03/04, UX-04, migration 009.

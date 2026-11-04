@@ -7,7 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db
+from app.api.deps import get_db, require_ingest, require_management
 from app.config import settings
 from app.metrics import (
     BUDGET_STATE_LOAD_SECONDS,
@@ -155,7 +155,9 @@ def _begin_batch_transaction(db: Session) -> None:
     db.execute(text("BEGIN IMMEDIATE"))
 
 
-@router.post("", response_model=EventsIngestionResponse)
+@router.post(
+    "", response_model=EventsIngestionResponse, dependencies=[Depends(require_ingest)]
+)
 def ingest_events(
     body: EventsEnvelope | list[EventIn] | EventIn,
     background_tasks: BackgroundTasks,
@@ -314,7 +316,9 @@ def ingest_events(
     )
 
 
-@router.get("", response_model=PaginatedEvents)
+@router.get(
+    "", response_model=PaginatedEvents, dependencies=[Depends(require_management)]
+)
 def list_events(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=500),

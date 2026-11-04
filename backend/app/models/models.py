@@ -37,6 +37,49 @@ class SetupConfig(Base):
     is_setup_complete = Column(Boolean, default=False)
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+    # 1 on the only row: a second one cannot be inserted (SEC-03).
+    singleton = Column(Integer, nullable=True, default=1)
+    # An install from before D4 keeps its shared key (api_key): full access
+    # until legacy_full_until, ingest-only after, nothing once retired. A new
+    # install has no usable shared key.
+    legacy_key_enabled = Column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    legacy_full_until = Column(DateTime, nullable=True)
+
+    __table_args__ = (UniqueConstraint("singleton", name="uq_setup_config_singleton"),)
+
+
+class IngestKey(Base):
+    """Named, revocable credential that can only send events and check budgets."""
+
+    __tablename__ = "ingest_keys"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), nullable=False)
+    key_hash = Column(String(64), nullable=False)
+    prefix = Column(String(16), nullable=False)  # shown to tell keys apart
+    created_at = Column(DateTime, default=_utcnow)
+    last_used_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (UniqueConstraint("key_hash", name="uq_ingest_keys_key_hash"),)
+
+
+class AdminSession(Base):
+    """Short-lived login token for the management API."""
+
+    __tablename__ = "admin_sessions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    token_hash = Column(String(64), nullable=False)
+    created_at = Column(DateTime, default=_utcnow)
+    expires_at = Column(DateTime, nullable=False)
+    revoked_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_admin_sessions_token_hash"),
+    )
 
 
 class Provider(Base):

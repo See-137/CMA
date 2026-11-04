@@ -88,7 +88,9 @@ class ReconnectRequest(BaseModel):
 
 class SetupResponse(BaseModel):
     message: str
-    api_key: str
+    # The first ingest key, for agents: shown once, at setup only.
+    api_key: str | None = None
+    session_token: str
     is_complete: bool
 
 
@@ -115,7 +117,8 @@ class LoginRequest(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    api_key: str
+    session_token: str
+    expires_at: UTCDateTime
     email: str
 
 
@@ -209,6 +212,54 @@ class EventOut(BaseModel):
     created_at: UTCDateTime | None = None
 
     model_config = {"from_attributes": True}
+
+
+class IngestKeyCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+
+    @field_validator("name")
+    @classmethod
+    def _trim(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("name cannot be blank")
+        return v
+
+
+class IngestKeyOut(BaseModel):
+    id: int
+    name: str
+    prefix: str
+    created_at: UTCDateTime | None = None
+    last_used_at: UTCDateTime | None = None
+    revoked_at: UTCDateTime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class IngestKeyCreated(IngestKeyOut):
+    # The key itself, shown this once. Only its hash is stored.
+    key: str
+
+
+class CredentialStatus(BaseModel):
+    # "session" or "shared_key": how this request authenticated.
+    role: str
+    # The original shared key of an install from before ingest keys.
+    shared_key_enabled: bool
+    shared_key_full_access_until: UTCDateTime | None = None
+
+
+class TimezoneUpdate(BaseModel):
+    timezone: str
+
+    @field_validator("timezone")
+    @classmethod
+    def _known_zone(cls, v: str) -> str:
+        zone = parse_zone(v)
+        if zone is None:
+            raise ValueError(f"unknown time zone {v!r}; use an IANA name such as 'UTC'")
+        return zone.key
 
 
 class EventsIngestionResponse(BaseModel):

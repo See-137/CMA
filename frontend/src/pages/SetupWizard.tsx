@@ -135,7 +135,7 @@ const SetupWizard: React.FC = () => {
         admin_email: email,
         admin_password: password,
       });
-      localStorage.setItem('api_key', result.api_key);
+      localStorage.setItem('api_key', result.session_token);
       navigate('/', { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Invalid credentials');
@@ -177,7 +177,7 @@ const SetupWizard: React.FC = () => {
         deployment_name: deploymentName,
         timezone,
       });
-      localStorage.setItem('api_key', result.api_key);
+      localStorage.setItem('api_key', result.session_token);
 
       if (Number(dailyBudget) > 0) {
         try {
@@ -194,7 +194,7 @@ const SetupWizard: React.FC = () => {
         }
       }
 
-      setCompletedApiKey(result.api_key);
+      setCompletedApiKey(result.api_key ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Setup failed');
     } finally {
@@ -358,13 +358,13 @@ const SetupWizard: React.FC = () => {
                 <h2 className="font-display text-base font-semibold text-primary">
                   Your Counting House is Open
                 </h2>
-                <p className="text-xs text-muted">Keep your API key somewhere safe.</p>
+                <p className="text-xs text-muted">Copy this key for your agents now. It is not shown again; Settings can make more.</p>
               </div>
             </div>
 
             {/* API Key */}
             <div className="mb-5">
-              <label className="label">Your API Key</label>
+              <label className="label">Your Ingest Key</label>
               <p className="mb-3 text-sm text-secondary">
                 You'll need this to connect your agents. It's also available on the{' '}
                 <span className="font-medium text-gold">Integrations</span> page, or by signing

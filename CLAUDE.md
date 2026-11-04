@@ -5,7 +5,7 @@
 - **Frontend**: React 18 / TypeScript / Vite / Tailwind CSS / Recharts
 - **RAG**: ChromaDB (embedded) + sentence-transformers (all-MiniLM-L6-v2) + configurable LLM (OpenAI or Ollama)
 - **SDK**: Python client (`sdks/python/cost_monitor/`) with auto-instrumentation for OpenAI, Anthropic, LangChain
-- **Auth**: Bearer token in `Authorization` header, constant-time comparison (`hmac.compare_digest`). Destructive/sensitive admin endpoints require a separate `X-Admin-Password` (admin scope ≠ ingest key). API key stored plaintext (recoverable for the reconnect flow); admin password is bcrypt-hashed.
+- **Auth**: `Authorization: Bearer`. Ingest keys (`cmai_`, hashed, revocable) reach `POST /events` and `GET /budgets/check` only (`require_ingest`). Everything else needs an admin session (`cmas_`, 12 h, from login) via `require_management`. Destructive/sensitive admin endpoints also require `X-Admin-Password`. An install from before D4 keeps its shared key: full access for 90 days after migration 009, then ingest-only, off once retired; a new install has none. Admin password is bcrypt-hashed.
 
 ## Running locally
 ```powershell
@@ -25,7 +25,7 @@
 ```powershell
 cd backend; pip install -r requirements-dev.txt; pytest
 ```
-- 369 backend tests (1 needs `CMA_TEST_PG_URL`, set in CI) (`backend/tests`) + 141 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
+- 411 backend tests (1 needs `CMA_TEST_PG_URL`, set in CI) (`backend/tests`) + 141 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
 - `test_events.py` — ingestion, auto-discovery (incl. race), UTC timestamp normalisation
 - `test_pricing.py` — pricing resolution, cost_source, reprice, reset-full reseed
 - `test_current_pricing.py` — current models, long-context billing, migration 007 vs seed, reprice of priced events, unpriced alerts
@@ -37,6 +37,7 @@ cd backend; pip install -r requirements-dev.txt; pytest
 - `test_retention.py` — no spend lost on prune (incl. mid-prune inserts)
 - `test_migrations.py` — migration data safety on seeded pre-upgrade data
 - `test_auth.py` — setup + login
+- `test_credentials.py` — ingest vs management scope on every route, sessions, key rotation, shared-key window, setup race, per-account limit, zone change
 - `test_budgets.py` — record-and-flag, pre-call check, validation, threshold alerts
 - `sdks/python/tests/test_budget_enforcement.py` — SDK pre-call enforcement (sync/async/stream, fail-open/closed, caching)
 - `sdks/python/tests/test_reliability.py` — idempotent ids, LangChain one-event rule, fork, bad events, exit flush, close budget, 413 splitting, attribution, raw responses
@@ -88,7 +89,7 @@ cd backend; pip install -r requirements-dev.txt; pytest
 - **Prometheus over OTel** — single process, no cross-service propagation to buy; RAG stage histograms are span-shaped (1:1 names) so an OTel migration stays mechanical. Metrics carry NO agent/model labels (unbounded cardinality); CMA's own rollups watch the spend, Prometheus watches the service
 - **JSON file logging, human console** — `data/cma.log` is JSON lines (machine surface: /admin/logs, shippers); request IDs via contextvar middleware, no structlog (zero call-site changes)
 
-## Database schema (9 tables)
+## Database schema (11 tables)
 | Table | Purpose | Key detail |
 |-------|---------|-----------|
 | `SetupConfig` | Single-row deployment config | api_key, admin_password_hash, timezone, currency |
@@ -99,6 +100,8 @@ cd backend; pip install -r requirements-dev.txt; pytest
 | `Budget` | Cost limits | scope (global/agent/swarm/workflow), period (daily/weekly/monthly) |
 | `Alert` | Triggered notifications | budget_id, severity, is_resolved; threshold alerts unique on (budget_id, threshold, period_start) |
 | `AlertChannel` | Notification destinations | webhook, slack, or in_app |
+| `IngestKey` | Agent credentials | name, key_hash, prefix, revoked_at |
+| `AdminSession` | Login tokens | token_hash, expires_at, revoked_at |
 | `DailyCostRollup` | Daily aggregations | unique on (date, agent, model, provider); `archived` once the day's events are pruned |
 
 Indexes on: `CostEvent.timestamp`, `CostEvent.agent_name`
@@ -138,7 +141,7 @@ Indexes on: `CostEvent.timestamp`, `CostEvent.agent_name`
 
 ## API structure
 - Base: `/api/v1`
-- Auth: `Authorization: Bearer <api_key>` on all routes except `/setup`, `/auth/login`
+- Auth: see Stack. Public: `/setup`, `/auth/login`, `/auth/logout`, health
 - Event ingestion: `POST /api/v1/events` (single, bare array, or `{"events": [...]}` envelope; batch capped by `CMA_MAX_EVENTS_PER_REQUEST`)
 - Chat: `POST /api/v1/chat/stream` (SSE), `POST /api/v1/chat` (non-streaming)
 - Semantic search: `POST /api/v1/search/semantic`
@@ -178,7 +181,7 @@ docker compose --profile observability up -d
 - Budgets never discard spend: ingestion always stores the event (flagged `over_budget` when a matching blocking budget was already exhausted). Enforcement is pre-call: `GET /budgets/check` + SDK `enforce_budgets=True` → `BudgetExceeded`. Every action except `alert` blocks; `throttle`/`rate_limit`/`model_downgrade` are legacy aliases of block. Response field `rejected` is always 0 (kept for compatibility)
 - SQLite savepoints: pysqlite opens a transaction only at the first write statement, so a `begin_nested()` before any write commits on RELEASE. Ingestion opens `BEGIN IMMEDIATE` up front on SQLite for this reason (OPS-07); any new savepoint use on SQLite needs the same (or a commit-per-row design, as in `check_budgets`). Ingestion therefore holds the write lock for the whole batch: concurrent writers wait up to the SQLite busy timeout (5 s; `?timeout=N` on the URL) and then get a 500 with nothing stored — keep that timeout below the SDK's read timeout (10 s)
 - `int(row.total_tokens_in)` can throw TypeError if NULL — always use `int(x or 0)` pattern
-- API key stored as plaintext in SetupConfig despite bcrypt being imported — password uses hash, key does not
+- The shared key in `SetupConfig.api_key` is plaintext and unusable unless `legacy_key_enabled`; ingest keys and sessions store only a SHA-256 hash
 - On Windows, npm/npx are .cmd shims — `Start-Process` needs `cmd.exe /c npm`, not `npm` directly
 - `AlertChannelCreate.channel_type` lists only what `dispatch_alert` delivers; add a type in both places
 - Vite proxy (`/api` -> localhost:8000) only works in dev; prod nginx handles routing
