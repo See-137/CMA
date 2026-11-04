@@ -103,6 +103,9 @@ class CostEvent(Base):
     __tablename__ = "cost_events"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    # Client-generated id: a resend after a lost response stores nothing
+    # (ACC-10). Unique when present; NULL for clients that send none.
+    event_id = Column(String(64), nullable=True)
     trace_id = Column(String(255), index=True, nullable=True)
     agent_id = Column(Integer, ForeignKey("agents.id"), nullable=True)
     agent_name = Column(String(255), nullable=False)
@@ -138,6 +141,7 @@ class CostEvent(Base):
     __table_args__ = (
         Index("ix_cost_events_timestamp", "timestamp"),
         Index("ix_cost_events_agent_name", "agent_name"),
+        UniqueConstraint("event_id", name="uq_cost_events_event_id"),
     )
 
 

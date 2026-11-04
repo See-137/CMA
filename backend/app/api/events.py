@@ -61,6 +61,21 @@ def _event_cost(event: EventIn, db: Session) -> tuple[float, str]:
     )
 
 
+def _already_stored(events: list[EventIn], db: Session) -> set[str]:
+    ids = [e.event_id for e in events if e.event_id is not None]
+    if not ids:
+        return set()
+    rows = db.query(CostEvent.event_id).filter(CostEvent.event_id.in_(ids)).all()
+    return {row[0] for row in rows}
+
+
+def _is_duplicate_event(exc: IntegrityError) -> bool:
+    """Only the event-id key means 'already stored' (Postgres names the
+    constraint, SQLite the column); any other conflict is a real failure."""
+    text = str(getattr(exc, "orig", exc))
+    return "uq_cost_events_event_id" in text or "cost_events.event_id" in text
+
+
 def _process_event(
     event: EventIn, db: Session, cost: float, cost_source: str | None = None
 ) -> CostEvent:
@@ -90,6 +105,7 @@ def _process_event(
     timestamp = event.timestamp if event.timestamp else utcnow()
 
     cost_event = CostEvent(
+        event_id=event.event_id,
         trace_id=event.trace_id,
         agent_id=agent.id,
         agent_name=event.agent_name,
@@ -165,6 +181,8 @@ def ingest_events(
 
     processed = 0
     errored = 0
+    duplicates = 0
+    seen_ids = _already_stored(events, db)
     over_budget = 0
     budget_violations: list[str] = []
     created: list[CostEvent] = []
@@ -175,6 +193,11 @@ def ingest_events(
         enforcement = load_enforcement_state(db)
 
     for event in events:
+        if event.event_id is not None:
+            if event.event_id in seen_ids:
+                duplicates += 1
+                continue
+            seen_ids.add(event.event_id)
         cost, cost_source = _event_cost(event, db)
 
         # The call already happened: always record it. If a blocking budget
@@ -214,6 +237,12 @@ def ingest_events(
                 provider=event.provider,
                 model=event.model,
             )
+        except IntegrityError as exc:
+            if event.event_id is not None and _is_duplicate_event(exc):
+                duplicates += 1  # a concurrent retry stored it first
+            else:
+                errored += 1
+                logger.exception("Failed to process event")
         except Exception:
             errored += 1
             logger.exception("Failed to process event")
@@ -276,6 +305,7 @@ def ingest_events(
 
     return EventsIngestionResponse(
         received=len(events),
+        duplicates=duplicates,
         processed=processed,
         rejected=0,
         errored=errored,

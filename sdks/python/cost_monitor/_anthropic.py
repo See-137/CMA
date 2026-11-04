@@ -8,6 +8,11 @@ import uuid
 from typing import Any, AsyncIterator, Iterator
 
 from cost_monitor._patching import (
+    MAX_ERROR_LEN,
+    araw_response_usage,
+    is_raw_call,
+    raw_response_usage,
+    raw_usage_readable,
     InstrumentedAsyncStream,
     InstrumentedStream,
     StreamState,
@@ -69,7 +74,7 @@ def _log_failure(
         duration_ms=int((time.time() - start) * 1000),
         status="failure",
         trace_id=trace_id,
-        metadata={"error": str(exc)},
+        metadata={"error": str(exc)[:MAX_ERROR_LEN]},
     )
 
 
@@ -480,6 +485,32 @@ def _log_response_usage(tracker, model, trace_id, start, response) -> None:
         _warn_untracked_response()
 
 
+def _log_raw(tracker, model, trace_id, start, usage) -> None:
+    """with_raw_response / with_streaming_response: the caller gets the vendor's
+    own object, untouched. Usage is read where that is safe; a streamed body
+    belongs to the caller, so the call is recorded with unknown tokens."""
+    if usage:
+        fields = usage_fields(usage)
+        _log_tokens(
+            tracker,
+            model,
+            trace_id,
+            start,
+            fields["tokens_input"],
+            fields["tokens_output"],
+            cache=cache_kwargs(fields),
+        )
+        return
+    tracker.log_event(
+        model=model,
+        provider="anthropic",
+        duration_ms=int((time.time() - start) * 1000),
+        status="incomplete",
+        trace_id=trace_id,
+        metadata={"reason": "raw streamed response: token counts not visible to CMA"},
+    )
+
+
 def _make_create(original):
     """Wrapper for create()/parse(): non-streaming responses carry usage;
     stream=True returns an instrumented event stream."""
@@ -498,6 +529,10 @@ def _make_create(original):
         except BaseException as exc:
             _log_setup_exit(tracker, model, trace_id, start, exc)
             raise
+        if is_raw_call(kwargs):
+            usage = raw_response_usage(response) if raw_usage_readable(kwargs) else None
+            _log_raw(tracker, model, trace_id, start, usage)
+            return response
         if kwargs.get("stream", False):
             state = StreamState(lambda: _log_unread(tracker, model, trace_id, start))
             gen = _wrap_sync_stream(response, tracker, model, trace_id, start, state)
@@ -523,6 +558,14 @@ def _make_acreate(original):
         except BaseException as exc:
             _log_setup_exit(tracker, model, trace_id, start, exc)
             raise
+        if is_raw_call(kwargs):
+            usage = (
+                await araw_response_usage(response)
+                if raw_usage_readable(kwargs)
+                else None
+            )
+            _log_raw(tracker, model, trace_id, start, usage)
+            return response
         if kwargs.get("stream", False):
             state = StreamState(lambda: _log_unread(tracker, model, trace_id, start))
             gen = _wrap_async_stream(response, tracker, model, trace_id, start, state)
