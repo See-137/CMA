@@ -115,6 +115,10 @@ def usage_fields(usage: Any) -> dict[str, int]:
     cached = min(_int(_get(details, "cached_tokens")), tokens_in)
     out["tokens_input"] = tokens_in
     out["tokens_cache_read"] = cached
+    # Billed at the write rate (GPT-5.6 and later) and part of the input total.
+    out["tokens_cache_write"] = min(
+        _int(_get(details, "cache_write_tokens")), tokens_in - cached
+    )
     return out
 
 

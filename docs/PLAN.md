@@ -60,7 +60,7 @@ spend is always recorded; the guarantee (soft limit, timing, concurrency) is
 documented; period boundaries follow the chosen time zone and are labelled; one
 alert per threshold per period under concurrency (BUD-06).
 
-**S4 Instrumentation coverage and delivery** — Open. ACC-08/09 (D3) done in `feat/cache-tokens`.
+**S4 Instrumentation coverage and delivery** — Done (`feat/cache-tokens`, `feat/sdk-reliability`).
 Accept when: every listed OpenAI/Anthropic surface (sync, async, stream, parse, raw)
 yields exactly one event with correct tokens; the SDK never changes what user code
 receives (SDK-02); partial streams keep their tokens; no double counting with
@@ -218,3 +218,4 @@ Owner decisions (2026-10-28):
 - 2026-11-04 — Owner: finish everything autonomously. Status re-audit found current models unpriced (ACC-22), tiered pricing unsupported (ACC-23), undeliverable alert channels (UX-05), compose ignoring LLM settings (OPS-08), npm advisories (OPS-09). Pricing moved ahead of the remaining S4 work.
 - 2026-11-04 — `fix/cheap-hardening`: SEC-02/05/06/07/08/09, RAG-11/12/13, OPS-02/08/09, ACC-16, BUD-05, UX-03/05. Backend tests → 294 (after review fixes).
 - 2026-11-04 — `feat/current-pricing`: ACC-11/20/22/23, migration 007, reprice of priced events, unpriced alerts and warnings. New ACC-24.
+- 2026-11-04 — `feat/sdk-reliability`: ACC-10 (migration 008), SDK-01 remainder, SDK-04..12. S4 complete.

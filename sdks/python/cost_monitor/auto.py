@@ -16,6 +16,8 @@ def auto_instrument(
     endpoint: str,
     api_key: str,
     default_agent: str = "auto",
+    default_workflow: str | None = None,
+    default_swarm: str | None = None,
     flush_interval: float = 5.0,
     inject_stream_usage: bool = True,
     enforce_budgets: bool = False,
@@ -45,13 +47,15 @@ def auto_instrument(
     of spend. An uncached check blocks the calling thread for at most
     budget_check_timeout seconds (async callers wait in a worker thread).
 
-    LangChain note: this function registers a :class:`CMACallbackHandler` in
-    LangChain's global callback manager when langchain_core (or langchain) is
-    installed. If you need per-chain control, import and attach the handler
-    manually instead::
+    Attribution: patched calls are recorded under ``default_agent`` unless made
+    inside ``with attribution(agent=..., workflow=...)``.
+
+    LangChain: models built on the OpenAI or Anthropic clients are recorded by
+    these patches. For any other model, attach the handler yourself (it records
+    each call once either way; langchain_core has no global callback manager)::
 
         from cost_monitor._langchain import CMACallbackHandler
-        llm = ChatOpenAI(callbacks=[CMACallbackHandler(tracker)])
+        llm = SomeChatModel(callbacks=[CMACallbackHandler(tracker)])
     """
     global _tracker, _atexit_registered
 
@@ -62,6 +66,8 @@ def auto_instrument(
         endpoint=endpoint,
         api_key=api_key,
         default_agent=default_agent,
+        default_workflow=default_workflow,
+        default_swarm=default_swarm,
         flush_interval=flush_interval,
         budget_check_ttl=budget_check_ttl,
         budget_check_timeout=budget_check_timeout,
@@ -88,38 +94,6 @@ def auto_instrument(
         logger.info("Anthropic auto-instrumentation enabled")
     except ImportError:
         pass
-
-    # Register LangChain global callback if langchain_core or langchain is
-    # installed. On modern langchain_core the global manager is unavailable
-    # and this falls through to the manual-attach advisory.
-    try:
-        from cost_monitor._langchain import CMACallbackHandler
-
-        handler = CMACallbackHandler(_tracker)
-
-        try:
-            from langchain_core.callbacks import get_callback_manager  # type: ignore[attr-defined]
-
-            get_callback_manager().add_handler(handler, inherit=True)
-            logger.info(
-                "LangChain auto-instrumentation enabled (global callback manager)"
-            )
-        except (ImportError, AttributeError):
-            try:
-                from langchain.callbacks import get_callback_manager as _gcm  # type: ignore[attr-defined]
-
-                _gcm().add_handler(handler)
-                logger.info(
-                    "LangChain auto-instrumentation enabled (legacy callback manager)"
-                )
-            except (ImportError, AttributeError):
-                logger.info(
-                    "LangChain detected but global callback manager unavailable. "
-                    "Attach CMACallbackHandler manually: "
-                    "llm = ChatOpenAI(callbacks=[CMACallbackHandler(tracker)])"
-                )
-    except ImportError:
-        pass  # langchain not installed
 
     if not _atexit_registered:
         atexit.register(stop)

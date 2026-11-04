@@ -325,3 +325,66 @@ def test_concurrent_batches_on_sqlite_all_land(tmp_path, monkeypatch):
     with Session() as db:
         assert db.query(CostEvent).count() == 8 * 20
     engine.dispose()
+
+
+def _idem(event_id, **kw):
+    return {
+        "event_id": event_id,
+        "agent_name": "a",
+        "model": "gpt-4o",
+        "provider": "openai",
+        "tokens_input": 1000,
+        "tokens_output": 100,
+        **kw,
+    }
+
+
+def test_resent_event_is_stored_once(authed_client):
+    first = authed_client.post("/api/v1/events", json={"events": [_idem("e1")]}).json()
+    again = authed_client.post("/api/v1/events", json={"events": [_idem("e1")]}).json()
+    assert (first["processed"], first["duplicates"]) == (1, 0)
+    assert (again["processed"], again["duplicates"], again["errored"]) == (0, 1, 0)
+    assert authed_client.get("/api/v1/events").json()["total"] == 1
+
+
+def test_duplicate_inside_one_batch_is_stored_once(authed_client):
+    body = {"events": [_idem("e1"), _idem("e1"), _idem("e2")]}
+    result = authed_client.post("/api/v1/events", json=body).json()
+    assert (result["processed"], result["duplicates"]) == (2, 1)
+
+
+def test_events_without_an_id_are_never_deduplicated(authed_client):
+    event = {k: v for k, v in _idem("x").items() if k != "event_id"}
+    for _ in range(2):
+        authed_client.post("/api/v1/events", json=event)
+    assert authed_client.get("/api/v1/events").json()["total"] == 2
+
+
+def test_a_duplicate_does_not_count_toward_budgets_again(authed_client):
+    authed_client.post(
+        "/api/v1/budgets",
+        json={
+            "name": "b",
+            "scope": "global",
+            "period": "daily",
+            "limit_amount": 1000,
+            "control_action": "alert",
+        },
+    )
+    for _ in range(3):
+        authed_client.post("/api/v1/events", json={"events": [_idem("e1")]})
+    assert authed_client.get("/api/v1/budgets").json()[0]["current_spend"] < 0.004
+
+
+def test_concurrent_retry_losing_the_race_counts_as_duplicate(
+    authed_client, monkeypatch
+):
+    """Both requests passed the pre-check; the unique key decides."""
+    from app.api import events as events_api
+
+    authed_client.post("/api/v1/events", json={"events": [_idem("e1")]})
+    monkeypatch.setattr(events_api, "_already_stored", lambda *a: set())
+    result = authed_client.post(
+        "/api/v1/events", json={"events": [_idem("e1"), _idem("e2")]}
+    ).json()
+    assert (result["processed"], result["duplicates"], result["errored"]) == (1, 1, 0)

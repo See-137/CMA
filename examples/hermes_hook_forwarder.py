@@ -37,6 +37,7 @@ import re
 import sys
 import urllib.error
 import urllib.request
+import uuid
 
 ENV_PATH = os.path.expanduser("~/.hermes/agent-hooks/cma_forward.env")
 SPOOL_PATH = os.path.expanduser("~/.hermes/agent-hooks/cma_spool.jsonl")
@@ -166,6 +167,8 @@ def _map_event(payload, agent_name: str) -> dict | None:
     if not model or not provider:
         return None
     return {
+        # Spooled events are retried: the server stores this id once.
+        "event_id": uuid.uuid4().hex,
         "agent_name": agent_name,
         "model": _normalize_model(str(model)),
         "provider": PROVIDER_NAMES.get(provider, provider.capitalize()),

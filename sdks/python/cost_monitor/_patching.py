@@ -18,6 +18,7 @@ Design notes:
 
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Iterator
 
@@ -33,6 +34,43 @@ config: dict[str, Any] = {"inject_stream_usage": True, "enforce_budgets": False}
 
 # key -> (owner, attr_name, pristine_original, our_wrapper)
 _originals: dict[str, tuple[Any, str, Any, Any]] = {}
+
+
+# Set by the vendors' with_raw_response / with_streaming_response wrappers.
+RAW_RESPONSE_HEADER = "X-Stainless-Raw-Response"
+MAX_ERROR_LEN = 500
+
+
+def is_raw_call(kwargs: dict[str, Any]) -> bool:
+    headers = kwargs.get("extra_headers")
+    return isinstance(headers, dict) and RAW_RESPONSE_HEADER in headers
+
+
+def raw_usage_readable(kwargs: dict[str, Any]) -> bool:
+    """A streamed body belongs to the caller: reading it here would consume it.
+    with_streaming_response sets the header to "stream" even without stream=True."""
+    headers = kwargs.get("extra_headers") or {}
+    return headers.get(RAW_RESPONSE_HEADER) != "stream" and not kwargs.get("stream")
+
+
+def raw_response_usage(response: Any) -> Any:
+    """Usage of a non-streamed with_raw_response result. ``parse()`` caches, so
+    the caller's own call returns the same object."""
+    try:
+        return getattr(response.parse(), "usage", None)
+    except Exception:
+        return None
+
+
+async def araw_response_usage(response: Any) -> Any:
+    """Same; one vendor's async raw response has an async ``parse()``."""
+    try:
+        parsed = response.parse()
+        if inspect.isawaitable(parsed):
+            parsed = await parsed
+        return getattr(parsed, "usage", None)
+    except Exception:
+        return None
 
 
 def set_active_tracker(tracker: CostTracker | None) -> None:

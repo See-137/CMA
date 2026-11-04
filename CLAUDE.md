@@ -25,7 +25,7 @@
 ```powershell
 cd backend; pip install -r requirements-dev.txt; pytest
 ```
-- 340 backend tests (1 needs `CMA_TEST_PG_URL`, set in CI) (`backend/tests`) + 112 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
+- 346 backend tests (1 needs `CMA_TEST_PG_URL`, set in CI) (`backend/tests`) + 141 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
 - `test_events.py` — ingestion, auto-discovery (incl. race), UTC timestamp normalisation
 - `test_pricing.py` — pricing resolution, cost_source, reprice, reset-full reseed
 - `test_current_pricing.py` — current models, long-context billing, migration 007 vs seed, reprice of priced events, unpriced alerts
@@ -37,6 +37,7 @@ cd backend; pip install -r requirements-dev.txt; pytest
 - `test_auth.py` — setup + login
 - `test_budgets.py` — record-and-flag, pre-call check, validation, threshold alerts
 - `sdks/python/tests/test_budget_enforcement.py` — SDK pre-call enforcement (sync/async/stream, fail-open/closed, caching)
+- `sdks/python/tests/test_reliability.py` — idempotent ids, LangChain one-event rule, fork, bad events, exit flush, close budget, 413 splitting, attribution, raw responses
 - `sdks/python/tests/test_surface_coverage.py` / `test_stream_contract.py` — every instrumented surface records one event; streams unchanged for callers; early exit keeps tokens
 - SDK patch targets are listed in `sdks/python/tests/conftest.py::PATCH_TARGETS` (leak guard) — add new targets there
 - `test_dashboard.py` — metrics + rollups
@@ -69,6 +70,7 @@ cd backend; pip install -r requirements-dev.txt; pytest
 - **Alembic owns the schema** — migrations are authoritative (`alembic upgrade head`); the app no longer runs `create_all`
 - **Intent detection via regex, not LLM** — ~1ms vs ~500ms, LLM only for final answer generation
 - **httpx for LLM calls, no SDK** — already a dependency, avoids version lock-in
+- **Idempotent ingestion** — `event_id` is unique when present; a resend is counted in `duplicates` and stores nothing
 - **Background embedding** — event ingestion stays fast, embedding happens async (BackgroundTasks)
 - **Client-side chat history** — no session table, backend is stateless, history passed in request body
 - **Soft-delete pattern** — providers, agents, channels use `is_active=False`, never hard-deleted from UI

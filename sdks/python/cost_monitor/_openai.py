@@ -9,12 +9,17 @@ from cost_monitor._patching import (
     InstrumentedAsyncStream,
     InstrumentedStream,
     StreamState,
+    MAX_ERROR_LEN,
     config,
     aprecall_enforce,
     get_active_tracker,
     install,
     is_cancellation,
+    is_raw_call,
     precall_enforce,
+    raw_response_usage,
+    raw_usage_readable,
+    araw_response_usage,
 )
 from cost_monitor._usage import cache_kwargs, usage_fields
 
@@ -24,14 +29,11 @@ _warned_no_usage = False
 
 
 def _warn_untracked_response() -> None:
-    """A non-streaming response with no usage means the call bypassed
-    instrumentation — with_raw_response/with_streaming_response surfaces
-    return wrapper objects whose real content is parsed outside our code.
-    Warn once so the blind spot is visible, debug-log thereafter."""
+    """A non-streaming response with no usage: warn once so the blind spot is
+    visible, debug-log thereafter."""
     global _warned_no_usage
     msg = (
-        "cost_monitor: OpenAI response carried no usage — call NOT tracked. "
-        "with_raw_response/with_streaming_response bypass instrumentation."
+        "cost_monitor: OpenAI response carried no usage — call NOT tracked."
     )
     if _warned_no_usage:
         logger.debug(msg)
@@ -84,6 +86,12 @@ def _is_injected_usage_chunk(chunk: Any, hide: bool) -> bool:
     )
 
 
+def _long_write_ttl(kwargs: dict[str, Any]) -> bool:
+    """prompt_cache_options.ttl="12h" bills writes at the long rate."""
+    options = kwargs.get("prompt_cache_options")
+    return isinstance(options, dict) and options.get("ttl") == "12h"
+
+
 def _log_incomplete(tracker, model: str, trace_id: str, start: float) -> None:
     """The caller stopped reading before the provider reported usage. The
     call happened (input is billed) but its token counts are unknown."""
@@ -119,7 +127,26 @@ def _log_failure(
         duration_ms=int((time.time() - start) * 1000),
         status="failure",
         trace_id=trace_id,
-        metadata={"error": str(exc)},
+        metadata={"error": str(exc)[:MAX_ERROR_LEN]},
+    )
+
+
+def _log_raw(
+    tracker, model: str, trace_id: str, start: float, usage: Any, long_ttl: bool = False
+) -> None:
+    """with_raw_response / with_streaming_response: the caller gets the vendor's
+    own object, untouched. Usage is read where that is safe; a streamed body
+    belongs to the caller, so the call is recorded with unknown tokens."""
+    if usage:
+        _log_usage(tracker, model, trace_id, start, usage, long_write_ttl=long_ttl)
+        return
+    tracker.log_event(
+        model=model,
+        provider="openai",
+        duration_ms=int((time.time() - start) * 1000),
+        status="incomplete",
+        trace_id=trace_id,
+        metadata={"reason": "raw streamed response: token counts not visible to CMA"},
     )
 
 
@@ -160,8 +187,13 @@ def _log_usage(
     start: float,
     usage: Any,
     status: str = "success",
+    long_write_ttl: bool = False,
 ) -> None:
     fields = usage_fields(usage)
+    if long_write_ttl:
+        # Usage does not split writes by lifetime: the request says. A per-
+        # breakpoint override cannot be seen here (priced at the request's TTL).
+        fields["tokens_cache_write_1h"] = fields["tokens_cache_write"]
     tracker.log_event(
         model=model,
         provider="openai",
@@ -184,6 +216,7 @@ def _wrap_sync_stream(
     start: float,
     hide_usage_chunk: bool = False,
     state: StreamState | None = None,
+    long_write_ttl: bool = False,
 ) -> Iterator[Any]:
     """Yield every chunk unchanged (except a usage chunk CMA asked for);
     log usage after the final chunk."""
@@ -217,7 +250,7 @@ def _wrap_sync_stream(
         if error is not None:
             _log_failure(tracker, model, trace_id, start, error)
         elif usage is not None:
-            _log_usage(tracker, model, trace_id, start, usage, status)
+            _log_usage(tracker, model, trace_id, start, usage, status, long_write_ttl)
         elif closed_early or (state is not None and state.closed_by_caller):
             _log_incomplete(tracker, model, trace_id, start)
         else:
@@ -236,6 +269,7 @@ async def _wrap_async_stream(
     start: float,
     hide_usage_chunk: bool = False,
     state: StreamState | None = None,
+    long_write_ttl: bool = False,
 ) -> AsyncIterator[Any]:
     """Async counterpart of _wrap_sync_stream."""
     usage = None
@@ -268,7 +302,7 @@ async def _wrap_async_stream(
         if error is not None:
             _log_failure(tracker, model, trace_id, start, error)
         elif usage is not None:
-            _log_usage(tracker, model, trace_id, start, usage, status)
+            _log_usage(tracker, model, trace_id, start, usage, status, long_write_ttl)
         elif closed_early or (state is not None and state.closed_by_caller):
             _log_incomplete(tracker, model, trace_id, start)
         else:
@@ -291,7 +325,8 @@ def _make_sync_wrapper(original_create, inject_usage: bool = True):
         model = kwargs.get("model", "unknown")
         is_streaming = kwargs.get("stream", False)
         injected = False
-        if is_streaming and inject_usage:
+        raw = is_raw_call(kwargs)
+        if is_streaming and inject_usage and not raw:
             kwargs, injected = _maybe_inject_usage(kwargs)
 
         try:
@@ -300,19 +335,37 @@ def _make_sync_wrapper(original_create, inject_usage: bool = True):
             _log_setup_exit(tracker, model, trace_id, start, exc)
             raise
 
+        if raw:
+            usage = raw_response_usage(response) if raw_usage_readable(kwargs) else None
+            _log_raw(tracker, model, trace_id, start, usage, _long_write_ttl(kwargs))
+            return response
+
         if is_streaming:
             state = StreamState(
                 lambda: _log_incomplete(tracker, model, trace_id, start)
             )
             gen = _wrap_sync_stream(
-                response, tracker, model, trace_id, start, injected, state
+                response,
+                tracker,
+                model,
+                trace_id,
+                start,
+                injected,
+                state,
+                _long_write_ttl(kwargs),
             )
             return InstrumentedStream(response, gen, state)
 
         usage = getattr(response, "usage", None)
         if usage:
             _log_usage(
-                tracker, model, trace_id, start, usage, _outcome_status(response)
+                tracker,
+                model,
+                trace_id,
+                start,
+                usage,
+                _outcome_status(response),
+                _long_write_ttl(kwargs),
             )
         else:
             _warn_untracked_response()
@@ -333,7 +386,8 @@ def _make_async_wrapper(original_acreate, inject_usage: bool = True):
         model = kwargs.get("model", "unknown")
         is_streaming = kwargs.get("stream", False)
         injected = False
-        if is_streaming and inject_usage:
+        raw = is_raw_call(kwargs)
+        if is_streaming and inject_usage and not raw:
             kwargs, injected = _maybe_inject_usage(kwargs)
 
         try:
@@ -342,19 +396,41 @@ def _make_async_wrapper(original_acreate, inject_usage: bool = True):
             _log_setup_exit(tracker, model, trace_id, start, exc)
             raise
 
+        if raw:
+            usage = (
+                await araw_response_usage(response)
+                if raw_usage_readable(kwargs)
+                else None
+            )
+            _log_raw(tracker, model, trace_id, start, usage, _long_write_ttl(kwargs))
+            return response
+
         if is_streaming:
             state = StreamState(
                 lambda: _log_incomplete(tracker, model, trace_id, start)
             )
             gen = _wrap_async_stream(
-                response, tracker, model, trace_id, start, injected, state
+                response,
+                tracker,
+                model,
+                trace_id,
+                start,
+                injected,
+                state,
+                _long_write_ttl(kwargs),
             )
             return InstrumentedAsyncStream(response, gen, state)
 
         usage = getattr(response, "usage", None)
         if usage:
             _log_usage(
-                tracker, model, trace_id, start, usage, _outcome_status(response)
+                tracker,
+                model,
+                trace_id,
+                start,
+                usage,
+                _outcome_status(response),
+                _long_write_ttl(kwargs),
             )
         else:
             _warn_untracked_response()

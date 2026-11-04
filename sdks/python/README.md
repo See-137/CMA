@@ -97,6 +97,7 @@ with CostTracker(endpoint="http://localhost:8000", api_key="key") as tracker:
 | `budget_check_ttl` | `10.0` | Seconds a budget-check result is cached per attribution |
 | `budget_check_timeout` | `2.0` | Timeout of the budget-check request (an uncached check blocks the caller at most this long) |
 | `budget_fail_closed` | `False` | Treat an unreachable CMA as "budget exhausted" |
+| `close_timeout` | `5.0` | Upper limit in seconds for `close()`, including the flush at interpreter exit |
 
 ## What auto-instrumentation records
 
@@ -105,16 +106,39 @@ with CostTracker(endpoint="http://localhost:8000", api_key="key") as tracker:
 | OpenAI | `chat.completions.create` (incl. `stream=True`, `.stream()` helper), `chat.completions.parse`, legacy `completions.create`, `embeddings.create`, `responses.create` (incl. `stream=True`), `responses.parse` |
 | Anthropic | `messages.create` (incl. `stream=True`), `messages.parse`, `messages.stream`, and the same under `beta.messages` |
 
-Not yet recorded: `with_raw_response` / `with_streaming_response` variants (a
-streamed `with_raw_response` call also returns CMA's stream proxy rather than the
-SDK's raw-response object), resuming a Responses stream by `response_id`
-(`responses.stream(response_id=...)` / `retrieve`) (tracked as SDK-01 remainder
-in `docs/FINDINGS.md`).
+`with_raw_response` returns the vendor's own object and records the tokens. When the
+body is streamed (`with_streaming_response`, or `stream=True` on a raw call), the
+body belongs to your code, so the call is recorded as `incomplete` with unknown
+token counts. Not recorded: resuming a Responses stream by `response_id`
+(`responses.stream(response_id=...)` / `retrieve`), which starts no new generation.
+
+Each event carries a generated `event_id`, so a resend after a lost response is
+stored once. A `CostTracker` flushes at interpreter exit and works in forked
+children (gunicorn, Celery prefork); a process that ends with `os._exit`, as
+`multiprocessing` children do, must call `flush()` or `close()` itself. `close()`
+takes at most `close_timeout` seconds. `tracker.stats` reports `sent`, `dropped`,
+`rejected` and `duplicates`.
+
+Patched calls go to `default_agent` unless you attribute them:
+
+```python
+from cost_monitor import attribution
+
+with attribution(agent="researcher", workflow="nightly"):
+    client.chat.completions.create(...)
+```
+
+`CMACallbackHandler` is safe next to `auto_instrument`: when a patched client records
+the call, the handler adds no second event and the patched event takes the handler's
+agent and workflow. LangChain has no global callback manager any more, so attach the
+handler to models that are not built on the OpenAI or Anthropic clients.
 
 Prompt-cache tokens are recorded on every surface above: Anthropic cache reads and
 writes (5-minute and 1-hour) are added to `tokens_input` and sent as
 `tokens_cache_read` / `tokens_cache_write` / `tokens_cache_write_1h`; OpenAI's
-`cached_tokens` is sent as `tokens_cache_read`. The backend prices them at the
+`cached_tokens` is sent as `tokens_cache_read` and `cache_write_tokens` as
+`tokens_cache_write` (at the long rate when the request sets
+`prompt_cache_options.ttl="12h"`; a per-breakpoint TTL is not visible to CMA). The backend prices them at the
 model's cache prices. `log_event`, `log_completion` and the LangChain handler take
 the same fields; `log_event` clamps cache counts that exceed `tokens_input` (the
 backend would reject the whole batch).

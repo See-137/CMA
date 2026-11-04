@@ -183,3 +183,24 @@ def test_006_adds_cache_fields_and_backfills_only_untouched_anthropic_rows(tmp_p
         assert c.execute(text("SELECT COUNT(*) FROM model_pricing")).scalar() == 4
         assert c.execute(text("SELECT COUNT(*) FROM cost_events")).scalar() == 1
     eng.dispose()
+
+
+def test_008_keeps_events_and_allows_many_without_an_id(tmp_path):
+    url = f"sqlite:///{tmp_path / 'mig.db'}"
+    _alembic(url, "upgrade", "007")
+    insert = text(
+        "INSERT INTO cost_events (agent_name, model_name, provider_name, "
+        "tokens_input, tokens_output, cost, timestamp) VALUES "
+        "('a','m','p',1,1,0.1,'2026-10-28 00:00:00')"
+    )
+    eng = create_engine(url)
+    with eng.begin() as c:
+        c.execute(insert)
+    eng.dispose()
+    _alembic(url, "upgrade", "008")
+    eng = create_engine(url)
+    with eng.begin() as c:
+        c.execute(insert)
+        assert c.execute(text("SELECT COUNT(*) FROM cost_events")).scalar() == 2
+    eng.dispose()
+    _alembic(url, "downgrade", "007")

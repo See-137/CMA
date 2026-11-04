@@ -162,6 +162,8 @@ class _Handler(BaseHTTPRequestHandler):
 
         if isinstance(directive, str) and directive.startswith("hang:"):
             time.sleep(float(directive.split(":", 1)[1]))
+        elif isinstance(directive, dict):
+            response_body = directive  # e.g. a body reporting rejected events
         elif directive == "validate":
             bad = _invalid_indices(events)
             if bad:

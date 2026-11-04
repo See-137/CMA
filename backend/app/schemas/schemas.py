@@ -123,6 +123,8 @@ class LoginResponse(BaseModel):
 
 
 class EventIn(BaseModel):
+    # Optional idempotency key: the same id is stored once, however often sent.
+    event_id: str | None = Field(default=None, min_length=1, max_length=64)
     trace_id: str | None = Field(default=None, max_length=255)
     agent_name: str = Field(min_length=1, max_length=255)
     model: str = Field(min_length=1, max_length=255)
@@ -218,6 +220,8 @@ class EventsIngestionResponse(BaseModel):
     # Events that failed to persist (server-side error). Non-zero means the
     # caller's data was NOT stored even though the request returned 200.
     errored: int = 0
+    # Events whose event_id was already stored: a retry, nothing new was billed.
+    duplicates: int = 0
     # Stored events that arrived while a matching blocking budget was
     # already exhausted (flagged over_budget).
     over_budget: int = 0
