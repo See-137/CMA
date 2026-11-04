@@ -2,7 +2,7 @@ import ipaddress
 import json
 import logging
 import socket
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import unquote, urlparse, urlunparse
 
 import httpx
 from sqlalchemy.orm import Session
@@ -28,10 +28,11 @@ def _disallowed(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return not ip.is_global or ip.is_multicast or ip.is_unspecified
 
 
-def _resolve_allowed(url: str) -> tuple[str, str | None]:
-    """Check a webhook URL; return (host, a validated address to connect to).
+def _resolve_allowed(url: str) -> tuple[str, list[str]]:
+    """Check a webhook URL; return (host, validated addresses to connect to).
 
-    The address is None when private targets are allowed (no pinning needed).
+    The list is empty when private targets are allowed (no pinning needed).
+    Every address must pass: one internal answer rejects the whole host.
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
@@ -41,24 +42,25 @@ def _resolve_allowed(url: str) -> tuple[str, str | None]:
         raise UnsafeWebhookURL("URL has no host")
 
     if settings.ALLOW_PRIVATE_WEBHOOKS:
-        return host, None
+        return host, []
 
     try:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror as exc:
         raise UnsafeWebhookURL(f"Could not resolve host: {host}") from exc
 
-    addresses = []
+    addresses: list[str] = []
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
         if _disallowed(ip):
             raise UnsafeWebhookURL(
                 f"URL resolves to a disallowed address ({ip}) — refusing to send"
             )
-        addresses.append(str(ip))
+        if str(ip) not in addresses:
+            addresses.append(str(ip))
     if not addresses:
         raise UnsafeWebhookURL(f"Could not resolve host: {host}")
-    return host, addresses[0]
+    return host, addresses
 
 
 def validate_external_url(url: str) -> str:
@@ -73,22 +75,35 @@ def validate_external_url(url: str) -> str:
 
 
 def _post_json(url: str, payload: dict) -> httpx.Response:
-    """POST to the address that was validated, not a fresh DNS answer.
+    """POST to an address that was validated, not a fresh DNS answer.
 
     Resolving twice would let a rebinding DNS server pass the check with a
     public address and then answer with an internal one (SEC-05). TLS still
-    verifies against the original host name.
+    verifies against the original host name. Addresses are tried in order on
+    connection failures only, so a dual-stack host with no usable IPv6 route
+    still gets its alert; a response from the server is final.
     """
-    host, address = _resolve_allowed(url)
+    host, addresses = _resolve_allowed(url)
     with httpx.Client(timeout=10, follow_redirects=False) as client:
-        if address is None:
+        if not addresses:
             resp = client.post(url, json=payload)
-        else:
-            parsed = urlparse(url)
+            resp.raise_for_status()
+            return resp
+
+        parsed = urlparse(url)
+        # The pinned URL has no user:pass@, so credentials go in the header.
+        auth = None
+        if parsed.username is not None:
+            auth = httpx.BasicAuth(
+                unquote(parsed.username), unquote(parsed.password or "")
+            )
+        host_only = f"[{host}]" if ":" in host else host
+        host_header = f"{host_only}:{parsed.port}" if parsed.port else host_only
+        last_error: httpx.TransportError | None = None
+        for address in addresses:
             netloc = f"[{address}]" if ":" in address else address
             if parsed.port:
                 netloc = f"{netloc}:{parsed.port}"
-            host_header = f"{host}:{parsed.port}" if parsed.port else host
             request = client.build_request(
                 "POST",
                 urlunparse(parsed._replace(netloc=netloc)),
@@ -96,9 +111,14 @@ def _post_json(url: str, payload: dict) -> httpx.Response:
                 headers={"Host": host_header},
                 extensions={"sni_hostname": host},
             )
-            resp = client.send(request)
-        resp.raise_for_status()
-    return resp
+            try:
+                resp = client.send(request, auth=auth)
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                last_error = exc
+                continue
+            resp.raise_for_status()
+            return resp
+        raise last_error  # type: ignore[misc]  # addresses is never empty here
 
 
 def dispatch_alert(alert: Alert, db: Session) -> None:

@@ -1,5 +1,6 @@
 """Inputs and credentials must fail cleanly; status endpoints must tell the truth."""
 
+import base64
 import json
 import socket
 
@@ -172,9 +173,98 @@ def test_webhook_connects_to_the_validated_address(monkeypatch):
     assert seen["sni"] == "hooks.example.com"
 
 
+def _mock_transport(monkeypatch, handler):
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        alert_service.httpx,
+        "Client",
+        lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw),
+    )
+
+
+def test_webhook_falls_back_across_validated_addresses(monkeypatch):
+    """Dual-stack host with no IPv6 route: the IPv4 answer still gets the alert."""
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [
+            (socket.AF_INET6, 1, 6, "", ("2606:4700::1111", 443, 0, 0)),
+            (socket.AF_INET, 1, 6, "", ("93.184.216.34", 443)),
+        ],
+    )
+    tried = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        tried.append(request.url.host)
+        if ":" in request.url.host:
+            raise httpx.ConnectError("no route", request=request)
+        return httpx.Response(200)
+
+    _mock_transport(monkeypatch, handler)
+    alert_service._post_json("https://hooks.example.com/x", {"a": 1})
+    assert tried == ["2606:4700::1111", "93.184.216.34"]
+
+
+def test_webhook_does_not_resend_after_a_server_response(monkeypatch):
+    """Only a failed connection moves on: a 500 must not deliver the alert twice."""
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [
+            (socket.AF_INET, 1, 6, "", ("93.184.216.34", 443)),
+            (socket.AF_INET, 1, 6, "", ("93.184.216.35", 443)),
+        ],
+    )
+    tried = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        tried.append(request.url.host)
+        return httpx.Response(500)
+
+    _mock_transport(monkeypatch, handler)
+    with pytest.raises(httpx.HTTPStatusError):
+        alert_service._post_json("https://hooks.example.com/x", {"a": 1})
+    assert tried == ["93.184.216.34"]
+
+
+def test_webhook_raises_when_no_address_connects(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, 1, 6, "", ("93.184.216.34", 443))],
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    _mock_transport(monkeypatch, handler)
+    with pytest.raises(httpx.ConnectError):
+        alert_service._post_json("https://hooks.example.com/x", {"a": 1})
+
+
+def test_webhook_keeps_url_credentials_when_pinned(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, 1, 6, "", ("93.184.216.34", 443))],
+    )
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers.get("authorization")
+        seen["url"] = str(request.url)
+        return httpx.Response(200)
+
+    _mock_transport(monkeypatch, handler)
+    alert_service._post_json("https://us%40er:p%3Ass@hooks.example.com/x", {"a": 1})
+    expected = base64.b64encode(b"us@er:p:ss").decode()
+    assert seen["auth"] == f"Basic {expected}"
+    assert "us" not in seen["url"].split("/")[2]
+
+
 def test_channel_responses_mask_webhook_secrets(authed_client, monkeypatch):
     monkeypatch.setattr(
-        alert_service, "_resolve_allowed", lambda url: ("hooks.slack.com", "1.1.1.1")
+        alert_service, "_resolve_allowed", lambda url: ("hooks.slack.com", ["1.1.1.1"])
     )
     created = authed_client.post(
         "/api/v1/alerts/channels",
