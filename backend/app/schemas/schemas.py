@@ -59,7 +59,11 @@ class SetupRequest(BaseModel):
     @field_validator("admin_password")
     @classmethod
     def _bcrypt_limit(cls, v: str) -> str:
-        if len(v.encode()) > 72:
+        try:
+            raw = v.encode()
+        except UnicodeEncodeError as exc:
+            raise ValueError("admin_password contains invalid characters") from exc
+        if len(raw) > 72:
             raise ValueError("admin_password cannot be longer than 72 bytes")
         return v
 
@@ -75,6 +79,11 @@ class SetupRequest(BaseModel):
 class ReconnectRequest(BaseModel):
     admin_email: str
     admin_password: str
+
+    @field_validator("admin_email")
+    @classmethod
+    def _trim_email(cls, v: str) -> str:
+        return v.strip()  # setup stores it trimmed
 
 
 class SetupResponse(BaseModel):
@@ -98,6 +107,11 @@ class SetupStatusResponse(BaseModel):
 class LoginRequest(BaseModel):
     email: str
     password: str
+
+    @field_validator("email")
+    @classmethod
+    def _trim_email(cls, v: str) -> str:
+        return v.strip()  # setup stores it trimmed
 
 
 class LoginResponse(BaseModel):
@@ -466,6 +480,29 @@ class AlertChannelCreate(BaseModel):
     config: str = Field(max_length=4000)
 
 
+_SECRET_KEY = re.compile(r"secret|token|password|passwd|api_?key|auth", re.IGNORECASE)
+
+
+def _mask_config(value, key: str = ""):
+    """Copy a channel config with secrets hidden, at any depth."""
+    if isinstance(value, dict):
+        return {k: _mask_config(v, str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_mask_config(v, key) for v in value]
+    if not isinstance(value, str):
+        return value
+    if _SECRET_KEY.search(key):
+        return "***"
+    if "://" in value:
+        # A webhook URL is a bearer secret: show where it points, not the path.
+        try:
+            parsed = urlsplit(value)
+            return f"{parsed.scheme}://{parsed.hostname or ''}/***"
+        except ValueError:
+            return "***"
+    return value
+
+
 class AlertChannelOut(BaseModel):
     id: int
     name: str
@@ -480,21 +517,14 @@ class AlertChannelOut(BaseModel):
     @field_validator("config_json")
     @classmethod
     def _mask_secrets(cls, v: str) -> str:
-        """A webhook URL is a bearer secret: show where it points, not the path."""
+        """Secrets in a channel config never leave the API (SEC-07)."""
         try:
             config = json.loads(v)
         except (json.JSONDecodeError, TypeError):
             return "{}"
         if not isinstance(config, dict):
             return "{}"
-        masked = {}
-        for key, value in config.items():
-            if isinstance(value, str) and "://" in value:
-                parsed = urlsplit(value)
-                masked[key] = f"{parsed.scheme}://{parsed.hostname or ''}/***"
-            else:
-                masked[key] = value
-        return json.dumps(masked)
+        return json.dumps(_mask_config(config))
 
 
 # -- Dashboard ----------------------------------------------------------------

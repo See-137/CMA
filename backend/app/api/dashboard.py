@@ -61,7 +61,7 @@ def _prev_period_bounds(period: str, tz: ZoneInfo) -> tuple[datetime, datetime]:
 def _pct_change(current: float, previous: float) -> float | None:
     """None when there is no baseline; a made-up +100% reads as a doubling."""
     if previous == 0:
-        return None
+        return 0.0 if current == 0 else None
     return round(((current - previous) / previous) * 100, 2)
 
 

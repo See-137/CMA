@@ -13,23 +13,27 @@ from app.services.rate_limit import limit_failures
 BCRYPT_MAX_BYTES = 72
 
 
+def _bytes(text: str) -> bytes:
+    """Never raises: JSON can carry lone surrogates, which plain encode() refuses."""
+    return text.encode("utf-8", "surrogatepass")
+
+
 def safe_compare(a: str, b: str) -> bool:
     """Constant-time string comparison that accepts any characters.
 
     ``hmac.compare_digest`` raises TypeError on non-ASCII str, which turned a
     malformed credential into a 500 (SEC-08).
     """
-    return hmac.compare_digest(a.encode(), b.encode())
+    return hmac.compare_digest(_bytes(a), _bytes(b))
 
 
 def _verify_password(plain: str, hashed: str) -> bool:
     """Constant-time password check supporting bcrypt and legacy SHA-256."""
-    raw = plain.encode()
+    raw = _bytes(plain)
     if hashed.startswith(("$2b$", "$2a$")):
-        # No stored bcrypt hash can match more than 72 bytes (setup rejects them).
-        if len(raw) > BCRYPT_MAX_BYTES:
-            return False
-        return bcrypt.checkpw(raw, hashed.encode())
+        # bcrypt 4 silently hashed the first 72 bytes of a longer password and
+        # bcrypt 5 raises on one: truncating keeps those admins able to log in.
+        return bcrypt.checkpw(raw[:BCRYPT_MAX_BYTES], hashed.encode())
     return hmac.compare_digest(hashlib.sha256(raw).hexdigest(), hashed)
 
 

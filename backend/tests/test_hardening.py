@@ -1,15 +1,28 @@
 """Inputs and credentials must fail cleanly; status endpoints must tell the truth."""
 
 import base64
+import hashlib
 import json
 import socket
 
+import bcrypt
 import httpx
 import pytest
 
 from app.config import settings
+from app.models.models import SetupConfig
 from app.services import alert_service
 from app.services.alert_service import UnsafeWebhookURL, validate_external_url
+from tests.conftest import TestSession
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_proxy(monkeypatch):
+    """Delivery depends on proxy settings: tests choose their own."""
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+
 
 SETUP = {"admin_email": "a@b.c", "timezone": "UTC"}
 
@@ -222,7 +235,7 @@ def test_webhook_does_not_resend_after_a_server_response(monkeypatch):
         return httpx.Response(500)
 
     _mock_transport(monkeypatch, handler)
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(alert_service.WebhookFailed):
         alert_service._post_json("https://hooks.example.com/x", {"a": 1})
     assert tried == ["93.184.216.34"]
 
@@ -238,7 +251,7 @@ def test_webhook_raises_when_no_address_connects(monkeypatch):
         raise httpx.ConnectError("refused", request=request)
 
     _mock_transport(monkeypatch, handler)
-    with pytest.raises(httpx.ConnectError):
+    with pytest.raises(alert_service.WebhookFailed):
         alert_service._post_json("https://hooks.example.com/x", {"a": 1})
 
 
@@ -354,3 +367,248 @@ def test_no_baseline_means_no_percentage(authed_client):
     body = authed_client.get("/api/v1/dashboard/overview").json()
     assert body["cost_change_pct"] is None
     assert body["request_change_pct"] is None
+
+
+@pytest.mark.parametrize(
+    "ip",
+    [
+        "64:ff9b::a00:1",  # NAT64 to 10.0.0.1
+        "64:ff9b::a9fe:a9fe",  # NAT64 to the metadata address
+        "::127.0.0.1",
+        "4000::1",
+        "::ffff:0:7f00:1",
+        "fec0::1",
+        "2002:a00:1::1",  # 6to4 of 10.0.0.1
+    ],
+)
+def test_ssrf_guard_blocks_ipv6_forms_that_reach_internal_addresses(ip):
+    with pytest.raises(UnsafeWebhookURL):
+        validate_external_url(f"https://[{ip}]/x")
+
+
+@pytest.mark.parametrize("url", [123, "http://[oops", "https://h:notaport/x"])
+def test_malformed_webhook_url_is_a_422(authed_client, url):
+    resp = authed_client.post(
+        "/api/v1/alerts/channels",
+        json={
+            "name": "c",
+            "channel_type": "webhook",
+            "config": json.dumps({"url": url}),
+        },
+    )
+    assert resp.status_code == 422
+
+
+def test_bad_stored_values_cannot_break_the_channel_list(authed_client):
+    config = {
+        "note": "http://[oops",
+        "nested": {"url": "https://h.example.com/secret-path"},
+        "token": "abc",
+        "other": ["https://h.example.com/secret-list"],
+    }
+    resp = authed_client.post(
+        "/api/v1/alerts/channels",
+        json={"name": "c", "channel_type": "in_app", "config": json.dumps(config)},
+    )
+    assert resp.status_code in (200, 201)
+    listed = authed_client.get("/api/v1/alerts/channels")
+    assert listed.status_code == 200
+    text = listed.text
+    for secret in ("secret-path", "secret-list", '"abc"', "[oops"):
+        assert secret not in text
+
+
+def test_webhook_secret_stays_out_of_logs_on_failure_and_success(monkeypatch, caplog):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, 1, 6, "", ("93.184.216.34", 443))],
+    )
+    status = {"code": 404}
+    _mock_transport(monkeypatch, lambda request: httpx.Response(status["code"]))
+    url = "https://hooks.slack.com/services/T0/B0/SUPERSECRET"
+    alert = alert_service.Alert(
+        id=1, alert_type="t", severity="info", message="m", is_resolved=False
+    )
+
+    class Channels:
+        def filter(self, *a):
+            return self
+
+        def all(self):
+            return [
+                alert_service.AlertChannel(
+                    id=1,
+                    channel_type="slack",
+                    config_json=json.dumps({"webhook_url": url}),
+                )
+            ]
+
+    class Db:
+        def query(self, *a):
+            return Channels()
+
+    with caplog.at_level("DEBUG"):
+        alert_service.dispatch_alert(alert, Db())
+        status["code"] = 200
+        alert_service.dispatch_alert(alert, Db())
+    joined = "\n".join(
+        r.getMessage() + (str(r.exc_info[1]) if r.exc_info else "")
+        for r in caplog.records
+        if r.name.startswith("app.")
+    )
+    assert "delivered" in joined
+    assert "hooks.slack.com returned HTTP 404" in joined
+    assert "SUPERSECRET" not in joined
+
+
+def test_webhook_behind_a_proxy_keeps_the_host_name(monkeypatch):
+    """A CONNECT to the pinned IP would fail TLS: the proxy must get the name."""
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, 1, 6, "", ("93.184.216.34", 443))],
+    )
+    seen = {}
+
+    class Client:
+        def __init__(self, **kw):
+            seen["trust_env"] = kw["trust_env"]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, url, json):
+            seen["url"] = url
+            return httpx.Response(200)
+
+    monkeypatch.setattr(alert_service.httpx, "Client", Client)
+    alert_service._post_json("https://hooks.example.com/x", {"a": 1})
+    assert seen == {"trust_env": True, "url": "https://hooks.example.com/x"}
+
+
+def test_proxy_bypass_and_no_proxy_stay_pinned(monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
+    monkeypatch.setenv("NO_PROXY", "hooks.example.com")
+    assert alert_service._uses_proxy("https", "hooks.example.com") is False
+    assert alert_service._uses_proxy("https", "other.example.com") is True
+    assert alert_service._uses_proxy("http", "other.example.com") is False
+
+
+def test_internationalised_webhook_host_is_sent_as_idna(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, 1, 6, "", ("93.184.216.34", 443))],
+    )
+    seen = {}
+
+    def handler(request):
+        seen["host"] = request.headers["host"]
+        seen["sni"] = request.extensions.get("sni_hostname")
+        return httpx.Response(200)
+
+    _mock_transport(monkeypatch, handler)
+    alert_service._post_json("https://b\u00fccher.example.com/x", {"a": 1})
+    assert seen == {
+        "host": "xn--bcher-kva.example.com",
+        "sni": "xn--bcher-kva.example.com",
+    }
+
+
+def test_admin_with_a_long_password_from_bcrypt_4_can_still_log_in(authed_client):
+    password = "p" * 80
+    stored = bcrypt.hashpw(password[:72].encode(), bcrypt.gensalt()).decode()
+    with TestSession() as db:
+        config = db.query(SetupConfig).first()
+        config.admin_password_hash = stored
+        db.commit()
+        email = config.admin_email
+    resp = authed_client.post(
+        "/api/v1/auth/login", json={"email": email, "password": password}
+    )
+    assert resp.status_code == 200
+    resp = authed_client.post(
+        "/api/v1/auth/login", json={"email": email, "password": "wrong" * 20}
+    )
+    assert resp.status_code == 401
+
+
+def test_legacy_sha256_password_over_72_bytes_keeps_its_hash(authed_client):
+    password = "q" * 80
+    legacy = hashlib.sha256(password.encode()).hexdigest()
+    with TestSession() as db:
+        config = db.query(SetupConfig).first()
+        config.admin_password_hash = legacy
+        db.commit()
+        email = config.admin_email
+    resp = authed_client.post(
+        "/api/v1/auth/login", json={"email": email, "password": password}
+    )
+    assert resp.status_code == 200
+    with TestSession() as db:
+        assert db.query(SetupConfig).first().admin_password_hash == legacy
+
+
+def test_lone_surrogates_never_500(client):
+    body = '{"admin_email":"a@b.c","admin_password":"\\ud800aaaaaaaa"}'
+    headers = {"content-type": "application/json"}
+    assert (
+        client.post("/api/v1/setup", content=body, headers=headers).status_code == 422
+    )
+    client.post(
+        "/api/v1/setup", json={"admin_email": "a@b.c", "admin_password": "testpass123"}
+    )
+    login = '{"email":"a@b.c","password":"\\ud800"}'
+    resp = client.post("/api/v1/auth/login", content=login, headers=headers)
+    assert resp.status_code == 401
+
+
+def test_login_and_reconnect_trim_the_email_as_setup_does(client):
+    client.post(
+        "/api/v1/setup",
+        json={"admin_email": "a@b.co ", "admin_password": "testpass123"},
+    )
+    assert (
+        client.post(
+            "/api/v1/auth/login", json={"email": "a@b.co ", "password": "testpass123"}
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            "/api/v1/setup/reconnect",
+            json={"admin_email": " a@b.co", "admin_password": "testpass123"},
+        ).status_code
+        == 200
+    )
+
+
+@pytest.mark.parametrize("payload", [{"models": None}, {"models": 5}, [1]])
+def test_chat_status_survives_odd_ollama_answers(authed_client, monkeypatch, payload):
+    from app.api import chat
+
+    monkeypatch.setattr(chat.settings, "LLM_PROVIDER", "ollama")
+    monkeypatch.setattr(
+        chat.httpx,
+        "get",
+        lambda *a, **k: httpx.Response(
+            200, json=payload, request=httpx.Request("GET", "http://o")
+        ),
+    )
+    resp = authed_client.get("/api/v1/chat/status")
+    assert resp.status_code == 200
+    assert resp.json()["llm_available"] is False
+
+
+def test_no_change_on_an_empty_period_is_not_called_new():
+    from app.api.dashboard import _pct_change
+
+    assert _pct_change(0, 0) == 0.0
+    assert _pct_change(5, 0) is None

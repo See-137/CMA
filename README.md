@@ -134,6 +134,7 @@ Copy `.env.template` to `.env` in the repo root. Every backend setting uses the 
 | `CMA_OLLAMA_BASE_URL` | `http://localhost:11434` (Docker: the host) | Local Ollama endpoint |
 | `CMA_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | sentence-transformers model, downloaded on first run |
 | `CMA_RAG_TOP_K` | `10` | Retrieved chunks per question |
+| `CMA_MAX_EVENT_METADATA_BYTES` | `65536` | Larger event metadata is replaced by a marker, and the event is still stored. Metadata is stored in plaintext, so keep secrets out of it |
 | `CMA_ALLOW_PRIVATE_WEBHOOKS` | `false` | Permit alert webhooks to private networks (disables the SSRF guard) |
 | `POSTGRES_PASSWORD` | required | Database password for the Compose stack |
 | `CMA_GRAFANA_PASSWORD` | `admin` | Grafana admin password; change it before exposing port 3000 beyond loopback |
@@ -217,7 +218,7 @@ cd sdks/python && pip install -e ".[dev]" && pytest   # SDK, incl. real openai/a
 cd frontend && npm run build         # tsc + vite build
 ```
 
-The backend suite has 267 tests (one, the Postgres bucketing check, runs only when `CMA_TEST_PG_URL` is set, as in CI) and the SDK suite 112. The SDK instrumentation tests exercise the real `openai` and `anthropic` client libraries against a local fake HTTP server, so patching is verified against actual SDK internals rather than mocks.
+The backend suite has 294 tests (one, the Postgres bucketing check, runs only when `CMA_TEST_PG_URL` is set, as in CI) and the SDK suite 112. The SDK instrumentation tests exercise the real `openai` and `anthropic` client libraries against a local fake HTTP server, so patching is verified against actual SDK internals rather than mocks.
 
 CI runs on every push and pull request:
 

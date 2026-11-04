@@ -2,6 +2,23 @@ import { useState, useCallback, useRef } from 'react';
 import { streamChat } from '../api/client';
 import type { ChatMessage, Citation } from '../types';
 
+// The API caps history at 50 messages and 100,000 characters: send the newest
+// that fit, so a long conversation keeps working instead of failing every send.
+const MAX_HISTORY_MESSAGES = 50;
+const MAX_HISTORY_CHARS = 100_000;
+
+function recentHistory(messages: { role: string; content: string }[]) {
+  const kept: { role: string; content: string }[] = [];
+  let chars = 0;
+  for (let i = messages.length - 1; i >= 0 && kept.length < MAX_HISTORY_MESSAGES; i--) {
+    const { role, content } = messages[i];
+    chars += content.length;
+    if (chars > MAX_HISTORY_CHARS) break;
+    kept.unshift({ role, content });
+  }
+  return kept;
+}
+
 export function useChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
@@ -29,7 +46,7 @@ export function useChat() {
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
     setIsStreaming(true);
 
-    const history = messages.map((m) => ({ role: m.role, content: m.content }));
+    const history = recentHistory(messages);
 
     abortRef.current = new AbortController();
 

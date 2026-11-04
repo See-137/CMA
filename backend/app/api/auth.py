@@ -2,7 +2,13 @@ import bcrypt
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.deps import BCRYPT_MAX_BYTES, _verify_password, get_db, safe_compare
+from app.api.deps import (
+    BCRYPT_MAX_BYTES,
+    _bytes,
+    _verify_password,
+    get_db,
+    safe_compare,
+)
 from app.config import settings
 from app.models.models import SetupConfig
 from app.schemas.schemas import LoginRequest, LoginResponse
@@ -35,10 +41,10 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
     # (a legacy password over bcrypt's 72 bytes keeps its old hash)
     if (
         _needs_rehash(config.admin_password_hash)
-        and len(body.password.encode()) <= BCRYPT_MAX_BYTES
+        and len(_bytes(body.password)) <= BCRYPT_MAX_BYTES
     ):
         config.admin_password_hash = bcrypt.hashpw(
-            body.password.encode(), bcrypt.gensalt()
+            _bytes(body.password), bcrypt.gensalt()
         ).decode()
         db.commit()
 

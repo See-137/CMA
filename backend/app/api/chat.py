@@ -174,8 +174,8 @@ def _llm_status() -> tuple[bool, str]:
     try:
         resp = httpx.get(f"{settings.OLLAMA_BASE_URL}/api/tags", timeout=2)
         resp.raise_for_status()
-        names = {m.get("name", "") for m in resp.json().get("models", [])}
-    except (httpx.HTTPError, ValueError, AttributeError):
+        names = {m.get("name", "") for m in resp.json().get("models") or []}
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError, AttributeError, TypeError):
         return False, f"Ollama is not reachable at {settings.OLLAMA_BASE_URL}"
     model = settings.LLM_MODEL
     if model in names or f"{model}:latest" in names:

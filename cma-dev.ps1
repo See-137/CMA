@@ -42,7 +42,7 @@ if ($Key) {
 # ── Defaults ────────────────────────────────────────────────
 if (-not $env:CMA_LLM_PROVIDER) { $env:CMA_LLM_PROVIDER = "ollama" }
 if (-not $env:CMA_LLM_MODEL) {
-    $env:CMA_LLM_MODEL = if ($env:CMA_LLM_PROVIDER -eq "openai") { "gpt-4o-mini" } else { "llama3" }
+    $env:CMA_LLM_MODEL = if ($env:CMA_LLM_PROVIDER -eq "openai") { "gpt-6-luna" } else { "llama3" }
 }
 
 # ── Show config ─────────────────────────────────────────────
