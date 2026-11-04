@@ -66,6 +66,12 @@ class ModelPricing(Base):
     cache_read_price_per_million = Column(Float, nullable=True)
     cache_write_price_per_million = Column(Float, nullable=True)  # 5-minute TTL
     cache_write_1h_price_per_million = Column(Float, nullable=True)
+    # Long-context billing (ACC-23): a prompt with MORE than this many input
+    # tokens is billed at multiplied rates for the whole request. All three are
+    # set together or not at all.
+    long_context_threshold = Column(Integer, nullable=True)
+    long_context_input_multiplier = Column(Float, nullable=True)  # input + cache
+    long_context_output_multiplier = Column(Float, nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)

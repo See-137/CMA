@@ -1,15 +1,16 @@
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, case, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.models import Alert, Budget, CostEvent
-from app.timeutils import UTC_ZONE, deployment_tz, local_floor
+from app.services.cost_engine import unpriced_clause
+from app.timeutils import UTC_ZONE, deployment_tz, local_floor, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -38,26 +39,43 @@ def _current_spend(
     query = db.query(func.coalesce(func.sum(CostEvent.cost), 0.0)).filter(
         CostEvent.timestamp >= start
     )
+    result = _in_scope(query, budget).scalar()
+    return float(result) if result else 0.0
 
+
+def _in_scope(query, budget: Budget):
+    """Restrict a CostEvent query to the events this budget counts."""
     if budget.scope == "agent" and budget.scope_ref:
-        query = query.filter(CostEvent.agent_name == budget.scope_ref)
-    elif budget.scope == "swarm" and budget.scope_ref:
-        query = query.filter(CostEvent.swarm == budget.scope_ref)
-    elif budget.scope == "workflow" and budget.scope_ref:
-        query = query.filter(CostEvent.workflow == budget.scope_ref)
-    elif budget.scope == "provider" and budget.scope_ref:
+        return query.filter(CostEvent.agent_name == budget.scope_ref)
+    if budget.scope == "swarm" and budget.scope_ref:
+        return query.filter(CostEvent.swarm == budget.scope_ref)
+    if budget.scope == "workflow" and budget.scope_ref:
+        return query.filter(CostEvent.workflow == budget.scope_ref)
+    if budget.scope == "provider" and budget.scope_ref:
         # Provider spellings differ between SDK ("openai") and UI ("OpenAI").
-        query = query.filter(
+        return query.filter(
             func.lower(CostEvent.provider_name) == budget.scope_ref.lower()
         )
-    elif budget.scope == "model" and budget.scope_ref:
-        query = query.filter(
+    if budget.scope == "model" and budget.scope_ref:
+        return query.filter(
             func.lower(CostEvent.model_name) == budget.scope_ref.lower()
         )
-    # scope == "global" -> no extra filter
+    return query  # scope == "global"
 
-    result = query.scalar()
-    return float(result) if result else 0.0
+
+def spend_and_unpriced(
+    budget: Budget, db: Session, tz: ZoneInfo | None = None
+) -> tuple[float, int]:
+    """Spend in the budget's current period, and how many of its events are at
+    $0 because no price matched (ACC-22): the spend is understated by their
+    unknown cost. One query: this is on the pre-call path."""
+    start = _period_start(budget.period, tz or deployment_tz(db))
+    query = db.query(
+        func.coalesce(func.sum(CostEvent.cost), 0.0),
+        func.coalesce(func.sum(case((unpriced_clause(), 1), else_=0)), 0),
+    ).filter(CostEvent.timestamp >= start)
+    spend, unpriced = _in_scope(query, budget).one()
+    return float(spend or 0.0), int(unpriced or 0)
 
 
 _LEGACY_THRESHOLD_RE = re.compile(r"\(threshold: (\d+)%\)")
@@ -229,24 +247,29 @@ def precall_check(
     swarm: str | None,
     provider: str | None = None,
     model: str | None = None,
-) -> list[dict]:
-    """Blocking budgets that would be violated by a new call with this
-    attribution. Scope matching is the same function ingestion uses, so a
-    budget flags ingested events exactly when it blocks calls: global always
-    matches; agent/swarm/workflow/provider/model budgets match only when that
-    attribute is supplied (a legacy scoped row with no scope_ref counts as
-    global, as its spend does)."""
+) -> tuple[list[dict], int]:
+    """(violations, unpriced): the blocking budgets a new call with this
+    attribution would violate, and the largest count of unpriced events among
+    the blocking budgets it is checked against. Unpriced events only warn:
+    blocking on them would stop every agent the day a vendor ships a model
+    (ACC-22). Scope matching is the same function ingestion uses, so a budget
+    flags ingested events exactly when it blocks calls: global always matches;
+    agent/swarm/workflow/provider/model budgets match only when that attribute
+    is supplied (a legacy scoped row with no scope_ref counts as global, as its
+    spend does)."""
     violations = []
+    unpriced = 0
     tz = deployment_tz(db)
     for budget in db.query(Budget).filter(Budget.is_active.is_(True)).all():
         if not is_blocking(budget) or budget.limit_amount <= 0:
             continue
         if not _scope_matches(budget, agent_name, workflow, swarm, provider, model):
             continue
-        spend = _current_spend(budget, db, tz)
+        spend, budget_unpriced = spend_and_unpriced(budget, db, tz)
+        unpriced = max(unpriced, budget_unpriced)
         if spend >= budget.limit_amount:
             violations.append(_violation(budget, spend))
-    return violations
+    return violations, unpriced
 
 
 def _is_duplicate_alert(exc: IntegrityError) -> bool:
@@ -354,3 +377,57 @@ def check_budgets(db: Session) -> list[Alert]:
                 _dispatch(alert, db)
 
     return new_alerts
+
+
+# A flood of invented model names must not become a flood of alerts: anyone
+# holding an ingest key picks the name.
+_MAX_UNPRICED_ALERTS_PER_DAY = 20
+UNPRICED_ALERT = "unpriced_model"
+
+
+def _plain(name: str) -> str:
+    """Names come from whoever holds an ingest key and end up in Slack, where
+    ``<!channel>`` pings everyone: keep what model names actually use."""
+    return re.sub(r"[^\w.:/@+-]", "?", name[:100])
+
+
+def check_unpriced_models(db: Session, pairs: set[tuple[str, str]]) -> list[Alert]:
+    """Raise one alert the first time a provider/model has no price (ACC-22).
+
+    Budgets cannot see this spend, so the dashboard banner alone is too quiet.
+    Alerted once per pair, resolved or not. Two concurrent first events can
+    both alert; that is a harmless duplicate, unlike a missed one.
+    """
+    created: list[Alert] = []
+    if not pairs:
+        return created
+    since = utcnow() - timedelta(days=1)
+    recent = (
+        db.query(func.count(Alert.id))
+        .filter(Alert.alert_type == UNPRICED_ALERT, Alert.created_at >= since)
+        .scalar()
+        or 0
+    )
+    # Provider spelling differs between clients; names decide nothing else here.
+    for provider, model in sorted({(p.lower(), m) for p, m in pairs}):
+        if recent + len(created) >= _MAX_UNPRICED_ALERTS_PER_DAY:
+            logger.warning("Unpriced-model alerts capped for today")
+            break
+        message = (
+            f"No price for {_plain(provider)}/{_plain(model)}: its calls are recorded "
+            "at $0 and budgets do not count them. Add the model under Providers, "
+            "then use Settings > Reprice."
+        )
+        exists = (
+            db.query(Alert.id)
+            .filter(Alert.alert_type == UNPRICED_ALERT, Alert.message == message)
+            .first()
+        )
+        if exists:
+            continue
+        alert = Alert(alert_type=UNPRICED_ALERT, severity="warning", message=message)
+        db.add(alert)
+        db.commit()
+        _dispatch(alert, db)
+        created.append(alert)
+    return created

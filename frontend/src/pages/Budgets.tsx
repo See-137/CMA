@@ -144,7 +144,15 @@ const Budgets: React.FC = () => {
       header: 'Current Spend',
       accessor: 'current_spend',
       render: (row) => (
-        <span className="numeral text-secondary">{formatCurrency(row.current_spend)}</span>
+        <div>
+          <span className="numeral text-secondary">{formatCurrency(row.current_spend)}</span>
+          {(row.unpriced_events ?? 0) > 0 && (
+            <div className="text-xs text-gold-700 dark:text-gold-300">
+              Understated: {row.unpriced_events} unpriced event
+              {row.unpriced_events === 1 ? '' : 's'}
+            </div>
+          )}
+        </div>
       ),
     },
     {

@@ -148,7 +148,7 @@ def test_006_adds_cache_fields_and_backfills_only_untouched_anthropic_rows(tmp_p
             )
         )
     eng.dispose()
-    _alembic(url, "upgrade", "head")
+    _alembic(url, "upgrade", "006")
     eng = create_engine(url)
     with eng.connect() as c:
         prices = {

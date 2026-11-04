@@ -475,6 +475,58 @@ def _run_comparison_query(intent: QueryIntent, db: Session) -> list[dict]:
         .all()
     )
 
+    # Long-prompt billing applies per request, so totals over many calls are
+    # priced at standard rates, plus the extra on the calls above each threshold.
+    long_rows = {
+        threshold: {
+            (r.model_name, r.provider_name): r
+            for r in _filtered(
+                db.query(
+                    CostEvent.model_name,
+                    CostEvent.provider_name,
+                    func.sum(CostEvent.tokens_input).label("tokens_in"),
+                    func.sum(CostEvent.tokens_output).label("tokens_out"),
+                    func.sum(CostEvent.tokens_cache_read).label("cache_read"),
+                    func.sum(CostEvent.tokens_cache_write).label("cache_write"),
+                    func.sum(CostEvent.tokens_cache_write_1h).label("cache_write_1h"),
+                ),
+                dataclasses.replace(intent, models=[]),
+            )
+            .filter(CostEvent.tokens_input > threshold)
+            .group_by(CostEvent.model_name, CostEvent.provider_name)
+            .all()
+        }
+        for threshold in {
+            mp.long_context_threshold
+            for mp in alt_pricing
+            if mp.long_context_threshold is not None
+        }
+    }
+
+    def _what_if_cost(mp, row, tokens_in, tokens_out, cache) -> float:
+        cost = cost_for(mp, tokens_in, tokens_out, *cache, long_context=False)
+        if mp.long_context_threshold is None:
+            return cost
+        above = long_rows[mp.long_context_threshold].get(
+            (row.model_name, row.provider_name)
+        )
+        if above is None:
+            return cost
+        above_cache = (
+            int(above.cache_read or 0),
+            int(above.cache_write or 0),
+            int(above.cache_write_1h or 0),
+        )
+        input_side = cost_for(
+            mp, int(above.tokens_in or 0), 0, *above_cache, long_context=False
+        )
+        output_side = cost_for(mp, 0, int(above.tokens_out or 0), long_context=False)
+        return (
+            cost
+            + input_side * ((mp.long_context_input_multiplier or 1.0) - 1)
+            + output_side * ((mp.long_context_output_multiplier or 1.0) - 1)
+        )
+
     for row in rows:
         entry = {
             "type": "comparison_current",
@@ -499,7 +551,7 @@ def _run_comparison_query(intent: QueryIntent, db: Session) -> list[dict]:
             if mp.model_name == row.model_name:
                 continue
             # Same tokens, same prompt-cache usage, the alternative's prices.
-            alt_cost = cost_for(mp, tokens_in, tokens_out, *cache)
+            alt_cost = _what_if_cost(mp, row, tokens_in, tokens_out, cache)
             savings = float(row.total_cost) - alt_cost
             alternatives.append(
                 {

@@ -285,6 +285,17 @@ class AgentDetail(AgentOut):
 # -- Providers ----------------------------------------------------------------
 
 
+def check_long_context(
+    threshold: int | None, input_mult: float | None, output_mult: float | None
+) -> None:
+    """A threshold without both multipliers would silently bill nothing extra."""
+    if len({v is None for v in (threshold, input_mult, output_mult)}) > 1:
+        raise ValueError(
+            "long-context threshold, input multiplier and output multiplier "
+            "must be set together"
+        )
+
+
 class ModelPricingIn(BaseModel):
     model_name: str = Field(min_length=1, max_length=255)
     input_price_per_million: float = Field(ge=0)
@@ -292,7 +303,19 @@ class ModelPricingIn(BaseModel):
     cache_read_price_per_million: float | None = Field(default=None, ge=0)
     cache_write_price_per_million: float | None = Field(default=None, ge=0)
     cache_write_1h_price_per_million: float | None = Field(default=None, ge=0)
+    long_context_threshold: int | None = Field(default=None, gt=0, le=2**31 - 1)
+    long_context_input_multiplier: float | None = Field(default=None, gt=0)
+    long_context_output_multiplier: float | None = Field(default=None, gt=0)
     model_alias: str | None = None
+
+    @model_validator(mode="after")
+    def _long_context_all_or_none(self):
+        check_long_context(
+            self.long_context_threshold,
+            self.long_context_input_multiplier,
+            self.long_context_output_multiplier,
+        )
+        return self
 
 
 class ModelPricingOut(BaseModel):
@@ -305,6 +328,9 @@ class ModelPricingOut(BaseModel):
     cache_read_price_per_million: float | None = None
     cache_write_price_per_million: float | None = None
     cache_write_1h_price_per_million: float | None = None
+    long_context_threshold: int | None = None
+    long_context_input_multiplier: float | None = None
+    long_context_output_multiplier: float | None = None
     is_active: bool
     created_at: UTCDateTime | None = None
     updated_at: UTCDateTime | None = None
@@ -320,6 +346,9 @@ class ModelPricingUpdate(BaseModel):
     cache_read_price_per_million: float | None = Field(default=None, ge=0)
     cache_write_price_per_million: float | None = Field(default=None, ge=0)
     cache_write_1h_price_per_million: float | None = Field(default=None, ge=0)
+    long_context_threshold: int | None = Field(default=None, gt=0, le=2**31 - 1)
+    long_context_input_multiplier: float | None = Field(default=None, gt=0)
+    long_context_output_multiplier: float | None = Field(default=None, gt=0)
     is_active: bool | None = None
 
 
@@ -448,11 +477,15 @@ class BudgetViolation(BaseModel):
 class BudgetCheckResponse(BaseModel):
     allowed: bool
     violations: list[BudgetViolation] = []
+    # Events at $0 for lack of a price, in the matching blocking budgets'
+    # current periods: their spend is understated, so the check may pass late.
+    unpriced_events: int = 0
 
 
 class BudgetWithSpend(BudgetOut):
     current_spend: float = 0.0
     percentage: float = 0.0
+    unpriced_events: int = 0
 
 
 # -- Alerts -------------------------------------------------------------------

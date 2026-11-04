@@ -97,6 +97,9 @@ export interface Model {
   cache_read_price_per_million?: number | null;
   cache_write_price_per_million?: number | null;
   cache_write_1h_price_per_million?: number | null;
+  long_context_threshold?: number | null;
+  long_context_input_multiplier?: number | null;
+  long_context_output_multiplier?: number | null;
   is_active: boolean;
 }
 
@@ -120,6 +123,7 @@ export interface Budget {
   is_active: boolean;
   current_spend: number;
   percentage: number;
+  unpriced_events?: number;
 }
 
 export interface Alert {

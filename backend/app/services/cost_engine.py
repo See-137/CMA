@@ -25,7 +25,7 @@ so it stays visible and can be repriced once pricing exists
 
 import logging
 import re
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
@@ -36,6 +36,7 @@ from app.timeutils import utcnow
 logger = logging.getLogger(__name__)
 
 _REPRICE_BATCH = 1000
+PRICE_TABLE_SOURCES = ("pricing", "estimated")
 _DATE_SUFFIX = re.compile(r"-(\d{4}-\d{2}-\d{2}|\d{8})$")
 
 
@@ -117,14 +118,18 @@ def cost_for(
     cache_read: int = 0,
     cache_write: int = 0,
     cache_write_1h: int = 0,
+    long_context: bool = True,
 ) -> float:
-    """Cost of one call. ``tokens_input`` is ALL input tokens; the cache
+    """Cost of one call (``long_context=False``: at standard rates, for totals
+    over many calls, where the per-request threshold has no meaning). ``tokens_input`` is ALL input tokens; the cache
     counts are subsets of it (``cache_write_1h`` a subset of ``cache_write``).
 
     Uncached input at the input price, cache reads at the cache-read price,
     5-minute writes at the cache-write price, 1-hour writes at the 1-hour
     price (falling back to the 5-minute write price). A missing cache price
-    falls back to the input price — see ``cache_prices_exact``."""
+    falls back to the input price — see ``cache_prices_exact``. A prompt over
+    the model's long-context threshold is billed at the multiplied rates for
+    the whole request."""
     cache_read = max(cache_read or 0, 0)
     cache_write = max(cache_write or 0, 0)
     cache_write_1h = min(max(cache_write_1h or 0, 0), cache_write)
@@ -135,14 +140,18 @@ def cost_for(
         pricing.cache_write_1h_price_per_million,
         write_5m,
     )
-    cost = (
+    input_side = (
         uncached * inp
         + cache_read * _price(pricing.cache_read_price_per_million, inp)
         + (cache_write - cache_write_1h) * write_5m
         + cache_write_1h * write_1h
-        + tokens_output * pricing.output_price_per_million
-    ) / 1_000_000
-    return round(cost, 8)
+    )
+    output_side = tokens_output * pricing.output_price_per_million
+    threshold = pricing.long_context_threshold
+    if long_context and threshold is not None and tokens_input > threshold:
+        input_side *= pricing.long_context_input_multiplier or 1.0
+        output_side *= pricing.long_context_output_multiplier or 1.0
+    return round((input_side + output_side) / 1_000_000, 8)
 
 
 def cache_prices_exact(
@@ -222,8 +231,13 @@ def reprice_events(
     from_date: datetime | None = None,
     to_date: datetime | None = None,
     dry_run: bool = False,
+    include_priced: bool = False,
 ) -> dict:
     """Recompute cost for events stored without a price.
+
+    ``include_priced`` also recomputes events already priced from the price
+    table (``pricing``/``estimated``), to apply a corrected price to history.
+    Such an event whose model no longer has a price keeps its stored cost.
 
     Candidates are events marked ``unpriced`` plus legacy rows (``cost_source``
     NULL) stored at 0.0 with non-zero tokens — exactly what the old exact-match
@@ -231,7 +245,10 @@ def reprice_events(
     affected *completed* days are recomputed so dashboards and Scrooge agree
     with the corrected events.
     """
-    query = db.query(CostEvent).filter(unpriced_clause())
+    candidates = unpriced_clause()
+    if include_priced:
+        candidates = or_(candidates, CostEvent.cost_source.in_(PRICE_TABLE_SOURCES))
+    query = db.query(CostEvent).filter(candidates)
     if from_date is not None:
         query = query.filter(CostEvent.timestamp >= from_date)
     if to_date is not None:
@@ -247,74 +264,80 @@ def reprice_events(
     today = utcnow().date()
     rollup_dates: list[date] = []
     archived_dates: list[date] = []
-    recomputed: set[date] = set()
-    batch_dates: set[date] = set()
 
-    # Keyset batches, committed one at a time: a very large reprice makes
-    # durable progress (re-running continues where it stopped) and never
-    # holds every candidate row in memory.
-    last_id = 0
-    while True:
-        batch = (
-            query.filter(CostEvent.id > last_id)
-            .order_by(CostEvent.id)
-            .limit(_REPRICE_BATCH)
-            .all()
+    first, last = query.with_entities(
+        func.min(CostEvent.timestamp), func.max(CostEvent.timestamp)
+    ).one()
+    day = first.date() if first else None
+
+    # One day at a time, each re-rolled once when it is done: a very large
+    # reprice makes durable progress (a re-run continues where it stopped) and
+    # never holds every candidate in memory, and re-rolling every touched day
+    # per batch would grow faster than the event count. A day interrupted part
+    # way still has changes left, so the re-run re-rolls it.
+    while day is not None and day <= last.date():
+        start = datetime.combine(day, time.min)
+        day_query = query.filter(
+            CostEvent.timestamp >= start,
+            CostEvent.timestamp < start + timedelta(days=1),
         )
-        if not batch:
-            break
-        last_id = batch[-1].id
-        for event in batch:
-            key = (event.provider_name, event.model_name)
-            if key not in cache:
-                cache[key] = resolve_pricing_match(
-                    event.provider_name, event.model_name, db
-                )
-            match = cache[key]
-            if match is None:
-                label = f"{event.provider_name}/{event.model_name}"
-                still_unpriced[label] = still_unpriced.get(label, 0) + 1
-                if not dry_run:
-                    event.cost_source = "unpriced"
-                continue
-            pricing, exact = match
-            new_cost, source = event_cost(
-                pricing,
-                exact,
-                event.tokens_input,
-                event.tokens_output,
-                event.tokens_cache_read or 0,
-                event.tokens_cache_write or 0,
-                event.tokens_cache_write_1h or 0,
+        changed = False
+        last_id = 0
+        while True:
+            batch = (
+                day_query.filter(CostEvent.id > last_id)
+                .order_by(CostEvent.id)
+                .limit(_REPRICE_BATCH)
+                .all()
             )
-            added_cost += new_cost - (event.cost or 0.0)
-            repriced_ids.append(event.id)
-            batch_dates.add(event.timestamp.date())
-            if not dry_run:
-                event.cost = new_cost
-                event.cost_source = source
-        if not dry_run:
-            db.commit()
-            # Recompute this batch's completed days right away, so an
-            # interrupted reprice never leaves committed events newer than
-            # their rollups (a re-run only sees the remaining events).
-            # Every batch re-rolls every completed day it touched (idempotent):
-            # a day whose events span several batches must be recomputed
-            # after its LAST batch, not only its first.
-            for d in sorted(batch_dates):
-                if d >= today:
+            if not batch:
+                break
+            last_id = batch[-1].id
+            for event in batch:
+                key = (event.provider_name, event.model_name)
+                if key not in cache:
+                    cache[key] = resolve_pricing_match(
+                        event.provider_name, event.model_name, db
+                    )
+                match = cache[key]
+                if match is None:
+                    if event.cost_source in PRICE_TABLE_SOURCES:
+                        continue  # a removed price must not erase a recorded cost
+                    label = f"{event.provider_name}/{event.model_name}"
+                    still_unpriced[label] = still_unpriced.get(label, 0) + 1
+                    if not dry_run:
+                        event.cost_source = "unpriced"
                     continue
-                if compute_daily_rollups(db, d):
-                    if d not in recomputed:
-                        rollup_dates.append(d)
-                elif d not in recomputed:
-                    # Archived days (raw events already pruned) are skipped;
-                    # retention adds their late events later.
-                    archived_dates.append(d)
-                recomputed.add(d)
-        else:
-            db.expunge_all()  # keep memory flat; nothing was changed
-        batch_dates = set()
+                pricing, exact = match
+                new_cost, source = event_cost(
+                    pricing,
+                    exact,
+                    event.tokens_input,
+                    event.tokens_output,
+                    event.tokens_cache_read or 0,
+                    event.tokens_cache_write or 0,
+                    event.tokens_cache_write_1h or 0,
+                )
+                if new_cost == event.cost and source == event.cost_source:
+                    continue  # nothing to do: no write, no rollup, no re-embedding
+                added_cost += new_cost - (event.cost or 0.0)
+                repriced_ids.append(event.id)
+                changed = True
+                if not dry_run:
+                    event.cost = new_cost
+                    event.cost_source = source
+            if dry_run:
+                db.expunge_all()  # keep memory flat; nothing was changed
+            else:
+                db.commit()
+        if changed and not dry_run and day < today:
+            if compute_daily_rollups(db, day):
+                rollup_dates.append(day)
+            else:
+                # Archived days (raw events already pruned) are skipped;
+                # retention adds their late events later.
+                archived_dates.append(day)
+        day += timedelta(days=1)
 
     return {
         "dry_run": dry_run,

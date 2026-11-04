@@ -25,9 +25,10 @@
 ```powershell
 cd backend; pip install -r requirements-dev.txt; pytest
 ```
-- 308 backend tests (1 needs `CMA_TEST_PG_URL`, set in CI) (`backend/tests`) + 112 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
+- 340 backend tests (1 needs `CMA_TEST_PG_URL`, set in CI) (`backend/tests`) + 112 SDK tests (`sdks/python/tests`, run separately: `cd sdks/python; pip install -e ".[dev,all]"; pytest tests`); isolated SQLite (schema built from models in `conftest.py`)
 - `test_events.py` — ingestion, auto-discovery (incl. race), UTC timestamp normalisation
 - `test_pricing.py` — pricing resolution, cost_source, reprice, reset-full reseed
+- `test_current_pricing.py` — current models, long-context billing, migration 007 vs seed, reprice of priced events, unpriced alerts
 - `test_cache_pricing.py` — prompt-cache tokens: validation, cache prices, fallback to `estimated`, reprice, Scrooge what-if
 - `sdks/python/tests/test_cache_tokens.py` — SDK sends Anthropic/OpenAI cache tokens on every path (create, stream, messages.stream, async, LangChain, log_completion)
 - `test_scrooge_grounding.py` — Scrooge totals, windows, entity matching, untrusted data block, degradation
@@ -75,6 +76,7 @@ cd backend; pip install -r requirements-dev.txt; pytest
 - **Upsert-safe rollups** — daily aggregation is idempotent, safe to re-run
 - **Retention safety** — per day, the rollup is written from exactly the event ids then deleted, in one transaction (rewrite for a never-pruned day, add for an archived one) and the day is marked `archived`; `compute_daily_rollups` never recomputes an archived day (its raw events are gone)
 - **Prompt-cache pricing (D3)** — `tokens_input` counts all input; cache counts are subsets priced at the model's cache prices. A missing cache price falls back to the input price (1h write → 5m write price) and marks the event `estimated` (`cost_engine.event_cost`). SDK normalises both vendors in `cost_monitor/_usage.py` (Anthropic: input + read + write)
+- **Long-context pricing** — a prompt with more than `long_context_threshold` input tokens bills the whole request at the input/cache and output multipliers (`cost_for`). New models go in both `app/seed.py` and a migration: the seed only reaches fresh installs
 - **Pricing resolution** — provider by case-insensitive name or `provider_type`, model by exact name > alias list > ci name > date-snapshot-stripped; snapshot-only match = `cost_source='estimated'`; no match = `cost_source='unpriced'` at $0 (repriceable via `/admin/reprice`, batched)
 - **UTC at the boundary** — storage is naive UTC; offset inputs are converted, every API datetime is emitted with `Z`
 - **Scrooge data is untrusted** — retrieved data goes in a user-role `<data>` block; only SQL `total` rows (per explicit window, half-open) are presented as totals
@@ -135,7 +137,7 @@ Indexes on: `CostEvent.timestamp`, `CostEvent.agent_name`
 - Event ingestion: `POST /api/v1/events` (single, bare array, or `{"events": [...]}` envelope; batch capped by `CMA_MAX_EVENTS_PER_REQUEST`)
 - Chat: `POST /api/v1/chat/stream` (SSE), `POST /api/v1/chat` (non-streaming)
 - Semantic search: `POST /api/v1/search/semantic`
-- Admin: `POST /api/v1/admin/reprice` (recompute unpriced events), `POST /api/v1/admin/reset` (monitoring only), `POST /api/v1/admin/reset-full` (everything; re-seeds default pricing) — destructive/sensitive admin routes (reprice, reset, reset-full, export, logs) require an `X-Admin-Password` header
+- Admin: `POST /api/v1/admin/reprice` (recompute unpriced events; `include_priced` also applies a corrected price to history, with `dry_run` and dates), `POST /api/v1/admin/reset` (monitoring only), `POST /api/v1/admin/reset-full` (everything; re-seeds default pricing) — destructive/sensitive admin routes (reprice, reset, reset-full, export, logs) require an `X-Admin-Password` header
 - Observability: `GET /metrics` (Prometheus; API key or `CMA_METRICS_TOKEN`), `GET /health` (liveness), `GET /health/ready` (readiness: Postgres hard-fails 503, vector store degrades) — health endpoints unauthenticated, all three excluded from HTTP metrics
 - Full Swagger at `/docs`
 
@@ -160,7 +162,7 @@ docker compose --profile observability up -d
 - Volumes: `pg-data` (postgres), `chroma-data` (vector store)
 
 ## Gotchas
-- If events show `cost: 0` — check `cost_source`: `unpriced` means no price row matched (add the model or an alias under Providers, then Settings → Reprice); `client` means the caller sent 0
+- If events show `cost: 0` — check `cost_source`: `unpriced` means no price row matched and budgets do not count that spend (add the model or an alias under Providers, then Settings → Reprice; the first such event raises an `unpriced_model` alert); `client` means the caller sent 0
 - After admin reset, ChromaDB is cleared automatically (`clear_vector_store()` in both reset endpoints)
 - `cma-dev.ps1` starts uvicorn with `--reload` but file watching is unreliable on Windows — restart manually if code changes aren't picked up
 - The RAG intent detector uses regex patterns in `_AGG_PATTERNS`, `_CMP_PATTERNS`, etc. — if a query type doesn't trigger SQL, check these patterns first

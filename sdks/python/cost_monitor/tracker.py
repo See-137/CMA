@@ -165,6 +165,7 @@ class CostTracker:
         self._budget_ttl = budget_check_ttl
         self._budget_timeout = budget_check_timeout
         self._budget_fail_closed = budget_fail_closed
+        self._unpriced_warned = False
         self._budget_cache: dict[tuple, tuple[float, dict[str, Any]]] = {}
         self._budget_lock = threading.Lock()
         self._budget_key_locks: dict[tuple, threading.Lock] = {}
@@ -416,6 +417,13 @@ class CostTracker:
             )
             resp.raise_for_status()
             body = resp.json()
+            if body.get("unpriced_events") and not self._unpriced_warned:
+                self._unpriced_warned = True
+                logger.warning(
+                    "CMA: %s events in this budget period have no model price; "
+                    "the budget does not count them, so it may trip late",
+                    body["unpriced_events"],
+                )
             return {
                 "allowed": bool(body.get("allowed", True)),
                 "violations": list(body.get("violations") or []),

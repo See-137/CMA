@@ -46,6 +46,7 @@ interface AdminPasswordModalProps {
   submitLabel: string;
   isLoading: boolean;
   error: string | null;
+  children?: React.ReactNode;
 }
 
 function AdminPasswordModal({
@@ -57,6 +58,7 @@ function AdminPasswordModal({
   submitLabel,
   isLoading,
   error,
+  children,
 }: AdminPasswordModalProps) {
   const [password, setPassword] = useState('');
 
@@ -74,6 +76,8 @@ function AdminPasswordModal({
     <Modal isOpen={isOpen} onClose={onClose} title={title}>
       <form onSubmit={handleSubmit} className="space-y-4">
         <p className="text-sm text-secondary">{description}</p>
+
+        {children}
 
         {error && (
           <div className="rounded-lg border border-[color:var(--color-danger)]/30 bg-oxblood-500/10 px-4 py-3 text-sm text-oxblood-600 dark:text-oxblood-300">
@@ -147,9 +151,15 @@ const Settings: React.FC = () => {
   );
 
   // Admin password modal
-  type PendingAction = 'reset' | 'full-reset' | 'export' | 'logs' | 'reprice';
+  type PendingAction = 'reset' | 'full-reset' | 'export' | 'logs' | 'reprice' | 'reprice-all';
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [pwdError, setPwdError] = useState<string | null>(null);
+  const [repriceFrom, setRepriceFrom] = useState('');
+  const [repriceTo, setRepriceTo] = useState('');
+  const [repricePreview, setRepricePreview] = useState<{
+    repriced: number;
+    added_cost: number;
+  } | null>(null);
 
   const fetchStatus = useCallback(async () => {
     setStatusLoading(true);
@@ -198,6 +208,12 @@ const Settings: React.FC = () => {
     fetchStatus();
   }, [fetchStatus]);
 
+  const repriceAllBody = () => ({
+    include_priced: true,
+    ...(repriceFrom ? { from_date: `${repriceFrom}T00:00:00Z` } : {}),
+    ...(repriceTo ? { to_date: `${repriceTo}T23:59:59Z` } : {}),
+  });
+
   const handleAdminSubmit = async (password: string) => {
     if (!pendingAction) return;
     setActionLoading(pendingAction);
@@ -233,18 +249,31 @@ const Settings: React.FC = () => {
         setFullResetInput('');
         setPendingAction(null);
         fetchStatus();
-      } else if (pendingAction === 'reprice') {
+      } else if (pendingAction === 'reprice-all' && !repricePreview) {
+        // Rewriting history cannot be undone: show what it would do first.
+        const preview = await api.post<{ repriced: number; added_cost: number }>(
+          '/api/v1/admin/reprice',
+          { ...repriceAllBody(), dry_run: true },
+          adminHeader,
+        );
+        setRepricePreview(preview);
+      } else if (pendingAction === 'reprice' || pendingAction === 'reprice-all') {
         const result = await api.post<{
           repriced: number;
           added_cost: number;
           still_unpriced: Record<string, number>;
-        }>('/api/v1/admin/reprice', {}, adminHeader);
+        }>(
+          '/api/v1/admin/reprice',
+          pendingAction === 'reprice-all' ? repriceAllBody() : {},
+          adminHeader,
+        );
+        setRepricePreview(null);
         const missing = Object.entries(result.still_unpriced);
         const tail = missing.length
           ? ` Still no price for: ${missing.map(([k, n]) => `${k} (${n})`).join(', ')}.`
           : '';
         setActionMessage({
-          text: `Repriced ${result.repriced} event${result.repriced === 1 ? '' : 's'} (+${formatCurrency(result.added_cost, 4)}).${tail}`,
+          text: `Repriced ${result.repriced} event${result.repriced === 1 ? '' : 's'} (${result.added_cost >= 0 ? '+' : '-'}${formatCurrency(Math.abs(result.added_cost), 4)}).${tail}`,
           tone: missing.length ? 'err' : 'ok',
         });
         setPendingAction(null);
@@ -281,6 +310,7 @@ const Settings: React.FC = () => {
 
   const openAction = (action: PendingAction) => {
     setPwdError(null);
+    setRepricePreview(null);
     setPendingAction(action);
   };
 
@@ -310,6 +340,12 @@ const Settings: React.FC = () => {
       description:
         'Recompute the cost of events recorded at $0 because no model price matched, using current pricing. Costs sent by your own client are not changed — except events recorded before cost tracking existed, where a client-sent $0 with tokens cannot be told apart from an unpriced event. Days already pruned keep their archived totals. Enter your admin password to proceed.',
       submitLabel: 'Reprice',
+    },
+    'reprice-all': {
+      title: 'Reprice All Events',
+      description:
+        'Recompute events priced from the price table using current prices. Use after correcting a wrong price, and limit the dates when a vendor changed a price on a given day: events before that day were billed at the old price. Old costs are overwritten, so this cannot be undone. Costs sent by your own client are not changed, events whose model no longer has a price keep their cost, and days already pruned keep their archived totals. Enter your admin password to see what would change.',
+      submitLabel: repricePreview ? 'Apply' : 'Preview',
     },
     export: {
       title: 'Export Ledger',
@@ -437,6 +473,17 @@ const Settings: React.FC = () => {
               </button>
               <p className="mt-1.5 text-xs text-muted">
                 After adding model pricing, apply it to events stored at $0.
+              </p>
+              <button
+                onClick={() => openAction('reprice-all')}
+                disabled={actionLoading === 'reprice-all'}
+                className="btn-secondary gap-2 mt-3"
+              >
+                <Coins className="h-4 w-4" />
+                {actionLoading === 'reprice-all' ? 'Repricing…' : 'Reprice All Events'}
+              </button>
+              <p className="mt-1.5 text-xs text-muted">
+                After correcting a wrong price, apply it to history as well.
               </p>
             </div>
 
@@ -642,7 +689,46 @@ const Settings: React.FC = () => {
           submitLabel={modalConfig[pendingAction].submitLabel}
           isLoading={actionLoading === pendingAction}
           error={pwdError}
-        />
+        >
+          {pendingAction === 'reprice-all' && (
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="label">From (UTC)</label>
+                  <input
+                    type="date"
+                    className="input"
+                    value={repriceFrom}
+                    onChange={(e) => {
+                      setRepriceFrom(e.target.value);
+                      setRepricePreview(null);
+                    }}
+                  />
+                </div>
+                <div>
+                  <label className="label">To (UTC)</label>
+                  <input
+                    type="date"
+                    className="input"
+                    value={repriceTo}
+                    onChange={(e) => {
+                      setRepriceTo(e.target.value);
+                      setRepricePreview(null);
+                    }}
+                  />
+                </div>
+              </div>
+              {repricePreview && (
+                <p className="text-sm text-primary">
+                  This would change {repricePreview.repriced} event
+                  {repricePreview.repriced === 1 ? '' : 's'} by{' '}
+                  {repricePreview.added_cost >= 0 ? '+' : '-'}
+                  {formatCurrency(Math.abs(repricePreview.added_cost), 4)}.
+                </p>
+              )}
+            </div>
+          )}
+        </AdminPasswordModal>
       )}
     </div>
   );
