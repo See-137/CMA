@@ -14,7 +14,7 @@ from app.config import settings
 from app.metrics import RAG_STAGE_SECONDS
 from app.models.models import Agent, CostEvent, ModelPricing, Provider
 from app.services.buckets import bucket_start_utc, local_bucket_expr
-from app.services.vector_store import embed_text, search_events, search_rollups
+from app.services.vector_store import _epoch, embed_text, search_events, search_rollups
 from app.timeutils import (
     UTC_ZONE,
     deployment_tz,
@@ -84,7 +84,8 @@ _AGG_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 _CMP_PATTERNS = re.compile(
-    r"\b(compare|vs|versus|difference|switch|save|saving|alternative|instead)\b",
+    r"\b(compare|vs|versus|difference|switch|save|saving|alternatives?|instead"
+    r"|what if|what would|other models?|cheaper)\b",
     re.IGNORECASE,
 )
 _TIME_PATTERNS = re.compile(
@@ -648,6 +649,8 @@ class Citation:
     source_type: str  # "event" | "rollup" | "sql_query"
     source_id: str | None = None
     snippet: str = ""
+    # The labels the data block gives this source, as the answer cites them.
+    labels: tuple[str, ...] = ()
 
 
 @dataclass
@@ -665,6 +668,63 @@ class RetrievalContext:
 
 
 _VECTOR_LIMIT = 15
+
+
+def _time_clauses(intent: QueryIntent) -> list[dict]:
+    """Chroma filters for the question's windows, on the records' epoch.
+
+    Comparisons have several windows: the search covers all of them. No window
+    means no filter.
+    """
+    windows = [
+        w for w in [intent.time_range] + [w for _, w in intent.extra_windows] if w
+    ]
+    if not windows:
+        return []
+    start = min(w[0] for w in windows)
+    end = max(w[1] for w in windows)
+    return [{"epoch": {"$gte": _epoch(start)}}, {"epoch": {"$lt": _epoch(end)}}]
+
+
+def _row_labels(rows: list[dict]) -> tuple[str, ...]:
+    """The labels ``_data_block`` prints for these rows, without brackets."""
+    return tuple(dict.fromkeys(_row_label(r) for r in rows))
+
+
+def _row_label(row: dict) -> str:
+    return _LABEL_BY_TYPE.get(row.get("type"), row.get("type", "sql"))
+
+
+_LABEL_BY_TYPE = {
+    "total": "total",
+    "breakdown": "breakdown",
+    "breakdown_remainder": "breakdown",
+}
+
+# A citation is a short bracketed label: not "[see above]", a markdown link
+# "[text](url)" or an agent name that happens to be in brackets with spaces.
+_CITED_LABEL = re.compile(r"\[([A-Za-z0-9_]{1,40})\](?!\()")
+
+
+def verified_citations(answer: str, context: RetrievalContext) -> list[Citation]:
+    """The sources the answer actually cites, plus one ``unverified`` entry for
+    each label it cites that the data block never gave it (RAG-09).
+
+    The retrieved list says what the model was shown, which is not what the
+    answer rests on, and a label with no source is a claim nobody can check.
+    """
+    cited = list(dict.fromkeys(m.group(1) for m in _CITED_LABEL.finditer(answer)))
+    known = {label for c in context.citations for label in c.labels}
+    used = [c for c in context.citations if set(c.labels) & set(cited)]
+    used.extend(
+        Citation(
+            source_type="unverified",
+            snippet=f"The answer cites [{label}], which is not in the data it was given.",
+        )
+        for label in cited
+        if label not in known
+    )
+    return used
 
 
 def retrieve(query: str, db: Session) -> RetrievalContext:
@@ -723,6 +783,9 @@ def retrieve(query: str, db: Session) -> RetrievalContext:
                 where_clauses.append({"provider_name": intent.providers[0]})
             if intent.needs_failures:
                 where_clauses.append({"status": {"$ne": "success"}})
+            # A record from outside the window must not explain the window.
+            time_clauses = _time_clauses(intent)
+            where_clauses.extend(time_clauses)
 
             if len(where_clauses) == 1:
                 where = where_clauses[0]
@@ -732,8 +795,15 @@ def retrieve(query: str, db: Session) -> RetrievalContext:
             event_results = search_events(
                 query_embedding, n_results=settings.RAG_TOP_K, where=where
             )
+            rollup_where = None
+            if len(time_clauses) == 1:
+                rollup_where = time_clauses[0]
+            elif time_clauses:
+                rollup_where = {"$and": time_clauses}
             rollup_results = search_rollups(
-                query_embedding, n_results=settings.RAG_TOP_K // 2
+                query_embedding,
+                n_results=settings.RAG_TOP_K // 2,
+                where=rollup_where,
             )
     except Exception:
         logger.warning(
@@ -753,6 +823,7 @@ def retrieve(query: str, db: Session) -> RetrievalContext:
                     source_type="event",
                     source_id=r["id"],
                     snippet=r.get("document", "")[:200],
+                    labels=(str(len(ctx.vector_results)),),
                 )
             )
 
@@ -771,6 +842,7 @@ def retrieve(query: str, db: Session) -> RetrievalContext:
                     source_type="rollup",
                     source_id=r["id"],
                     snippet=r.get("document", "")[:200],
+                    labels=(str(len(ctx.vector_results)),),
                 )
             )
 
@@ -784,6 +856,7 @@ def retrieve(query: str, db: Session) -> RetrievalContext:
                     Citation(
                         source_type="sql_query",
                         snippet=f"Totals + breakdown: {len(agg)} rows",
+                        labels=_row_labels(agg),
                     )
                 )
 
@@ -795,6 +868,7 @@ def retrieve(query: str, db: Session) -> RetrievalContext:
                     Citation(
                         source_type="sql_query",
                         snippet=f"Cost comparison: {len(cmp)} models",
+                        labels=_row_labels(cmp),
                     )
                 )
 
@@ -806,6 +880,7 @@ def retrieve(query: str, db: Session) -> RetrievalContext:
                     Citation(
                         source_type="sql_query",
                         snippet=f"Timeline: {len(tl)} data points",
+                        labels=_row_labels(tl),
                     )
                 )
 
@@ -817,6 +892,7 @@ def retrieve(query: str, db: Session) -> RetrievalContext:
                     Citation(
                         source_type="sql_query",
                         snippet=f"Failures: {len(fails)} events",
+                        labels=_row_labels(fails),
                     )
                 )
 
@@ -849,6 +925,7 @@ def retrieve(query: str, db: Session) -> RetrievalContext:
                     Citation(
                         source_type="sql_query",
                         snippet=f"General aggregation: {len(agg)} groups",
+                        labels=_row_labels(agg),
                     )
                 )
 
@@ -873,11 +950,7 @@ def _data_block(context: RetrievalContext) -> str:
     if context.sql_results:
         parts.append("\n## Structured query results (exact SQL)")
         for r in context.sql_results:
-            label = {
-                "total": "[total]",
-                "breakdown": "[breakdown]",
-                "breakdown_remainder": "[breakdown]",
-            }.get(r.get("type"), f"[{r.get('type', 'sql')}]")
+            label = f"[{_row_label(r)}]"
             # Escape '<' so a stored name like "</data>" can't close the block.
             body = json.dumps(r, default=str).replace("<", "\\u003c")
             parts.append(f"{label} {body}")
@@ -893,7 +966,9 @@ def _data_block(context: RetrievalContext) -> str:
         )
         for i, r in enumerate(context.vector_results):
             doc = str(r.get("document", "")).replace("<", "\u2039")
-            parts.append(f"[{i + 1}] {doc}")
+            when = (r.get("metadata") or {}).get("timestamp")
+            stamp = f"(at {when} UTC) " if when else ""
+            parts.append(f"[{i + 1}] {stamp}{doc}")
     parts.append("</data>")
     return "\n".join(parts)
 

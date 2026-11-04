@@ -16,7 +16,7 @@ from app.config import settings
 from app.metrics import CHAT_REQUESTS, RAG_STAGE_SECONDS
 from app.schemas.schemas import ChatRequest, ChatResponse, CitationOut
 from app.services.llm_provider import get_llm_provider
-from app.services.rag_engine import build_messages, retrieve
+from app.services.rag_engine import build_messages, retrieve, verified_citations
 from app.services.rate_limit import rate_limit
 from app.services.vector_store import get_events_collection, get_rollups_collection
 
@@ -73,7 +73,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
             source_id=c.source_id,
             snippet=c.snippet,
         )
-        for c in context.citations
+        for c in verified_citations(response.content, context)
     ]
 
     CHAT_REQUESTS.labels(mode="sync", outcome="ok").inc()
@@ -110,6 +110,7 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
         outcome = "ok"
         got_first = False
         start = None
+        answer: list[str] = []
         try:
             yield f"data: {json.dumps({'type': 'citations', 'data': citations})}\n\n"
 
@@ -123,7 +124,19 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
                     RAG_STAGE_SECONDS.labels(stage="llm_first_token").observe(
                         time.perf_counter() - start
                     )
+                answer.append(chunk)
                 yield f"data: {json.dumps({'type': 'content', 'data': chunk})}\n\n"
+            # The answer is complete: replace what was retrieved with what it
+            # actually cites (clients take the latest citations frame).
+            used = [
+                {
+                    "source_type": c.source_type,
+                    "source_id": c.source_id,
+                    "snippet": c.snippet,
+                }
+                for c in verified_citations("".join(answer), context)
+            ]
+            yield f"data: {json.dumps({'type': 'citations', 'data': used})}\n\n"
         except HTTPStatusError as exc:
             outcome = "llm_error"
             code = exc.response.status_code

@@ -76,6 +76,7 @@ def _retention_job() -> None:
 def _embed_backfill_job() -> None:
     from app.services.vector_store import (
         backfill_event_embeddings,
+        backfill_vector_epochs,
         embed_rollups_for_date,
     )
 
@@ -83,6 +84,7 @@ def _embed_backfill_job() -> None:
     try:
         backfill_event_embeddings(db, batch_size=500)
         embed_rollups_for_date(db)
+        backfill_vector_epochs()
     finally:
         db.close()
 

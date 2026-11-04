@@ -1,7 +1,7 @@
 """ChromaDB vector store + sentence-transformers embedding service."""
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from sqlalchemy.orm import Session
 
@@ -115,6 +115,11 @@ def _rollup_to_text(row) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _epoch(value: datetime) -> int:
+    """Seconds since 1970 of a naive-UTC time: Chroma filters compare numbers."""
+    return int(value.replace(tzinfo=timezone.utc).timestamp())
+
+
 def _event_metadata(row) -> dict:
     if isinstance(row, dict):
         g = row.get
@@ -122,10 +127,12 @@ def _event_metadata(row) -> dict:
         g = lambda k, d=None: getattr(row, k, d)
 
     ts = g("timestamp")
+    epoch = _epoch(ts) if isinstance(ts, datetime) else 0
     if isinstance(ts, datetime):
         ts = ts.isoformat()
 
     return {
+        "epoch": epoch,
         "agent_name": g("agent_name") or "",
         "model_name": g("model_name") or "",
         "provider_name": g("provider_name") or "",
@@ -144,10 +151,12 @@ def _rollup_metadata(row) -> dict:
         g = lambda k, d=None: getattr(row, k, d)
 
     d = g("date")
+    epoch = _epoch(datetime.fromisoformat(d.isoformat())) if isinstance(d, date) else 0
     if isinstance(d, date):
         d = d.isoformat()
 
     return {
+        "epoch": epoch,
         "agent_name": g("agent_name") or "",
         "model_name": g("model_name") or "",
         "provider_name": g("provider_name") or "",
@@ -215,16 +224,54 @@ def search_events(
 def search_rollups(
     query_embedding: list[float],
     n_results: int = 10,
+    where: dict | None = None,
 ) -> list[dict]:
     col = get_rollups_collection()
     if col.count() == 0:
         return []
 
-    results = col.query(
-        query_embeddings=[query_embedding],
-        n_results=min(n_results, col.count()),
-    )
-    return _unpack_chroma_results(results)
+    kwargs: dict = {
+        "query_embeddings": [query_embedding],
+        "n_results": min(n_results, col.count()),
+    }
+    if where:
+        kwargs["where"] = where
+    return _unpack_chroma_results(col.query(**kwargs))
+
+
+def backfill_vector_epochs(batch_size: int = 1000) -> int:
+    """Give records stored before RAG-10 their ``epoch``, without re-embedding.
+
+    Time-filtered searches cannot see a record with no epoch, so until this has
+    run they only miss older examples: totals come from SQL either way. Runs in
+    daily maintenance; records already done cost one read.
+    """
+    updated = 0
+    for col, stamp in (
+        (get_events_collection(), "timestamp"),
+        (get_rollups_collection(), "date"),
+    ):
+        offset = 0
+        while True:
+            page = col.get(include=["metadatas"], limit=batch_size, offset=offset)
+            ids = page.get("ids") or []
+            if not ids:
+                break
+            offset += len(ids)
+            todo = []
+            for record_id, meta in zip(ids, page.get("metadatas") or []):
+                meta = meta or {}
+                if "epoch" in meta:
+                    continue
+                try:
+                    when = datetime.fromisoformat(str(meta.get(stamp) or ""))
+                except ValueError:
+                    continue
+                todo.append((record_id, {**meta, "epoch": _epoch(when)}))
+            if todo:
+                col.update(ids=[t[0] for t in todo], metadatas=[t[1] for t in todo])
+                updated += len(todo)
+    return updated
 
 
 def _unpack_chroma_results(results: dict) -> list[dict]:
