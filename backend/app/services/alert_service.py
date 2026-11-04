@@ -2,7 +2,7 @@ import ipaddress
 import json
 import logging
 import socket
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 from sqlalchemy.orm import Session
@@ -18,12 +18,20 @@ class UnsafeWebhookURL(ValueError):
     """Raised when a webhook URL targets a disallowed (private/internal) host."""
 
 
-def validate_external_url(url: str) -> str:
-    """Reject webhook targets that point at internal infrastructure (SSRF).
+def _disallowed(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        ip = mapped
+    # is_global excludes private, loopback, link-local, CGNAT (100.64.0.0/10)
+    # and documentation ranges; multicast must be listed separately because
+    # global multicast counts as global.
+    return not ip.is_global or ip.is_multicast or ip.is_unspecified
 
-    Blocks non-http(s) schemes and any host that resolves to a private,
-    loopback, link-local, or reserved address — unless CMA_ALLOW_PRIVATE_WEBHOOKS
-    is set (for pointing alerts at a localhost dev endpoint).
+
+def _resolve_allowed(url: str) -> tuple[str, str | None]:
+    """Check a webhook URL; return (host, a validated address to connect to).
+
+    The address is None when private targets are allowed (no pinning needed).
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
@@ -33,27 +41,64 @@ def validate_external_url(url: str) -> str:
         raise UnsafeWebhookURL("URL has no host")
 
     if settings.ALLOW_PRIVATE_WEBHOOKS:
-        return url
+        return host, None
 
     try:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror as exc:
         raise UnsafeWebhookURL(f"Could not resolve host: {host}") from exc
 
+    addresses = []
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-            or ip.is_unspecified
-        ):
+        if _disallowed(ip):
             raise UnsafeWebhookURL(
                 f"URL resolves to a disallowed address ({ip}) — refusing to send"
             )
+        addresses.append(str(ip))
+    if not addresses:
+        raise UnsafeWebhookURL(f"Could not resolve host: {host}")
+    return host, addresses[0]
+
+
+def validate_external_url(url: str) -> str:
+    """Reject webhook targets that point at internal infrastructure (SSRF).
+
+    Blocks non-http(s) schemes and any host that resolves to a non-public
+    address — unless CMA_ALLOW_PRIVATE_WEBHOOKS is set (for pointing alerts at
+    a localhost dev endpoint).
+    """
+    _resolve_allowed(url)
     return url
+
+
+def _post_json(url: str, payload: dict) -> httpx.Response:
+    """POST to the address that was validated, not a fresh DNS answer.
+
+    Resolving twice would let a rebinding DNS server pass the check with a
+    public address and then answer with an internal one (SEC-05). TLS still
+    verifies against the original host name.
+    """
+    host, address = _resolve_allowed(url)
+    with httpx.Client(timeout=10, follow_redirects=False) as client:
+        if address is None:
+            resp = client.post(url, json=payload)
+        else:
+            parsed = urlparse(url)
+            netloc = f"[{address}]" if ":" in address else address
+            if parsed.port:
+                netloc = f"{netloc}:{parsed.port}"
+            host_header = f"{host}:{parsed.port}" if parsed.port else host
+            request = client.build_request(
+                "POST",
+                urlunparse(parsed._replace(netloc=netloc)),
+                json=payload,
+                headers={"Host": host_header},
+                extensions={"sni_hostname": host},
+            )
+            resp = client.send(request)
+        resp.raise_for_status()
+    return resp
 
 
 def dispatch_alert(alert: Alert, db: Session) -> None:
@@ -91,7 +136,6 @@ def _send_webhook(alert: Alert, config: dict) -> None:
     if not url:
         logger.error("Webhook channel missing 'url' in config")
         return
-    url = validate_external_url(url)
 
     payload = {
         "type": alert.alert_type,
@@ -99,10 +143,11 @@ def _send_webhook(alert: Alert, config: dict) -> None:
         "message": alert.message,
         "timestamp": utcnow().isoformat(),
     }
-    with httpx.Client(timeout=10, follow_redirects=False) as client:
-        resp = client.post(url, json=payload)
-        resp.raise_for_status()
-    logger.info("Webhook delivered to %s (status %s)", url, resp.status_code)
+    resp = _post_json(url, payload)
+    # The URL path is the secret on most webhook services: log the host only.
+    logger.info(
+        "Webhook delivered to %s (status %s)", urlparse(url).hostname, resp.status_code
+    )
 
 
 def _send_slack(alert: Alert, config: dict) -> None:
@@ -110,14 +155,11 @@ def _send_slack(alert: Alert, config: dict) -> None:
     if not webhook_url:
         logger.error("Slack channel missing 'webhook_url' in config")
         return
-    webhook_url = validate_external_url(webhook_url)
 
     severity_emoji = {"info": "ℹ️", "warning": "⚠️", "critical": "🚨"}.get(
         alert.severity, "ℹ️"
     )
     text = f"{severity_emoji} *[{alert.severity.upper()}]* {alert.message}"
 
-    with httpx.Client(timeout=10, follow_redirects=False) as client:
-        resp = client.post(webhook_url, json={"text": text})
-        resp.raise_for_status()
+    resp = _post_json(webhook_url, {"text": text})
     logger.info("Slack message delivered (status %s)", resp.status_code)

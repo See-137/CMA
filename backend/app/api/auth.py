@@ -1,10 +1,8 @@
-import hmac
-
 import bcrypt
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.deps import _verify_password, get_db
+from app.api.deps import BCRYPT_MAX_BYTES, _verify_password, get_db, safe_compare
 from app.config import settings
 from app.models.models import SetupConfig
 from app.schemas.schemas import LoginRequest, LoginResponse
@@ -28,13 +26,17 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
     if not config or not config.is_setup_complete:
         raise HTTPException(status_code=400, detail="Setup not completed")
 
-    email_ok = hmac.compare_digest(config.admin_email, body.email)
+    email_ok = safe_compare(config.admin_email, body.email)
     password_ok = _verify_password(body.password, config.admin_password_hash)
     if not (email_ok and password_ok):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     # Transparently upgrade legacy SHA-256 hashes to bcrypt on successful login
-    if _needs_rehash(config.admin_password_hash):
+    # (a legacy password over bcrypt's 72 bytes keeps its old hash)
+    if (
+        _needs_rehash(config.admin_password_hash)
+        and len(body.password.encode()) <= BCRYPT_MAX_BYTES
+    ):
         config.admin_password_hash = bcrypt.hashpw(
             body.password.encode(), bcrypt.gensalt()
         ).decode()

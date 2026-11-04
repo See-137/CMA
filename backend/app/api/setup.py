@@ -1,4 +1,3 @@
-import hmac
 import secrets
 
 import bcrypt
@@ -7,10 +6,15 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
-from app.api.deps import _verify_password, get_db
+from app.api.deps import _verify_password, get_db, safe_compare
 from app.config import settings
 from app.models.models import SetupConfig
-from app.schemas.schemas import SetupRequest, SetupResponse, SetupStatusResponse
+from app.schemas.schemas import (
+    ReconnectRequest,
+    SetupRequest,
+    SetupResponse,
+    SetupStatusResponse,
+)
 from app.services.rate_limit import rate_limit
 from app.timeutils import deployment_tz
 
@@ -82,13 +86,13 @@ def run_setup(body: SetupRequest, db: Session = Depends(get_db)):
 @router.post(
     "/reconnect", response_model=SetupResponse, dependencies=[Depends(_login_limit)]
 )
-def reconnect(body: SetupRequest, db: Session = Depends(get_db)):
+def reconnect(body: ReconnectRequest, db: Session = Depends(get_db)):
     """Return existing API key after verifying admin credentials."""
     config = db.query(SetupConfig).first()
     if not config or not config.is_setup_complete:
         raise HTTPException(status_code=400, detail="Setup not completed yet")
 
-    email_ok = hmac.compare_digest(config.admin_email, body.admin_email)
+    email_ok = safe_compare(config.admin_email, body.admin_email)
     password_ok = _verify_password(body.admin_password, config.admin_password_hash)
     if not (email_ok and password_ok):
         raise HTTPException(status_code=401, detail="Invalid credentials")

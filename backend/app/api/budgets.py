@@ -45,6 +45,11 @@ def check_budget(
 ):
     """Pre-call enforcement: may a call with this attribution proceed?
 
+    This is a soft limit. Spend is known only after a call returns, the check
+    is not serialised across callers, and the SDK caches answers briefly, so
+    concurrent calls can all pass and the call that crosses the limit is
+    allowed. Expect overshoot of about the calls in flight.
+
     Returns allowed=false with the exhausted blocking budgets (any
     control_action other than "alert") whose scope matches. Global budgets
     always match; agent/swarm/workflow/provider/model budgets match only when

@@ -8,7 +8,6 @@ from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_admin
-from app.config import settings
 from app.logging_config import LOG_FILE
 from app.models.models import Agent, Alert, Budget, CostEvent, SetupConfig
 from app.services.cost_engine import reprice_events
@@ -22,14 +21,29 @@ logger = logging.getLogger(__name__)
 admin_only = [Depends(require_admin)]
 
 
+def _database_size_mb(db: Session) -> float:
+    """Size of the database actually in use; 0 when it cannot be determined."""
+    bind = db.get_bind()
+    try:
+        if bind.dialect.name == "postgresql":
+            size = db.execute(
+                text("SELECT pg_database_size(current_database())")
+            ).scalar()
+        elif bind.url.database and os.path.exists(bind.url.database):
+            size = os.path.getsize(bind.url.database)
+        else:
+            return 0
+    except Exception:
+        logger.warning("Could not read the database size", exc_info=True)
+        db.rollback()
+        return 0
+    return round((size or 0) / (1024 * 1024), 2)
+
+
 @router.get("/status")
 def system_status(db: Session = Depends(get_db)):
     """System health and stats."""
-    db_size_mb = 0
-    if settings.DATABASE_URL.startswith("sqlite"):
-        db_path = os.path.join("data", "cma.db")
-        if os.path.exists(db_path):
-            db_size_mb = round(os.path.getsize(db_path) / (1024 * 1024), 2)
+    db_size_mb = _database_size_mb(db)
 
     config = db.query(SetupConfig).first()
 

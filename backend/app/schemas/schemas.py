@@ -1,6 +1,8 @@
 import json
+import re
 from datetime import datetime, timezone
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
@@ -10,6 +12,7 @@ from pydantic import (
     model_validator,
 )
 
+from app.config import settings
 from app.timeutils import parse_zone, to_naive_utc
 
 
@@ -34,13 +37,31 @@ UTCDateTime = Annotated[datetime, PlainSerializer(_utc_iso, when_used="json")]
 
 
 class SetupRequest(BaseModel):
-    admin_email: str
-    admin_password: str
+    admin_email: str = Field(max_length=320)
+    # Policy applies when the password is chosen, never when one is checked
+    # (see ReconnectRequest, LoginRequest): an existing weak password must
+    # still be able to log in.
+    admin_password: str = Field(min_length=8)
     deployment_name: str = "CMA"
     # IANA zone (e.g. "Asia/Jerusalem"). Budget periods, dashboard days and
     # Scrooge's "today"/"this week" follow it (D2); storage stays UTC.
     timezone: str = "UTC"
     currency: str = "USD"
+
+    @field_validator("admin_email")
+    @classmethod
+    def _plausible_email(cls, v: str) -> str:
+        v = v.strip()
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+", v):
+            raise ValueError("admin_email must look like an email address")
+        return v
+
+    @field_validator("admin_password")
+    @classmethod
+    def _bcrypt_limit(cls, v: str) -> str:
+        if len(v.encode()) > 72:
+            raise ValueError("admin_password cannot be longer than 72 bytes")
+        return v
 
     @field_validator("timezone")
     @classmethod
@@ -49,6 +70,11 @@ class SetupRequest(BaseModel):
         if zone is None:
             raise ValueError(f"unknown time zone {v!r}; use an IANA name such as 'UTC'")
         return zone.key
+
+
+class ReconnectRequest(BaseModel):
+    admin_email: str
+    admin_password: str
 
 
 class SetupResponse(BaseModel):
@@ -107,6 +133,24 @@ class EventIn(BaseModel):
     @classmethod
     def _timestamp_to_utc(cls, v: datetime | None) -> datetime | None:
         return to_naive_utc(v)
+
+    @field_validator("metadata")
+    @classmethod
+    def _cap_metadata(cls, v: dict | None) -> dict | None:
+        """Oversized metadata loses the payload, never the event (SEC-06).
+
+        Rejecting it would 422 the whole batch: a real, already billed spend
+        lost because of a debug blob.
+        """
+        if v is None:
+            return None
+        try:
+            size = len(json.dumps(v).encode())
+        except (TypeError, ValueError):
+            return {"_cma_dropped": "not JSON serialisable"}
+        if size > settings.MAX_EVENT_METADATA_BYTES:
+            return {"_cma_dropped": "too large", "_cma_original_bytes": size}
+        return v
 
     @model_validator(mode="after")
     def _cache_tokens_within_input(self) -> "EventIn":
@@ -415,9 +459,11 @@ class AlertOut(BaseModel):
 
 
 class AlertChannelCreate(BaseModel):
-    name: str
-    channel_type: str
-    config: str
+    name: str = Field(min_length=1, max_length=255)
+    # Only what dispatch_alert can deliver: anything else would store a channel
+    # that looks active and never sends.
+    channel_type: Literal["webhook", "slack", "in_app"]
+    config: str = Field(max_length=4000)
 
 
 class AlertChannelOut(BaseModel):
@@ -431,6 +477,25 @@ class AlertChannelOut(BaseModel):
 
     model_config = {"from_attributes": True}
 
+    @field_validator("config_json")
+    @classmethod
+    def _mask_secrets(cls, v: str) -> str:
+        """A webhook URL is a bearer secret: show where it points, not the path."""
+        try:
+            config = json.loads(v)
+        except (json.JSONDecodeError, TypeError):
+            return "{}"
+        if not isinstance(config, dict):
+            return "{}"
+        masked = {}
+        for key, value in config.items():
+            if isinstance(value, str) and "://" in value:
+                parsed = urlsplit(value)
+                masked[key] = f"{parsed.scheme}://{parsed.hostname or ''}/***"
+            else:
+                masked[key] = value
+        return json.dumps(masked)
+
 
 # -- Dashboard ----------------------------------------------------------------
 
@@ -440,8 +505,9 @@ class DashboardOverview(BaseModel):
     total_requests: int
     active_agents: int
     total_tokens: int
-    cost_change_pct: float
-    request_change_pct: float
+    # None: the previous window had no data, so there is nothing to compare.
+    cost_change_pct: float | None = None
+    request_change_pct: float | None = None
     # Events in the period stored at $0 because no price matched — the
     # total_cost understates spend while this is non-zero.
     unpriced_events: int = 0
@@ -500,15 +566,29 @@ class BudgetStatusResponse(BaseModel):
 # -- Chat / RAG ---------------------------------------------------------------
 
 
+MAX_CHAT_HISTORY_CHARS = 100_000
+
+
 class ChatMessage(BaseModel):
-    role: str
-    content: str
+    # The client holds the history (no session table), so it can only claim
+    # what a client could have seen. "system" would hand it system authority.
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=20_000)
 
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     history: list[ChatMessage] = Field(default=[], max_length=50)
     stream: bool = False
+
+    @field_validator("history")
+    @classmethod
+    def _history_total_size(cls, v: list[ChatMessage]) -> list[ChatMessage]:
+        if sum(len(m.content) for m in v) > MAX_CHAT_HISTORY_CHARS:
+            raise ValueError(
+                f"history cannot exceed {MAX_CHAT_HISTORY_CHARS} characters in total"
+            )
+        return v
 
 
 class CitationOut(BaseModel):
@@ -528,8 +608,8 @@ class ChatResponse(BaseModel):
 
 
 class SemanticSearchRequest(BaseModel):
-    query: str
-    top_k: int = 20
+    query: str = Field(min_length=1, max_length=4000)
+    top_k: int = Field(default=20, ge=1, le=100)
     agent_name: str | None = None
     provider: str | None = None
     model: str | None = None

@@ -215,3 +215,5 @@ Owner decisions (2026-10-28):
   tests → 235, SDK → 101.
 - 2026-10-29 — Re-review of the #28 fixes: APPROVE WITH FOLLOW-UPS; all done
   (FINDINGS REV-28b). SDK tests → 112.
+- 2026-11-04 — Owner: finish everything autonomously. Status re-audit found current models unpriced (ACC-22), tiered pricing unsupported (ACC-23), undeliverable alert channels (UX-05), compose ignoring LLM settings (OPS-08), npm advisories (OPS-09). Pricing moved ahead of the remaining S4 work.
+- 2026-11-04 — `fix/cheap-hardening`: SEC-02/05/06/07/08/09, RAG-11/12/13, OPS-02/08/09, ACC-16, BUD-05, UX-03/05. Backend tests → 267.

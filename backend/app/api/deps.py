@@ -9,12 +9,28 @@ from app.database import get_db
 from app.models.models import SetupConfig
 from app.services.rate_limit import limit_failures
 
+# bcrypt only defines behaviour up to 72 bytes; bcrypt>=5 raises beyond that.
+BCRYPT_MAX_BYTES = 72
+
+
+def safe_compare(a: str, b: str) -> bool:
+    """Constant-time string comparison that accepts any characters.
+
+    ``hmac.compare_digest`` raises TypeError on non-ASCII str, which turned a
+    malformed credential into a 500 (SEC-08).
+    """
+    return hmac.compare_digest(a.encode(), b.encode())
+
 
 def _verify_password(plain: str, hashed: str) -> bool:
     """Constant-time password check supporting bcrypt and legacy SHA-256."""
+    raw = plain.encode()
     if hashed.startswith(("$2b$", "$2a$")):
-        return bcrypt.checkpw(plain.encode(), hashed.encode())
-    return hmac.compare_digest(hashlib.sha256(plain.encode()).hexdigest(), hashed)
+        # No stored bcrypt hash can match more than 72 bytes (setup rejects them).
+        if len(raw) > BCRYPT_MAX_BYTES:
+            return False
+        return bcrypt.checkpw(raw, hashed.encode())
+    return hmac.compare_digest(hashlib.sha256(raw).hexdigest(), hashed)
 
 
 def require_api_key(
@@ -37,7 +53,7 @@ def require_api_key(
     if not config or not config.is_setup_complete:
         raise HTTPException(status_code=503, detail="Setup not completed")
 
-    if not hmac.compare_digest(config.api_key, api_key):
+    if not safe_compare(config.api_key, api_key):
         raise HTTPException(status_code=401, detail="Invalid API key")
 
     return api_key
@@ -61,7 +77,7 @@ def require_metrics_access(
         token
         and authorization
         and authorization.startswith("Bearer ")
-        and hmac.compare_digest(authorization[7:], token)
+        and safe_compare(authorization[7:], token)
     ):
         return
 

@@ -26,8 +26,6 @@ const severityVariant = (severity: string) => {
 
 const channelTypeVariant = (type: string) => {
   switch (type.toLowerCase()) {
-    case 'email':
-      return 'info' as const;
     case 'slack':
       return 'success' as const;
     case 'webhook':
@@ -61,7 +59,7 @@ const Alerts: React.FC = () => {
   const [channelCreateError, setChannelCreateError] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     name: '',
-    channel_type: 'email',
+    channel_type: 'slack',
     config: '',
   });
 
@@ -111,7 +109,7 @@ const Alerts: React.FC = () => {
         config: formData.config,
       });
       setModalOpen(false);
-      setFormData({ name: '', channel_type: 'email', config: '' });
+      setFormData({ name: '', channel_type: 'slack', config: '' });
       refetchChannels();
     } catch (err) {
       const msg =
@@ -274,8 +272,20 @@ const Alerts: React.FC = () => {
                           variant={channelTypeVariant(channel.channel_type)}
                         />
                         <Badge
-                          text={channel.is_active ? 'Active' : 'Inactive'}
-                          variant={channel.is_active ? 'success' : 'default'}
+                          text={
+                            !['slack', 'webhook', 'in_app'].includes(channel.channel_type)
+                              ? 'Never delivered'
+                              : channel.is_active
+                                ? 'Active'
+                                : 'Inactive'
+                          }
+                          variant={
+                            !['slack', 'webhook', 'in_app'].includes(channel.channel_type)
+                              ? 'danger'
+                              : channel.is_active
+                                ? 'success'
+                                : 'default'
+                          }
                         />
                       </div>
                     </div>
@@ -299,7 +309,7 @@ const Alerts: React.FC = () => {
             <div className="card">
               <EmptyState
                 title="Silence on all channels"
-                description="Add a notification channel to receive alerts via Slack, webhooks, or email."
+                description="Add a notification channel to receive alerts via Slack or webhooks."
                 action={{ label: 'Add Channel', onClick: () => setModalOpen(true) }}
               />
             </div>
@@ -336,10 +346,9 @@ const Alerts: React.FC = () => {
               value={formData.channel_type}
               onChange={(e) => setFormData({ ...formData, channel_type: e.target.value })}
             >
-              <option value="email">Email</option>
               <option value="slack">Slack</option>
               <option value="webhook">Webhook</option>
-              <option value="pagerduty">PagerDuty</option>
+              <option value="in_app">In-app only</option>
             </select>
           </div>
           <div>
@@ -349,11 +358,11 @@ const Alerts: React.FC = () => {
               rows={4}
               required
               placeholder={
-                formData.channel_type === 'email'
-                  ? '{"recipients": ["team@example.com"]}'
-                  : formData.channel_type === 'slack'
-                    ? '{"webhook_url": "https://hooks.slack.com/..."}'
-                    : '{"url": "https://..."}'
+                formData.channel_type === 'slack'
+                  ? '{"webhook_url": "https://hooks.slack.com/..."}'
+                  : formData.channel_type === 'webhook'
+                    ? '{"url": "https://..."}'
+                    : '{}'
               }
               value={formData.config}
               onChange={(e) => {

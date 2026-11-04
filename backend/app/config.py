@@ -35,6 +35,8 @@ class Settings(BaseSettings):
 
     # Ingestion / abuse limits
     MAX_EVENTS_PER_REQUEST: int = 1000
+    # Larger event metadata is replaced by a marker; the event itself is kept.
+    MAX_EVENT_METADATA_BYTES: int = 65536
     RATE_LIMIT_LOGIN_PER_MINUTE: int = 10
     RATE_LIMIT_CHAT_PER_MINUTE: int = 30
 

@@ -3,7 +3,7 @@ import { LucideIcon, TrendingUp, TrendingDown } from 'lucide-react';
 interface StatsCardProps {
   title: string;
   value: string;
-  change?: number;
+  change?: number | null;
   icon: LucideIcon;
   delay?: number;
   /** Lower spend is good for cost metrics; flip the colour semantics. */
@@ -31,6 +31,11 @@ export default function StatsCard({
         <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-brand-500/12 text-brand-600 transition-transform duration-200 group-hover:scale-110 dark:text-brand-300">
           <Icon className="h-5 w-5" />
         </div>
+        {!hasChange && change === null && (
+          <div className="rounded-full bg-[color:var(--color-border)] px-2 py-1 text-xs font-semibold text-muted">
+            new
+          </div>
+        )}
         {hasChange && (
           <div
             className={`flex items-center gap-1 rounded-full px-2 py-1 text-xs font-semibold numeral ${

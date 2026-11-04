@@ -5,6 +5,7 @@ import json
 import logging
 import time
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from httpx import HTTPStatusError
@@ -158,27 +159,52 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
     )
 
 
+def _llm_status() -> tuple[bool, str]:
+    """Whether Scrooge could answer now, without spending anything.
+
+    Ollama is asked (tags are free). OpenAI is not called: a key that is set
+    may still be invalid, and the detail says what was actually checked.
+    """
+    if settings.LLM_PROVIDER == "openai":
+        if not settings.OPENAI_API_KEY:
+            return False, "CMA_OPENAI_API_KEY is not set"
+        return True, "API key configured (not validated)"
+    if settings.LLM_PROVIDER != "ollama":
+        return False, f"Unknown LLM provider {settings.LLM_PROVIDER!r}"
+    try:
+        resp = httpx.get(f"{settings.OLLAMA_BASE_URL}/api/tags", timeout=2)
+        resp.raise_for_status()
+        names = {m.get("name", "") for m in resp.json().get("models", [])}
+    except (httpx.HTTPError, ValueError, AttributeError):
+        return False, f"Ollama is not reachable at {settings.OLLAMA_BASE_URL}"
+    model = settings.LLM_MODEL
+    if model in names or f"{model}:latest" in names:
+        return True, "Ollama is reachable and has the model"
+    return False, f"Ollama is reachable but has no model {model!r}"
+
+
 @router.get("/status")
 def chat_status():
     """Health check for RAG infrastructure."""
     events_count = 0
     rollups_count = 0
+    vector_store = "ready"
     try:
         events_count = get_events_collection().count()
         rollups_count = get_rollups_collection().count()
     except Exception:
+        vector_store = "unavailable"
         logger.warning("Could not query vector store counts", exc_info=True)
 
-    llm_available = True
-    if settings.LLM_PROVIDER == "openai" and not settings.OPENAI_API_KEY:
-        llm_available = False
+    llm_available, llm_detail = _llm_status()
 
     return {
-        "vector_store": "ready",
+        "vector_store": vector_store,
         "events_indexed": events_count,
         "rollups_indexed": rollups_count,
         "llm_provider": settings.LLM_PROVIDER,
         "llm_model": settings.LLM_MODEL,
         "llm_available": llm_available,
+        "llm_detail": llm_detail,
         "embedding_model": settings.EMBEDDING_MODEL,
     }

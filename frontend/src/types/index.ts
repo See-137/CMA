@@ -145,8 +145,8 @@ export interface DashboardOverview {
   total_requests: number;
   active_agents: number;
   total_tokens: number;
-  cost_change_pct: number;
-  request_change_pct: number;
+  cost_change_pct: number | null;
+  request_change_pct: number | null;
   /** Events in the period stored at $0 because no model price matched. */
   unpriced_events?: number;
 }
@@ -229,6 +229,7 @@ export interface ChatStatus {
   llm_provider: string;
   llm_model: string;
   llm_available: boolean;
+  llm_detail?: string;
   embedding_model: string;
 }
 
